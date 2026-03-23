@@ -10,7 +10,7 @@
       "id": "advanced-climate-controller-app",
       "name": "Advanced Climate Controller",
       "namespace": "ShaneAllen",
-      "location": "https://raw.githubusercontent.com/ShaneAllen334/Advanced-Climate-Controller/refs/heads/main/Advanced-Climate-Controller.groovy",
+      "location": "https://raw.githubusercontent.com/ShaneAllen334/Hubitat_Apps/refs/heads/main/Advanced-Climate-Controller/Advanced-Climate-Controller.groovy",
       "required": true,
       "oauth": false
     }
