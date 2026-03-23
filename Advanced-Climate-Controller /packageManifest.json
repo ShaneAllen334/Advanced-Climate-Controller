@@ -1,0 +1,18 @@
+{
+  "packageName": "Advanced Climate Controller",
+  "author": "ShaneAllen",
+  "version": "1.0.0",
+  "minimumHubitatVersion": "2.2.0",
+  "dateReleased": "2026-03-23",
+  "releaseNotes": "Initial release of the Advanced Climate Controller BMS engine.",
+  "apps": [
+    {
+      "id": "advanced-climate-controller-app",
+      "name": "Advanced Climate Controller",
+      "namespace": "ShaneAllen",
+      "location": "https://raw.githubusercontent.com/ShaneAllen334/Advanced-Climate-Controller/refs/heads/main/Advanced-Climate-Controller.groovy",
+      "required": true,
+      "oauth": false
+    }
+  ]
+}
