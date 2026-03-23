@@ -35,12 +35,12 @@ def mainPage() {
                 def tstatHeat = thermostat.currentValue("heatingSetpoint") ?: "--"
                 def tstatMode = thermostat.currentValue("thermostatMode")?.toUpperCase() ?: "UNKNOWN"
                 def tstatState = thermostat.currentValue("thermostatOperatingState")?.toUpperCase() ?: "IDLE"
-                
+            
                 def stateColor = "black"
                 if (tstatState == "COOLING") stateColor = "blue"
                 if (tstatState == "HEATING") stateColor = "#d9534f" 
                 if (tstatState.contains("AUX") || tstatState.contains("EMERGENCY")) stateColor = "red" 
-                
+         
                 def avgTemp = getAverageTemp()
                 def avgHum = getAverageHumidity()
                 
@@ -69,13 +69,13 @@ def mainPage() {
                         if (tstatState == "COOLING") dT = (retT - disT).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
                         else if (tstatState == "HEATING") dT = (disT - retT).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
                         else dT = Math.abs(retT - disT).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP) 
-                        
+                
                         def health = ""
                         if (tstatState == "COOLING" && dT < (minCoolingDeltaT ?: 12.0)) health = " <span style='color:red;'>(Warning: Low)</span>"
                         else if (tstatState == "HEATING" && dT < (minHeatingDeltaT ?: 15.0)) health = " <span style='color:red;'>(Warning: Low)</span>"
                         else if (tstatState in ["COOLING", "HEATING"]) health = " <span style='color:green;'>(Good)</span>"
                         else health = " <span style='color:gray;'>(System Idle)</span>"
-                        
+                      
                         deltaTStr = "${dT}°F (Return: ${retT}° | Supply: ${disT}°)${health}"
                     } else {
                         deltaTStr = "Waiting for sensor data..."
@@ -85,7 +85,8 @@ def mainPage() {
                 // NEW: Calculated Deadband Metric
                 def currentDeadbandStr = "N/A"
                 if (tstatCool != "--" && tstatHeat != "--") {
-                    def gap = (tstatCool.toBigDecimal() - tstatHeat.toBigDecimal()).setScale(1, BigDecimal.ROUND_HALF_UP)
+                    // Added .toBigDecimal() wrapper here for safety
+                    def gap = (tstatCool.toBigDecimal() - tstatHeat.toBigDecimal()).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
                     if (gap < 3.0) {
                         currentDeadbandStr = "<span style='color:red;'><b>${gap}° (Violation - Conflict Detected)</b></span>"
                     } else if (gap == 3.0) {
@@ -736,8 +737,9 @@ def evaluateSystem() {
         if (offset < -maxShift) offset = -maxShift
         
         if (offset != 0.0) {
-            targetCool = (targetCool - offset).setScale(1, BigDecimal.ROUND_HALF_UP)
-            targetHeat = (targetHeat - offset).setScale(1, BigDecimal.ROUND_HALF_UP)
+            // Added .toBigDecimal() here before .setScale
+            targetCool = (targetCool - offset).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
+            targetHeat = (targetHeat - offset).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
             syncMessage = " [Alignment Active: Shifted by ${String.format('%.1f', -offset)}°]"
         }
     }
@@ -746,8 +748,8 @@ def evaluateSystem() {
     // Ensures modifiers (like Dehum/Pre-Cool/Alignment) never push Cool and Heat too close together
     def hardwareDeadband = 3.0
     if ((targetCool - targetHeat) < hardwareDeadband) {
-        // If cooling target was pushed down, shove the heating target down out of the way
-        targetHeat = (targetCool - hardwareDeadband).setScale(1, BigDecimal.ROUND_HALF_UP)
+        // Added .toBigDecimal() here before .setScale
+        targetHeat = (targetCool - hardwareDeadband).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
         syncMessage += " [Deadband Enforced]"
     }
     // -----------------------------------
