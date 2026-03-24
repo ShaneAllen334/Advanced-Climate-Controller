@@ -386,39 +386,50 @@ def evaluateAllSleepingFans() {
 
 // --- PERIODIC STATE ENFORCEMENT ---
 def periodicEnforcementHandler() {
-    if (txtLogEnable) log.debug "PERIODIC ENFORCEMENT: Waking up to verify system state..."
-    
-    // 1. Re-evaluate Global Mode Requirements
-    evaluateGlobalMode(null)
-    
-    // 2. Loop through all rooms and enforce state
+    // FAST FAIL: Only log and evaluate if at least one room is asleep
+    def anyoneAsleep = false
     for (int i = 1; i <= 4; i++) {
-        if (settings["enableRoom${i}"]) {
-            def sw = settings["roomSwitch${i}"]
-            def rName = settings["roomName${i}"] ?: "Room ${i}"
-            
-            if (sw && sw.currentValue("switch") == "on") {
-                // Enforce Lights OFF
-                def lights = settings["roomLights${i}"]
-                if (lights) {
-                    lights.each { lgt -> 
-                        if (lgt.currentValue("switch") == "on") {
-                            lgt.off()
-                            logInfo("ENFORCEMENT: ${rName} is asleep but light [${lgt.displayName}] was ON. Forced OFF.")
+        if (settings["enableRoom${i}"] && settings["roomSwitch${i}"]?.currentValue("switch") == "on") {
+            anyoneAsleep = true
+            break
+        }
+    }
+    
+    if (anyoneAsleep) {
+        if (txtLogEnable) log.debug "PERIODIC ENFORCEMENT: Waking up to verify system state..."
+        
+        // 1. Re-evaluate Global Mode Requirements
+        evaluateGlobalMode(null)
+        
+        // 2. Loop through all rooms and enforce state
+        for (int i = 1; i <= 4; i++) {
+            if (settings["enableRoom${i}"]) {
+                def sw = settings["roomSwitch${i}"]
+                def rName = settings["roomName${i}"] ?: "Room ${i}"
+                
+                if (sw && sw.currentValue("switch") == "on") {
+                    // Enforce Lights OFF
+                    def lights = settings["roomLights${i}"]
+                    if (lights) {
+                        lights.each { lgt -> 
+                            if (lgt.currentValue("switch") == "on") {
+                                lgt.off()
+                                logInfo("ENFORCEMENT: ${rName} is asleep but light [${lgt.displayName}] was ON. Forced OFF.")
+                            }
                         }
                     }
-                }
-                
-                // Enforce Shades CLOSED
-                def shadeContact = settings["shadeContact${i}"]
-                def shade = settings["roomShade${i}"]
-                if (shadeContact && shade && shadeContact.currentValue("contact") == "open") {
-                    shade.close()
-                    logInfo("ENFORCEMENT: ${rName} is asleep but shade contact was OPEN. Forced CLOSE.")
-                }
+                    
+                    // Enforce Shades CLOSED
+                    def shadeContact = settings["shadeContact${i}"]
+                    def shade = settings["roomShade${i}"]
+                    if (shadeContact && shade && shadeContact.currentValue("contact") == "open") {
+                        shade.close()
+                        logInfo("ENFORCEMENT: ${rName} is asleep but shade contact was OPEN. Forced CLOSE.")
+                    }
 
-                // Enforce Fans
-                evaluateFans(i)
+                    // Enforce Fans
+                    evaluateFans(i)
+                }
             }
         }
     }
@@ -466,19 +477,43 @@ def calculateSleepSuitability(cTemp, cHum) {
     return "<span style='color:${color};'>${finalStatus}</span>"
 }
 
+// --- HELPER: ARE ALL REQUIRED ROOMS ASLEEP? ---
+def areRequiredRoomsAsleep() {
+    if (!settings.syncRooms) return false
+    def allAsleep = true
+    def roomsChecked = 0
+    for (int i = 1; i <= 4; i++) {
+        if (settings.syncRooms.contains(i.toString())) {
+            roomsChecked++
+            def sw = settings["roomSwitch${i}"]
+            if (!sw || sw.currentValue("switch") != "on") {
+                allAsleep = false
+                break
+            }
+        }
+    }
+    return (roomsChecked > 0 && allAsleep)
+}
+
 // --- GLOBAL MOTION RE-EVALUATION ---
 def globalMotionHandler(evt) {
     if (evt.value == "inactive") {
-        logInfo("GLOBAL SYNC: Motion stopped on ${evt.device.displayName}. Re-evaluating sleep criteria...")
-        evaluateGlobalMode(evt)
+        // FAST FAIL: Don't evaluate unless required rooms are asleep
+        if (areRequiredRoomsAsleep()) {
+            logInfo("GLOBAL SYNC: Motion stopped on ${evt.device.displayName}. Re-evaluating sleep criteria...")
+            evaluateGlobalMode(evt)
+        }
     }
 }
 
 // --- BLOCKING DEVICE RE-EVALUATION ---
 def blockingSwitchHandler(evt) {
     if (evt.value == "off") {
-        logInfo("GLOBAL SYNC: Blocking device [${evt.device.displayName}] turned OFF. Re-evaluating sleep criteria...")
-        evaluateGlobalMode(evt)
+        // FAST FAIL: Don't evaluate unless required rooms are asleep
+        if (areRequiredRoomsAsleep()) {
+            logInfo("GLOBAL SYNC: Blocking device [${evt.device.displayName}] turned OFF. Re-evaluating sleep criteria...")
+            evaluateGlobalMode(evt)
+        }
     }
 }
 
@@ -579,6 +614,7 @@ def evaluateGlobalMode(evt = null) {
     def now = new Date()
     def currentMode = location.mode
     
+    // --- NIGHT MODE LOGIC ---
     if (nightStartTime && nightEndTime && targetNightMode) {
         def nightStart = timeToday(nightStartTime, location.timeZone)
         def nightEnd = timeToday(nightEndTime, location.timeZone)
@@ -590,71 +626,67 @@ def evaluateGlobalMode(evt = null) {
             isNightWindow = (now.time >= nightStart.time || now.time <= nightEnd.time)
         }
         
-        if (txtLogEnable) log.debug "EVALUATING NIGHT MODE: Window=${isNightWindow} | CurrentMode=${currentMode} | Target=${targetNightMode}"
-        
+        // FAST FAIL: Only proceed if we are in the time window and not already in Target Night Mode
         if (isNightWindow && currentMode != targetNightMode) {
             def isAllowedMode = true
             if (allowedNightModes) isAllowedMode = (allowedNightModes as List).contains(currentMode)
             
-            if (txtLogEnable) log.debug "EVALUATING NIGHT MODE: ModeWhitelistPass=${isAllowedMode}"
-            
             if (isAllowedMode) {
+                // FAST FAIL: Check if rooms are asleep FIRST before looping through motion and switches
                 def allAsleep = true
                 def roomsChecked = 0
-                
                 for (int i = 1; i <= 4; i++) {
                     if (syncRooms && syncRooms.contains(i.toString())) {
                         roomsChecked++
                         def sw = settings["roomSwitch${i}"]
                         if (sw) {
                             def swVal = (evt && evt.device.id == sw.id) ? evt.value : sw.currentValue("switch")
-                            if (txtLogEnable) log.debug "EVALUATING NIGHT MODE: Room ${i} Switch is [${swVal}]"
                             if (swVal != "on") allAsleep = false
                         } else {
                             allAsleep = false
                         }
                     }
                 }
+                if (roomsChecked == 0) allAsleep = false
                 
-                if (roomsChecked == 0) {
-                    allAsleep = false
-                    if (txtLogEnable) log.debug "EVALUATING NIGHT MODE: Error - No rooms matched your 'Require these rooms' list!"
-                }
-                
-                def noMotion = true
-                if (syncMotion) {
-                    syncMotion.each { mSens ->
-                        def mVal = (evt && evt.device.id == mSens.id) ? evt.value : mSens.currentValue("motion")
-                        if (txtLogEnable) log.debug "EVALUATING NIGHT MODE: Motion Sensor [${mSens.displayName}] is [${mVal}]"
-                        if (mVal == "active") noMotion = false
+                // If the rooms aren't asleep, silently exit this block. No log spam.
+                if (allAsleep) {
+                    if (txtLogEnable) log.debug "EVALUATING NIGHT MODE: Required Rooms Asleep. Checking Motion & Blocking Devices..."
+                    
+                    def noMotion = true
+                    if (syncMotion) {
+                        syncMotion.each { mSens ->
+                            def mVal = (evt && evt.device.id == mSens.id) ? evt.value : mSens.currentValue("motion")
+                            if (txtLogEnable) log.debug "EVALUATING NIGHT MODE: Motion Sensor [${mSens.displayName}] is [${mVal}]"
+                            if (mVal == "active") noMotion = false
+                        }
                     }
-                }
-                
-                def noBlockingDevices = true
-                if (blockingSwitches) {
-                    blockingSwitches.each { bSw ->
-                        def bVal = (evt && evt.device.id == bSw.id) ? evt.value : bSw.currentValue("switch")
-                        if (txtLogEnable) log.debug "EVALUATING NIGHT MODE: Blocking Switch [${bSw.displayName}] is [${bVal}]"
-                        if (bVal == "on") noBlockingDevices = false
+                    
+                    def noBlockingDevices = true
+                    if (blockingSwitches) {
+                        blockingSwitches.each { bSw ->
+                            def bVal = (evt && evt.device.id == bSw.id) ? evt.value : bSw.currentValue("switch")
+                            if (txtLogEnable) log.debug "EVALUATING NIGHT MODE: Blocking Switch [${bSw.displayName}] is [${bVal}]"
+                            if (bVal == "on") noBlockingDevices = false
+                        }
                     }
-                }
-                
-                if (txtLogEnable) log.debug "EVALUATING NIGHT MODE: AllAsleep=${allAsleep} | NoMotion=${noMotion} | NoBlockingDevices=${noBlockingDevices}"
-                
-                if (allAsleep && noMotion && noBlockingDevices) {
-                    def nDelay = settings.nightModeDelay != null ? settings.nightModeDelay : 60
-                    logInfo("GLOBAL SYNC: Required rooms asleep, house is quiet, and no blocking devices are ON. Scheduling Night Mode (${targetNightMode}) in ${nDelay} seconds.")
-                    runIn(nDelay, "executeNightModeChange")
-                } else {
-                    if (allAsleep && (!noMotion || !noBlockingDevices)) {
+                    
+                    if (txtLogEnable) log.debug "EVALUATING NIGHT MODE: AllAsleep=${allAsleep} | NoMotion=${noMotion} | NoBlockingDevices=${noBlockingDevices}"
+                    
+                    if (noMotion && noBlockingDevices) {
+                        def nDelay = settings.nightModeDelay != null ? settings.nightModeDelay : 60
+                        logInfo("GLOBAL SYNC: Required rooms asleep, house is quiet, and no blocking devices are ON. Scheduling Night Mode (${targetNightMode}) in ${nDelay} seconds.")
+                        runIn(nDelay, "executeNightModeChange")
+                    } else {
                         logInfo("GLOBAL SYNC: Waiting on motion sensors to clear or blocking devices to turn OFF before shifting mode.")
+                        unschedule("executeNightModeChange")
                     }
-                    unschedule("executeNightModeChange")
                 }
             }
         }
     }
     
+    // --- WAKE MODE LOGIC ---
     if (wakeStartTime && wakeEndTime && requireNightMode && targetWakeMode) {
         def wakeStart = timeToday(wakeStartTime, location.timeZone)
         def wakeEnd = timeToday(wakeEndTime, location.timeZone)
@@ -920,7 +952,7 @@ def prepNextUri(roomNum) {
     
     if (uris.size() > 0) {
         if (uris.size() == 1) {
-             state."nextUri${roomNum}" = uris[0]
+            state."nextUri${roomNum}" = uris[0]
         } else {
             def lastPlayed = state."lastUri${roomNum}"
             def availableUris = uris.findAll { it != lastPlayed }
