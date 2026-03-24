@@ -72,7 +72,7 @@ def mainPage() {
                     }
                 }
             } else {
-                 astroMsg = "<b>Astro Status:</b> Disabled"
+                astroMsg = "<b>Astro Status:</b> Disabled"
             }
             
             statusText += "<div style='margin-top: 10px; padding: 10px; background: #e9e9e9; border-radius: 4px; font-size: 13px; display: flex; flex-wrap: wrap; gap: 15px; border: 1px solid #ccc;'>"
@@ -241,7 +241,7 @@ def closeActiveCloudEvent() {
         drop: "${maxDrop} lx",
         minLux: "${state.activeCloudEvent.minLux} lx"
     ]
-    
+   
     if (!state.cloudHistory) state.cloudHistory = []
     state.cloudHistory.add(0, newEvent)
     
@@ -415,7 +415,11 @@ def evaluateLuxCondition() {
         def timeDeltaMins = (timeNow - state.lastLuxCheckTime) / 60000
         def luxDrop = state.lastLuxValue - lux
         
-        if (luxDrop > 1000 && timeDeltaMins <= 10 && lux <= overLimit) {
+        // Calculate the percentage of the drop
+        def dropPercentage = state.lastLuxValue > 0 ? (luxDrop / state.lastLuxValue) : 0
+        
+        // Trigger a cloud event if lux drops by 30% OR drops by more than 15,000 lux rapidly
+        if ((dropPercentage >= 0.30 || luxDrop > 15000) && timeDeltaMins <= 10) {
             if (!state.activeCloudEvent) {
                 state.activeCloudEvent = [startTime: timeNow, startLux: state.lastLuxValue, minLux: lux]
                 state.dipReason = "Sudden Drop"
@@ -424,13 +428,19 @@ def evaluateLuxCondition() {
                 state.activeCloudEvent.minLux = lux 
             }
         } else if (luxDrop > 0 && timeDeltaMins > 15 && lux <= overLimit && !state.pendingOvercast) {
-             state.dipReason = "Gradual Fade"
+            state.dipReason = "Gradual Fade"
         }
     }
     
-    if (lux > overLimit && state.activeCloudEvent) {
-        closeActiveCloudEvent()
-        addToHistory("ANALYSIS: Cloud/Weather event passed and logged to history.")
+    // Close the cloud event if it recovers by at least 50% of what it dropped, or exceeds the start lux
+    if (state.activeCloudEvent) {
+        def recoveryAmount = lux - state.activeCloudEvent.minLux
+        def totalDrop = state.activeCloudEvent.startLux - state.activeCloudEvent.minLux
+        
+        if (lux >= state.activeCloudEvent.startLux || recoveryAmount >= (totalDrop * 0.50)) {
+            closeActiveCloudEvent()
+            addToHistory("ANALYSIS: Cloud/Weather event passed and logged to history.")
+        }
     }
     
     state.lastLuxValue = lux
