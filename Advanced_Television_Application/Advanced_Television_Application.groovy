@@ -23,16 +23,16 @@ def mainPage() {
             if (numTVs > 0) {
                 def statusText = "<table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc;'>"
                 statusText += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Television</th><th style='padding: 8px;'>Power & App</th><th style='padding: 8px;'>Watch Time Today</th><th style='padding: 8px;'>Top App Today</th><th style='padding: 8px;'>Cost Today</th></tr>"
-                
+         
                 for (int i = 1; i <= (numTVs as Integer); i++) {
                     def tvName = settings["tvName_${i}"] ?: "TV ${i}"
                     def tv = settings["tv_${i}"]
                     
                     if (!tv) {
-                        statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${tvName}</b></td><td style='padding: 8px; color: #888;'>Not Configured</td><td style='padding: 8px;'>-</td><td style='padding: 8px;'>-</td><td style='padding: 8px;'>-</td></tr>"
+                         statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${tvName}</b></td><td style='padding: 8px; color: #888;'>Not Configured</td><td style='padding: 8px;'>-</td><td style='padding: 8px;'>-</td><td style='padding: 8px;'>-</td></tr>"
                         continue
                     }
-                    
+                
                     def isTrulyOn = isTvActuallyOn(tv)
                     def powerState = isTrulyOn ? "ON" : "STANDBY / OFF"
                     def pwrColor = isTrulyOn ? "green" : "red"
@@ -48,14 +48,14 @@ def mainPage() {
                     if (state.appStats?."${i}") {
                         state.appStats["${i}"].each { app, time ->
                             if (time > topTime) {
-                                topApp = app
+                                 topApp = app
                                 topTime = time
                             }
-                        }
+                         }
                     }
                     
                     def cost = "\$" + (state.costToday?."${i}" ?: 0.00).setScale(2, BigDecimal.ROUND_HALF_UP)
-                    
+                   
                     statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${tvName}</b></td><td style='padding: 8px;'><span style='color: ${pwrColor}; font-weight:bold;'>${powerState}</span><br><span style='font-size:11px; color:#555;'>${currentApp}</span></td><td style='padding: 8px;'>${watchDisplay}</td><td style='padding: 8px;'>${topApp}</td><td style='padding: 8px;'>${cost}</td></tr>"
                 }
                 statusText += "</table>"
@@ -65,7 +65,7 @@ def mainPage() {
                 def totalHouseCost = 0.0
                 if (state.costToday) { state.costToday.each { k, v -> totalHouseCost += v } }
                 def totalDisplay = "\$" + totalHouseCost.setScale(2, BigDecimal.ROUND_HALF_UP)
-                
+        
                 statusText += "<div style='margin-top: 10px; padding: 10px; background: #e9e9e9; border-radius: 4px; font-size: 13px; display: flex; flex-wrap: wrap; gap: 15px; border: 1px solid #ccc;'>"
                 statusText += "<div><b>System:</b> ${globalStatus}</div>"
                 statusText += "<div style='border-left: 1px solid #ccc; padding-left: 15px;'><b>Total Entertainment Cost Today:</b> <span style='color: #aa0000;'>${totalDisplay}</span></div>"
@@ -198,6 +198,19 @@ def tvPage(params) {
                 input "tvBlinds_${tNum}", "capability.contactSensor", title: "Room Blinds Evaluator (Contact)", required: false, description: "If selected, the app will ONLY restore the lights upon TV shutdown if these blinds are closed."
                 input "lightRestoreTimeStart_${tNum}", "time", title: "Light Restore Start Time", required: false, description: "Earliest time of day lights are allowed to automatically turn back on."
                 input "lightRestoreTimeEnd_${tNum}", "time", title: "Light Restore End Time", required: false, description: "Latest time of day lights are allowed to automatically turn back on."
+                
+                input "evaluateRoomBtn_${tNum}", "button", title: "Evaluate Room (Force OFF Lights & Appliances if TV is ON)"
+            }
+        }
+
+        section("Auto-Sweeper (Motion Bypass)") {
+            input "enableSweeper_${tNum}", "bool", title: "Enable Active Room Sweeper", defaultValue: false, submitOnChange: true, description: "Links specific lights to specific motion sensors. If a light is ON but the room is empty, it turns the light off while the TV is running."
+            if (settings["enableSweeper_${tNum}"]) {
+                paragraph "Configure up to 5 individual lights and their corresponding bypass sensors. If the linked sensor is ACTIVE, the light will not be turned off."
+                for (int l = 1; l <= 5; l++) {
+                    input "sweepLight_${tNum}_${l}", "capability.switch", title: "Sweeper Light ${l}", required: false
+                    input "sweepMotion_${tNum}_${l}", "capability.motionSensor", title: "Bypass Motion Sensor ${l}", required: false
+                }
             }
         }
         
@@ -308,7 +321,6 @@ def checkTvShows() {
 
                 def startStr = settings["showTimeStart_${i}_${s}"]
                 if (startStr) {
-                    // FIX APPLIED: Used timeToday instead of toDateTime
                     def startFormatted = timeToday(startStr, location.timeZone).format("HH:mm", location.timeZone)
                     if (currentTime == startFormatted) {
                         startTvShow(i, s)
@@ -317,7 +329,6 @@ def checkTvShows() {
 
                 def endStr = settings["showTimeEnd_${i}_${s}"]
                 if (endStr) {
-                    // FIX APPLIED: Used timeToday instead of toDateTime
                     def endFormatted = timeToday(endStr, location.timeZone).format("HH:mm", location.timeZone)
                     if (currentTime == endFormatted) {
                         endTvShow(i, s)
@@ -369,12 +380,17 @@ def isTvActuallyOn(tv) {
     def app = tv.currentValue("application") ?: "Home"
     def transport = tv.currentValue("transportStatus")
     
+    // 1. Hard power off states
     if (sw == "off" || pwr in ["PowerOff", "Off", "DisplayOff", "Headless"]) return false
     
+    // 2. Force OFF state if the TV is sitting idle on a home screen or screensaver
     def idleApps = ["Roku Dynamic Menu", "Backdrops", "Roku Media Player", "Home", "none", null]
-    if (sw == "on" && !idleApps.contains(app)) return true
+    if (idleApps.contains(app)) return false
+    
+    // 3. Media ready but stopped
     if (sw == "on" && pwr == "Ready" && transport == "stopped") return false
     
+    // If it passes all the safety checks above, it's genuinely ON
     return sw == "on"
 }
 
@@ -413,23 +429,28 @@ def tvPowerEvaluator(evt) {
                             activeNoise.each { it.off() } 
                             state.noiseSwitchesPaused["${i}"] = activeNoise.collect { it.id }
                         } else {
-                             state.noiseSwitchesPaused["${i}"] = []
+                            state.noiseSwitchesPaused["${i}"] = []
                         }
                     }
                 }
-                
+               
                 if (settings["enableLightingSync_${i}"]) {
                     def lights = settings["tvLights_${i}"]
                     if (lights) {
                          def activeLights = lights.findAll { it.currentValue("switch") == "on" }
-                        if (activeLights) {
-                            addToHistory("${tvName}: Environment sync. Turning OFF lights.")
-                            activeLights.each { it.off() } 
+                         if (activeLights) {
+                            addToHistory("${tvName}: Environment sync. Delaying 2s to turn OFF lights.")
                             state.lightsPausedByTv["${i}"] = true
+                            runIn(2, "delayedLightTurnOff", [data: [tvNum: i], overwrite: false])
                         } else {
                             state.lightsPausedByTv["${i}"] = false
                         }
                     }
+                }
+                
+                // Initial Sweeper Run (isPeriodic flag set to false so it logs everything)
+                if (settings["enableSweeper_${i}"]) {
+                    runIn(4, "executeSweeperDelay", [data: [tvNum: i, isPeriodic: false], overwrite: false])
                 }
                 
                 if (settings["enableMusicSync_${i}"]) {
@@ -478,12 +499,11 @@ def tvPowerEvaluator(evt) {
                     if (lights && state.lightsPausedByTv["${i}"]) {
                         state.lightsPausedByTv["${i}"] = false 
                         def blind = settings["tvBlinds_${i}"]
-                         def isBlindClosed = blind ? (blind.currentValue("contact") == "closed") : true
+                        def isBlindClosed = blind ? (blind.currentValue("contact") == "closed") : true
                         def startTime = settings["lightRestoreTimeStart_${i}"]
                         def endTime = settings["lightRestoreTimeEnd_${i}"]
                         def timeOk = true
                         
-                        // FIX APPLIED: Used timeToday instead of toDateTime
                         if (startTime && endTime) timeOk = timeOfDayIsBetween(timeToday(startTime, location.timeZone), timeToday(endTime, location.timeZone), new Date(), location.timeZone)
                         
                         if (isBlindClosed && timeOk) {
@@ -503,7 +523,6 @@ def tvPowerEvaluator(evt) {
                         def modeOk = !allowedModes || allowedModes.contains(location.mode)
                         def timeOk = true
                         
-                        // FIX APPLIED: Used timeToday instead of toDateTime
                         if (startTime && endTime) timeOk = timeOfDayIsBetween(timeToday(startTime, location.timeZone), timeToday(endTime, location.timeZone), new Date(), location.timeZone)
                         
                         if (modeOk && timeOk) {
@@ -514,6 +533,105 @@ def tvPowerEvaluator(evt) {
                  }
             }
         }
+    }
+}
+
+def delayedLightTurnOff(data) {
+    def i = data.tvNum
+    def lights = settings["tvLights_${i}"]
+    if (lights) {
+        def activeLights = lights.findAll { it.currentValue("switch") == "on" }
+        if (activeLights) {
+            activeLights.each { it.off() }
+        }
+    }
+}
+
+def executeSweeperDelay(data) {
+    executeSweeper(data.tvNum, data.isPeriodic)
+}
+
+def executeSweeper(i, isPeriodic) {
+    if (!settings["enableSweeper_${i}"]) return
+    def tv = settings["tv_${i}"]
+    if (!isTvActuallyOn(tv)) return
+    
+    def sweptDevices = []
+    def bypassedDevices = []
+    
+    for (int l = 1; l <= 5; l++) {
+        def light = settings["sweepLight_${i}_${l}"]
+        def motion = settings["sweepMotion_${i}_${l}"]
+        
+        if (light && light.currentValue("switch") == "on") {
+            def hasMotion = motion ? (motion.currentValue("motion") == "active") : false
+            
+            if (!hasMotion) {
+                light.off()
+                sweptDevices << light.displayName
+            } else {
+                bypassedDevices << light.displayName
+            }
+        }
+    }
+    
+    if (sweptDevices) {
+        addToHistory("${getTvName(i)}: Sweeper turned OFF: ${sweptDevices.join(', ')}")
+    }
+    
+    // Only log the bypass reason on the initial manual TV power-on to prevent log spam every 5 minutes
+    if (bypassedDevices && !isPeriodic) {
+        addToHistory("${getTvName(i)}: Sweeper bypassed (Motion Active): ${bypassedDevices.join(', ')}")
+    }
+}
+
+def evaluateRoomLights(i) {
+    def tv = settings["tv_${i}"]
+    if (isTvActuallyOn(tv)) {
+        def actionTaken = false
+        
+        if (settings["enableLightingSync_${i}"]) {
+            def lights = settings["tvLights_${i}"]
+            if (lights) {
+                def activeLights = lights.findAll { it.currentValue("switch") == "on" }
+                if (activeLights) {
+                    addToHistory("${getTvName(i)}: Room Evaluation - Forcing lights OFF.")
+                    activeLights.each { it.off() }
+                    state.lightsPausedByTv["${i}"] = true
+                    actionTaken = true
+                }
+            }
+        }
+        
+        if (settings["enableAcousticMgmt_${i}"]) {
+            def noiseSwitches = settings["tvNoiseSwitches_${i}"]
+            if (noiseSwitches) {
+                def activeNoise = noiseSwitches.findAll { it.currentValue("switch") == "on" }
+                if (activeNoise) {
+                    addToHistory("${getTvName(i)}: Room Evaluation - Forcing background appliances OFF.")
+                    activeNoise.each { it.off() }
+                    
+                    def existingPaused = state.noiseSwitchesPaused["${i}"] ?: []
+                    def newPaused = activeNoise.collect { it.id }
+                    state.noiseSwitchesPaused["${i}"] = (existingPaused + newPaused).unique()
+                    
+                    actionTaken = true
+                }
+            }
+        }
+        
+        // Also force a manual sweeper check when they press the evaluate button
+        if (settings["enableSweeper_${i}"]) {
+             executeSweeper(i, false)
+             actionTaken = true
+        }
+        
+        if (!actionTaken) {
+             addToHistory("${getTvName(i)}: Room Evaluation - Assigned devices are already off or sync is disabled.")
+        }
+        
+    } else {
+        addToHistory("${getTvName(i)}: Room Evaluation ignored (TV not active).")
     }
 }
 
@@ -531,7 +649,7 @@ def hvacStateHandler(evt) {
                 def audioDevice = settings["tvAudio_${i}"] ?: tv
                 def boostAmount = settings["hvacVolumeBoost_${i}"] ?: 3
                  def tvName = getTvName(i)
-                
+                 
                 if (isRunning && !state.hvacVolumeBoosted["${i}"]) {
                     addToHistory("${tvName}: HVAC started (${opState}). Boosting volume by ${boostAmount} ticks.")
                     state.hvacVolumeBoosted["${i}"] = true
@@ -543,7 +661,7 @@ def hvacStateHandler(evt) {
                 }
             } else {
                 state.hvacVolumeBoosted["${i}"] = false
-             }
+            }
         }
     }
 }
@@ -573,6 +691,11 @@ def trackUsageStep() {
             def currentApp = tv.currentValue("application") ?: "Unknown/Home"
             if (!state.appStats["${i}"]) state.appStats["${i}"] = [:]
             state.appStats["${i}"][currentApp] = (state.appStats["${i}"][currentApp] ?: 0) + 5
+            
+            // Run the background motion sweeper
+            if (settings["enableSweeper_${i}"]) {
+                executeSweeper(i, true)
+            }
         }
     }
     runIn(300, "trackUsageStep") 
@@ -638,7 +761,6 @@ def morningMotionHandler(evt) {
             def startTime = settings["morningTimeStart_${i}"]
             def endTime = settings["morningTimeEnd_${i}"]
             
-            // FIX APPLIED: Used timeToday instead of toDateTime
             if (startTime && endTime && !timeOfDayIsBetween(timeToday(startTime, location.timeZone), timeToday(endTime, location.timeZone), new Date(), location.timeZone)) continue
             
             state.morningRoutineRunDate["${i}"] = today
@@ -707,7 +829,7 @@ def executeSetChannel(data) {
     if (tv) {
         def currentInput = tv.currentValue("mediaInputSource")
         if (currentInput != "Antenna TV" && currentInput != "InputTuner" && currentInput != "Tuner") {
-            if (tv.hasCommand("input_Tuner")) tv.input_Tuner()
+             if (tv.hasCommand("input_Tuner")) tv.input_Tuner()
             else if (tv.hasCommand("keyPress")) tv.keyPress("InputTuner")
         }
         runIn(6, "finalizeSetChannel", [data: [tvNum: i, channel: data.channel], overwrite: false])
@@ -720,7 +842,7 @@ def finalizeSetChannel(data) {
     if (tv) {
         def cleanChannel = data.channel.toString().trim()
         if (tv.hasCommand("tuneChannel")) {
-            tv.tuneChannel(cleanChannel)
+             tv.tuneChannel(cleanChannel)
         } else if (tv.hasCommand("setChannel")) {
             try {
                 tv.setChannel(cleanChannel as Number)
@@ -811,6 +933,10 @@ def appButtonHandler(btn) {
         def sNum = parts[2] as Integer
         log.info "Test Show ${sNum} ON triggered for TV ${tNum}"
         startTvShow(tNum, sNum)
+    } else if (btn?.startsWith("evaluateRoomBtn_")) {
+        def tNum = btn.split("_")[1] as Integer
+        log.info "Evaluate Room triggered for TV ${tNum}"
+        evaluateRoomLights(tNum)
     }
 }
 
