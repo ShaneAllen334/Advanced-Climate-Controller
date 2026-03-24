@@ -100,6 +100,8 @@ def mainPage() {
                         
                         if (settings["z${i}GnSwitch"] && settings["z${i}GnSwitch"].currentValue("switch") == "on") {
                             gnStatus = "<span style='color:orange;'>Isolated (GN)</span>"
+                        } else if (settings["z${i}RelayAlwaysOn"] && zSpeed == "off" && zTargetSpeed == "off" && pwrState == "on") {
+                            gnStatus = "<span style='color:purple;'>Relay 24/7 Active</span>"
                         } else if (zSpeed == "off" && zTargetSpeed == "off" && pwrState == "on") {
                             gnStatus = "<span style='color:purple;'>Lighting Override (Relay ON)</span>"
                         } else if (emptyOverride) {
@@ -206,10 +208,13 @@ def mainPage() {
                         input "z${i}Power", "capability.switch", title: "Master Power Relay for Fan (Optional)", required: false, submitOnChange: true
                         
                         if (settings["z${i}Power"]) {
-                            input "z${i}KeepRelayUnoccupied", "bool", title: "Keep power relay ON when Unoccupied (Only turn off blades)", defaultValue: false
-                            input "z${i}SmartRelay", "bool", title: "Keep power relay ON for Lighting Needs (Evaluates Sunset, Overcast, and Shades)", defaultValue: true, submitOnChange: true
-                            if (settings["z${i}SmartRelay"]) {
-                                input "z${i}ShadeContact", "capability.contactSensor", title: "Shade Contact Sensor (Closed = Room is Dark)", required: false
+                            input "z${i}RelayAlwaysOn", "bool", title: "Keep power relay ON 24/7 (Prevents fan light from defaulting to ON after power loss)", defaultValue: false, submitOnChange: true
+                            if (!settings["z${i}RelayAlwaysOn"]) {
+                                input "z${i}KeepRelayUnoccupied", "bool", title: "Keep power relay ON when Unoccupied (Only turn off blades)", defaultValue: false
+                                input "z${i}SmartRelay", "bool", title: "Keep power relay ON for Lighting Needs (Evaluates Sunset, Overcast, and Shades)", defaultValue: true, submitOnChange: true
+                                if (settings["z${i}SmartRelay"]) {
+                                    input "z${i}ShadeContact", "capability.contactSensor", title: "Shade Contact Sensor (Closed = Room is Dark)", required: false
+                                }
                             }
                         }
                     }
@@ -320,6 +325,9 @@ def getRoomOccupancy(roomId, timeoutMs) {
 }
 
 def shouldKeepRelayOn(roomId, isOccupied, isAway, isNight) {
+    def alwaysOn = settings["z${roomId}RelayAlwaysOn"]
+    if (alwaysOn) return true
+
     if (isAway || isNight) return false
     
     def pDev = settings["z${roomId}Power"]
@@ -333,7 +341,7 @@ def shouldKeepRelayOn(roomId, isOccupied, isAway, isNight) {
         def overcast = overcastSwitch?.currentValue("switch") == "on"
         def shade = settings["z${roomId}ShadeContact"]
         def shadeClosed = (shade && shade.currentValue("contact") == "closed")
-        
+         
         def s = getSunriseAndSunset()
         def nowTime = new Date().time
         def isDarkTime = s.sunset ? (nowTime > s.sunset.time || nowTime < s.sunrise.time) : false
