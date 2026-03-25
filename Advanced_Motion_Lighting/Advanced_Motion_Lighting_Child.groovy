@@ -116,6 +116,7 @@ def mainPage() {
         
         section("<div style='background-color:#333; color:white; padding:5px; font-size:16px;'>3. Turn ON Settings</div>", hideable: true, hidden: true) {
             input "useModeSettings", "bool", title: "Use specific settings per mode?", defaultValue: false, submitOnChange: true
+            
             if (useModeSettings) {
                 location.modes.each { m ->
                     paragraph "<b>${m.name} Settings</b>"
@@ -164,7 +165,11 @@ def mainPage() {
         
         section("<div style='background-color:#333; color:white; padding:5px; font-size:16px;'>4. Turn OFF Behaviors</div>", hideable: true, hidden: true) {
             input "gracePeriod", "number", title: "Grace Period after Manual Off (Seconds)", defaultValue: 15
-            input "manualTimeoutMinutes", "number", title: "Manual Override Timeout (Minutes)", defaultValue: 30
+            
+            input "manualTimeoutMinutes", "number", title: "Manual Override Motion Shutoff Timer (Minutes)", defaultValue: 30, description: "If a light is manually turned on, wait this long after motion stops before turning off."
+            
+            input "dimBeforeOff", "bool", title: "Dim to 1% before turning off?", defaultValue: true, description: "Disable this for bulbs that don't need a forced soft-fade."
+            
             input "turnOffOnModes", "mode", title: "Force OFF when Hub enters these Modes", multiple: true
             
             if (isSmartBulbOnRelay) {
@@ -464,16 +469,22 @@ def sendOffCommands() {
     }
     dimmers?.each { 
         if (it.currentValue("switch") != "off") { 
-            it.setLevel(1)
-            pauseExecution(400)
+            // Check if the user wants the 1% fade
+            if (dimBeforeOff != false) {
+                it.setLevel(1)
+                pauseExecution(400)
+            }
             it.off()
             refreshNeeded = true 
         } 
     }
     colorBulbs?.each { 
         if (it.currentValue("switch") != "off") { 
-            it.setLevel(1)
-            pauseExecution(400)
+            // Check if the user wants the 1% fade
+            if (dimBeforeOff != false) {
+                it.setLevel(1)
+                pauseExecution(400)
+            }
             it.off()
             refreshNeeded = true 
         } 
@@ -691,4 +702,26 @@ def getZoneStatus() {
         status: statusText,
         timer: timerText
     ]
+}
+
+// --- NEW: DYNAMIC CT UPDATE (Triggered by Parent) ---
+def dynamicCTUpdate(newCT) {
+    // Only proceed if this specific rule controls Color/CT bulbs
+    if (lightType == "Color / CT Bulb") {
+        def lvl = getTargetLevel()
+        def refreshNeeded = false
+        
+        colorBulbs?.each { bulb ->
+            // Only interrupt and change the color of bulbs that are currently ON
+            if (bulb.currentValue("switch") == "on") {
+                bulb.setColorTemperature(newCT, lvl)
+                refreshNeeded = true
+            }
+        }
+        
+        // Refresh the devices so the dashboard stays accurate
+        if (refreshNeeded) {
+            runIn(2, "executeRefresh")
+        }
+    }
 }
