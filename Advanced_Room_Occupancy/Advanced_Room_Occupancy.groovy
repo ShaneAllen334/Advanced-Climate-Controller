@@ -88,8 +88,8 @@ def mainPage() {
                             if (mLeft > maxRemainingMs) maxRemainingMs = mLeft
                         }
                         
-                        // Hit Counter Window Timer (Only displays if trigger is actively enabled)
-                        if (settings["z${i}TurnOnTriggers"]?.contains("Motion Hit Count") && mReqHits > 1 && !isOccupied && mHits > 0 && mLast) {
+                        // Hit Counter Window Timer (Displays even when occupied for tracking)
+                        if (settings["z${i}TurnOnTriggers"]?.contains("Motion Hit Count") && mReqHits > 1 && mHits > 0 && mLast) {
                             def windowMs = (settings["z${i}MotionActivationWindow"] ?: 1) * 60000
                             def windowLeft = (mLast + windowMs) - now()
                             if (windowLeft > 0) {
@@ -98,15 +98,18 @@ def mainPage() {
                             }
                         }
                         
-                        // Continuous Motion Display
+                        // Continuous Motion Display (Displays active duration when occupied)
                         if (settings["z${i}TurnOnTriggers"]?.contains("Continuous Motion")) {
                             def activeSince = state.motionActiveSince ? state.motionActiveSince["z${i}"] : null
-                            if (!isOccupied && activeSince) {
+                            if (activeSince) {
                                 def reqMins = settings["z${i}MotionContinuousDuration"] ?: 3
                                 def left = (activeSince + (reqMins * 60000)) - now()
                                 if (left > 0) {
                                     def secsLeft = Math.ceil(left / 1000).toInteger()
                                     statusAdditions << "<span style='color:teal; font-size:11px;'>Continuous Motion: ${secsLeft}s left</span>"
+                                } else {
+                                    def activeMins = Math.floor((now() - activeSince) / 60000).toInteger()
+                                    statusAdditions << "<span style='color:teal; font-size:11px;'>Continuous Motion: Active for ${activeMins}m</span>"
                                 }
                             }
                         }
@@ -132,8 +135,8 @@ def mainPage() {
                             if (vLeft > maxRemainingMs) maxRemainingMs = vLeft
                         }
                         
-                        // Hit Counter Window Timer
-                        if (vReqHits > 1 && !isOccupied && vHits > 0 && vLast) {
+                        // Hit Counter Window Timer (Displays even when occupied for tracking)
+                        if (settings["z${i}TurnOnTriggers"]?.contains("Vibration") && vReqHits > 1 && vHits > 0 && vLast) {
                             def windowMs = (settings["z${i}VibeActivationWindow"] ?: 1) * 60000
                             def windowLeft = (vLast + windowMs) - now()
                             if (windowLeft > 0) {
