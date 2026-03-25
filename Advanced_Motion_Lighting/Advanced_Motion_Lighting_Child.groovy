@@ -390,6 +390,7 @@ def getTargetColorTemp() {
 
 // The transition parameter is optional. If passed, the color bulbs will fade over that duration.
 def applyLightingSettings(transition = null) {
+    state.lastAutoCommand = now() 
     def refreshNeeded = false
 
     if (lightType == "Simple On/Off") {
@@ -452,6 +453,7 @@ def processTurnOff() {
 }
 
 def sendOffCommands() {
+    state.lastAutoOffCommand = now() // ADDED: timestamp for OFF commands
     def refreshNeeded = false
 
     switches?.each { 
@@ -462,12 +464,16 @@ def sendOffCommands() {
     }
     dimmers?.each { 
         if (it.currentValue("switch") != "off") { 
+            it.setLevel(1)
+            pauseExecution(400)
             it.off()
             refreshNeeded = true 
         } 
     }
     colorBulbs?.each { 
         if (it.currentValue("switch") != "off") { 
+            it.setLevel(1)
+            pauseExecution(400)
             it.off()
             refreshNeeded = true 
         } 
@@ -483,6 +489,9 @@ def sendOffCommands() {
 }
 
 def executeRefresh() {
+    state.lastAutoCommand = now() 
+    state.lastAutoOffCommand = now() // ADDED: Reset the off debounce timer as well
+
     if (lightType == "Simple On/Off") {
         switches?.each { if (it.hasCommand("refresh")) it.refresh() }
     } else if (lightType == "Adjustable Bulb / Dimmer") {
@@ -521,13 +530,15 @@ def verifyTurnOff() {
 }
 
 def physicalOffHandler(evt) {
-    def gp = (gracePeriod ?: 15)
-    state.gracePeriodEnd = now() + (gp * 1000)
-    state.appTurnedOn = false
-    state.manuallyTurnedOn = false
-    state.arrivalActive = false // Break arrival lock on physical interaction
-    cancelAllTurnOffTimers()
-    recordTurnOffTime() 
+    if (now() - (state.lastAutoOffCommand ?: 0) > 3000) { // ADDED: Debounce check for OFF events
+        def gp = (gracePeriod ?: 15)
+        state.gracePeriodEnd = now() + (gp * 1000)
+        state.appTurnedOn = false
+        state.manuallyTurnedOn = false
+        state.arrivalActive = false // Break arrival lock on physical interaction
+        cancelAllTurnOffTimers()
+        recordTurnOffTime() 
+    }
 }
 
 def physicalOnHandler(evt) {
@@ -573,6 +584,7 @@ def turnOnArrival() {
     state.arrivalActive = true
     state.appTurnedOn = true
     recordTurnOnTime()
+    state.lastAutoCommand = now() 
     
     if (lightType == "Color / CT Bulb" && arrivalColorOverride) {
         def lvl = getTargetLevel()
@@ -608,6 +620,18 @@ def executeParentSweep(delayMs = 0) {
             processTurnOff()
         }
     }
+}
+
+// ADDED: Clears manual override if it exists, and resumes normal auto-off countdown if room is empty
+def clearManualOverride() {
+    if (state.manuallyTurnedOn) {
+        state.manuallyTurnedOn = false
+        if (!isPrimaryActive() && !isKeepAliveActive()) {
+            startTurnOffTimer()
+        }
+        return true
+    }
+    return false
 }
 
 // --- DASHBOARD EXPORT FOR PARENT ---
