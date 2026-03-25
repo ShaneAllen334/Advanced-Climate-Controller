@@ -34,6 +34,7 @@ def mainPage() {
             for (int i = 1; i <= 12; i++) {
                 if (settings["enableZ${i}"]) {
                     hasZones = true
+                    def zKey = "z${i}".toString()
                     def zName = settings["z${i}Name"] ?: "Room ${i}"
                     
                     def isOccupied = getRoomOccupancyState(i)
@@ -45,13 +46,21 @@ def mainPage() {
                     def pMonitor = settings["z${i}PowerMonitor"]
                     def oSwitch = settings["z${i}OverrideSwitch"]
                     
+                    def onTriggers = settings["z${i}TurnOnTriggers"] ?: []
+                    def offTriggers = settings["z${i}TurnOffTriggers"] ?: []
+
+                    def showPresence = onTriggers.contains("Presence Sensor")
+                    def showMotion = onTriggers.contains("Motion Hit Count") || onTriggers.contains("Continuous Motion") || offTriggers.contains("Motion/Vibe Timeout")
+                    def showVibe = onTriggers.contains("Vibration") || offTriggers.contains("Motion/Vibe Timeout")
+                    def showSwitch = onTriggers.contains("Virtual Switch") || offTriggers.contains("Virtual Switch OFF")
+                    
                     def statusAdditions = []
                     def sensorDetails = []
                     def maxRemainingMs = 0
                     def isHardActive = false
 
                     // Check Presence Sensors
-                    if (pDevs) {
+                    if (pDevs && showPresence) {
                         pDevs.each { dev ->
                             def val = dev.currentValue("presence")
                             def color = val == "present" ? "blue" : "gray"
@@ -62,7 +71,7 @@ def mainPage() {
                     }
 
                     // Check Motion Sensors & Timers
-                    if (mDevs) {
+                    if (mDevs && showMotion) {
                         mDevs.each { dev ->
                             def val = dev.currentValue("motion")
                             def color = val == "active" ? "blue" : "gray"
@@ -72,17 +81,19 @@ def mainPage() {
                         }
 
                         def mTimeout = (settings["z${i}Timeout"] ?: 15) * 60000
-                        def mLast = state.zoneLastActive ? state.zoneLastActive["z${i}"] : null
+                        def mLast = state.zoneLastActive ? state.zoneLastActive[zKey] : null
                         def mReqHits = settings["z${i}MotionActivationHits"] ?: 1
-                        def mHits = state.motionHitCount ? (state.motionHitCount["z${i}"] ?: 0) : 0
+                        def mHits = state.motionHitCount ? (state.motionHitCount[zKey] ?: 0) : 0
                         
-                        if (mLast && !mDevs.any{it.currentValue("motion") == "active"}) {
-                            def mLeft = mTimeout - (now() - mLast)
-                            if (mLeft > maxRemainingMs) maxRemainingMs = mLeft
+                        if (offTriggers.contains("Motion/Vibe Timeout")) {
+                            if (mLast && !mDevs.any{it.currentValue("motion") == "active"}) {
+                                def mLeft = mTimeout - (now() - mLast)
+                                if (mLeft > maxRemainingMs) maxRemainingMs = mLeft
+                            }
                         }
                         
                         // Hit Counter Window Timer
-                        if (mReqHits > 1 && !isOccupied && mHits > 0 && mLast) {
+                        if (onTriggers.contains("Motion Hit Count") && mReqHits > 1 && !isOccupied && mHits > 0 && mLast) {
                             def windowMs = (settings["z${i}MotionActivationWindow"] ?: 1) * 60000
                             def windowLeft = (mLast + windowMs) - now()
                             if (windowLeft > 0) {
@@ -92,8 +103,8 @@ def mainPage() {
                         }
                         
                         // Continuous Motion Display
-                        if (settings["z${i}TurnOnTriggers"]?.contains("Continuous Motion")) {
-                            def activeSince = state.motionActiveSince ? state.motionActiveSince["z${i}"] : null
+                        if (onTriggers.contains("Continuous Motion")) {
+                            def activeSince = state.motionActiveSince ? state.motionActiveSince[zKey] : null
                             if (!isOccupied && activeSince) {
                                 def reqMins = settings["z${i}MotionContinuousDuration"] ?: 3
                                 def left = (activeSince + (reqMins * 60000)) - now()
@@ -106,7 +117,7 @@ def mainPage() {
                     }
 
                     // Check Vibration Sensors & Timers
-                    if (vDevs) {
+                    if (vDevs && showVibe) {
                         vDevs.each { dev ->
                             def val = dev.currentValue("acceleration")
                             def color = val == "active" ? "blue" : "gray"
@@ -116,17 +127,19 @@ def mainPage() {
                         }
 
                         def vTimeout = (settings["z${i}VibeTimeout"] ?: 5) * 60000
-                        def vLast = state.vibeLastActive ? state.vibeLastActive["z${i}"] : null
+                        def vLast = state.vibeLastActive ? state.vibeLastActive[zKey] : null
                         def vReqHits = settings["z${i}VibeActivationHits"] ?: 1
-                        def vHits = state.vibeHitCount ? (state.vibeHitCount["z${i}"] ?: 0) : 0
+                        def vHits = state.vibeHitCount ? (state.vibeHitCount[zKey] ?: 0) : 0
 
-                        if (vLast && !vDevs.any{it.currentValue("acceleration") == "active"}) {
-                            def vLeft = vTimeout - (now() - vLast)
-                            if (vLeft > maxRemainingMs) maxRemainingMs = vLeft
+                        if (offTriggers.contains("Motion/Vibe Timeout")) {
+                            if (vLast && !vDevs.any{it.currentValue("acceleration") == "active"}) {
+                                def vLeft = vTimeout - (now() - vLast)
+                                if (vLeft > maxRemainingMs) maxRemainingMs = vLeft
+                            }
                         }
                         
                         // Hit Counter Window Timer
-                        if (vReqHits > 1 && !isOccupied && vHits > 0 && vLast) {
+                        if (onTriggers.contains("Vibration") && vReqHits > 1 && !isOccupied && vHits > 0 && vLast) {
                             def windowMs = (settings["z${i}VibeActivationWindow"] ?: 1) * 60000
                             def windowLeft = (vLast + windowMs) - now()
                             if (windowLeft > 0) {
@@ -136,7 +149,7 @@ def mainPage() {
                         }
                     }
                     
-                    if (oSwitch && oSwitch.currentValue("switch") == "on") {
+                    if (oSwitch && showSwitch && oSwitch.currentValue("switch") == "on") {
                         sensorDetails << "<span style='color:orange; font-weight:bold; font-size:11px;'>🔘 Override Switch: ON</span>"
                     }
 
@@ -151,11 +164,11 @@ def mainPage() {
                     }
 
                     // --- Override Switch Timeout Display ---
-                    if (oSwitch && oSwitch.currentValue("switch") == "on") {
+                    if (oSwitch && oSwitch.currentValue("switch") == "on" && onTriggers.contains("Virtual Switch")) {
                         def oTimeout = settings["z${i}OverrideTimeout"]
                         if (oTimeout && oTimeout > 0 && !isHardActive) {
-                            def lastM = state.zoneLastActive ? state.zoneLastActive["z${i}"] : 0
-                            def lastV = state.vibeLastActive ? state.vibeLastActive["z${i}"] : 0
+                            def lastM = state.zoneLastActive ? state.zoneLastActive[zKey] : 0
+                            def lastV = state.vibeLastActive ? state.vibeLastActive[zKey] : 0
                             def maxLast = Math.max(lastM ?: 0, lastV ?: 0)
                             if (maxLast > 0) {
                                 def timeLeft = (oTimeout * 60000) - (now() - maxLast)
@@ -183,9 +196,16 @@ def mainPage() {
                     def restrictionReason = getRoomRestrictionReason(i)
                     def stateColor = restrictionReason ? "orange" : (isOccupied ? "green" : "black")
                     def stateLabel = restrictionReason ? "PAUSED (${restrictionReason})" : (isOccupied ? "OCCUPIED" : "EMPTY")
-                    def isOccupiedDisplay = "<b><span style='color:${stateColor};'>${stateLabel}</span></b>${remainingMinsDisplay}"
                     
-                    def sensorListDisplay = sensorDetails ? sensorDetails.join("<br>") : "<span style='color:gray; font-size:11px;'>None Monitored</span>"
+                    // Display Reason for State
+                    def reasonText = state.roomReasons ? (state.roomReasons[zKey] ?: "Unknown") : "Unknown"
+                    if (restrictionReason) reasonText = restrictionReason
+                    def reasonColor = isOccupied ? "#0066cc" : "#888888"
+                    def reasonDisplay = "<br><span style='font-size:11px; color:${reasonColor};'><i>Reason: ${reasonText}</i></span>"
+
+                    def isOccupiedDisplay = "<b><span style='color:${stateColor};'>${stateLabel}</span></b>${reasonDisplay}${remainingMinsDisplay}"
+                    
+                    def sensorListDisplay = sensorDetails ? sensorDetails.join("<br>") : "<span style='color:gray; font-size:11px;'>None Configured/Active</span>"
 
                     // --- Calculate Dynamic Wattage & Devices ---
                     def totalActive = 0.0
@@ -216,7 +236,7 @@ def mainPage() {
                     def fullDeviceColumn = "${devListDisplay}<br><br>${powerDisplay}"
 
                     // --- Savings Calculation ---
-                    def stats = state.roomStats ? state.roomStats["z${i}"] : [totalSecondsOff: 0, unoccupiedSince: null]
+                    def stats = state.roomStats ? state.roomStats[zKey] : [totalSecondsOff: 0, unoccupiedSince: null]
                     def secondsOff = stats?.totalSecondsOff ?: 0
                     if (stats?.unoccupiedSince != null && !restrictionReason) {
                         secondsOff += ((now() - stats.unoccupiedSince) / 1000).toLong()
@@ -270,17 +290,31 @@ def mainPage() {
             input "restrictedModes", "mode", title: "Restricted Modes (Pause all occupancy rules)", multiple: true, required: false
             input "forceOffModes", "mode", title: "Force OFF Modes (Immediately turns off all rooms when entering these modes)", multiple: true, required: false
             
-            input "resetSavings", "bool", title: "Reset All Savings Data to Zero", defaultValue: false, submitOnChange: true
-            if (settings["resetSavings"]) {
-                resetAllSavings()
-                app.updateSetting("resetSavings", false)
+            paragraph "<b>Manual System Overrides</b>"
+            
+            input "forceAllOccupied", "bool", title: "⚡ Force ALL Rooms OCCUPIED", defaultValue: false, submitOnChange: true
+            if (settings["forceAllOccupied"]) {
+                forceAllRoomsOccupied()
+                app.updateSetting("forceAllOccupied", false)
             }
             
-            input "forceSync", "bool", title: "Manually Force Hardware Sync (Pushes ON/OFF commands immediately)", defaultValue: false, submitOnChange: true
+            input "forceAllEmpty", "bool", title: "🛑 Force ALL Rooms EMPTY", defaultValue: false, submitOnChange: true
+            if (settings["forceAllEmpty"]) {
+                forceAllRoomsEmpty()
+                app.updateSetting("forceAllEmpty", false)
+            }
+            
+            input "forceSync", "bool", title: "🔄 Manually Force Hardware Sync", defaultValue: false, submitOnChange: true
             if (settings["forceSync"]) {
                 logAction("MANUAL OVERRIDE: Forcing hardware sync...")
                 evaluateRooms(true)
                 app.updateSetting("forceSync", false)
+            }
+            
+            input "resetSavings", "bool", title: "🗑️ Reset All Savings Data to Zero", defaultValue: false, submitOnChange: true
+            if (settings["resetSavings"]) {
+                resetAllSavings()
+                app.updateSetting("resetSavings", false)
             }
         }
 
@@ -312,6 +346,11 @@ def roomConfigPage(params) {
                 input "z${i}OverrideSwitch", "capability.switch", title: "Virtual Override Switch", required: false, submitOnChange: true
                 if (settings["z${i}OverrideSwitch"] && settings["z${i}TurnOnTriggers"]?.contains("Virtual Switch")) {
                     input "z${i}OverrideTimeout", "number", title: "↳ Auto-Off Timeout (Minutes of NO movement before turning switch OFF)", required: false, defaultValue: 120
+                }
+                
+                input "z${i}Button", "capability.pushableButton", title: "Physical Button Link (Toggles Override Switch)", required: false, submitOnChange: true
+                if (settings["z${i}Button"]) {
+                    input "z${i}ButtonNumber", "number", title: "↳ Button Number", required: true, defaultValue: 1
                 }
                 
                 input "z${i}Motion", "capability.motionSensor", title: "Motion Sensors", multiple: true, required: false, submitOnChange: true
@@ -389,12 +428,14 @@ def initialize() {
     if (!state.roomStats) state.roomStats = [:]
     if (!state.currentRoomStates) state.currentRoomStates = [:]
     if (!state.shutdownDelayActive) state.shutdownDelayActive = []
+    if (!state.roomReasons) state.roomReasons = [:]
     
     for (int i = 1; i <= 12; i++) {
-        if (!state.roomStats["z${i}"]) state.roomStats["z${i}"] = [totalSecondsOff: 0, unoccupiedSince: null]
-        if (!state.currentRoomStates["z${i}"]) state.currentRoomStates["z${i}"] = "unknown"
-        state.motionHitCount["z${i}"] = 0
-        state.vibeHitCount["z${i}"] = 0
+        def zKey = "z${i}".toString()
+        if (!state.roomStats[zKey]) state.roomStats[zKey] = [totalSecondsOff: 0, unoccupiedSince: null]
+        if (!state.currentRoomStates[zKey]) state.currentRoomStates[zKey] = "unknown"
+        state.motionHitCount[zKey] = 0
+        state.vibeHitCount[zKey] = 0
     }
     
     // Core Subscriptions
@@ -405,6 +446,7 @@ def initialize() {
     for (int i = 1; i <= 12; i++) {
         if (settings["enableZ${i}"]) {
             if (settings["z${i}OverrideSwitch"]) subscribe(settings["z${i}OverrideSwitch"], "switch", sensorHandler)
+            if (settings["z${i}Button"]) subscribe(settings["z${i}Button"], "pushed", buttonHandler)
             if (settings["z${i}Motion"]) subscribe(settings["z${i}Motion"], "motion", motionHandler)
             if (settings["z${i}Vibration"]) subscribe(settings["z${i}Vibration"], "acceleration", vibrationHandler)
             if (settings["z${i}Presence"]) subscribe(settings["z${i}Presence"], "presence", sensorHandler)
@@ -431,8 +473,11 @@ def modeChangeHandler(evt) {
     if (isForceOff) {
         logAction("GLOBAL FORCE OFF TRIGGERED: Mode changed to ${evt.value}.")
         for (int i = 1; i <= 12; i++) {
-            if (settings["enableZ${i}"] && state.currentRoomStates["z${i}"] != "empty") {
-                state.currentRoomStates["z${i}"] = "empty"
+            def zKey = "z${i}".toString()
+            if (settings["enableZ${i}"] && state.currentRoomStates[zKey] != "empty") {
+                def tStates = state.currentRoomStates ? state.currentRoomStates.clone() : [:]
+                tStates[zKey] = "empty"
+                state.currentRoomStates = tStates
                 initiateRoomShutdown(i)
             }
         }
@@ -441,29 +486,51 @@ def modeChangeHandler(evt) {
     evaluateRooms(false)
 }
 
+def buttonHandler(evt) {
+    def btnPushed = evt.value
+    for (int i = 1; i <= 12; i++) {
+        if (settings["enableZ${i}"] && settings["z${i}Button"]?.id == evt.device.id) {
+            def configuredBtn = settings["z${i}ButtonNumber"]?.toString()
+            if (configuredBtn == btnPushed?.toString()) {
+                def oSwitch = settings["z${i}OverrideSwitch"]
+                if (oSwitch) {
+                    if (oSwitch.currentValue("switch") == "on") {
+                        logAction("Button Link: Toggling Override Switch OFF for Room ${i}")
+                        oSwitch.off()
+                    } else {
+                        logAction("Button Link: Toggling Override Switch ON for Room ${i}")
+                        oSwitch.on()
+                    }
+                }
+            }
+        }
+    }
+}
+
 def motionHandler(evt) {
-    if (!state.zoneLastActive) state.zoneLastActive = [:]
-    if (!state.motionHitCount) state.motionHitCount = [:]
-    if (!state.motionActiveSince) state.motionActiveSince = [:]
+    def tZoneLast = state.zoneLastActive ? state.zoneLastActive.clone() : [:]
+    def tMotionHit = state.motionHitCount ? state.motionHitCount.clone() : [:]
+    def tMotionSince = state.motionActiveSince ? state.motionActiveSince.clone() : [:]
     
     def isActive = (evt.value == "active")
     
     for (int i = 1; i <= 12; i++) {
         if (settings["enableZ${i}"]) {
+            def zKey = "z${i}".toString()
             def mDevs = settings["z${i}Motion"]
             if (mDevs && mDevs.find { it.id == evt.device.id }) {
                 
                 if (isActive) {
-                    state.zoneLastActive["z${i}"] = now()
+                    tZoneLast[zKey] = now()
                     
-                    if (!state.motionActiveSince["z${i}"]) {
-                        state.motionActiveSince["z${i}"] = now()
+                    if (!tMotionSince[zKey]) {
+                        tMotionSince[zKey] = now()
                         def contMins = settings["z${i}MotionContinuousDuration"] ?: 3
                         runIn(contMins * 60, "evalR${i}")
                     }
                     
-                    def count = (state.motionHitCount["z${i}"] ?: 0) + 1
-                    state.motionHitCount["z${i}"] = count
+                    def count = (tMotionHit[zKey] ?: 0) + 1
+                    tMotionHit[zKey] = count
                     
                     def windowMs = (settings["z${i}MotionActivationWindow"] ?: 1) * 60000
                     if (count == 1 && windowMs > 0) {
@@ -477,7 +544,7 @@ def motionHandler(evt) {
                 } else {
                     // Only schedule the empty timeout if ALL motion sensors in the room are inactive
                     if (!mDevs.any { it.currentValue("motion") == "active" }) {
-                        state.motionActiveSince.remove("z${i}")
+                        tMotionSince.remove(zKey)
                         
                         if (settings["z${i}TurnOffTriggers"]?.contains("Motion/Vibe Timeout")) {
                             def timeoutSecs = (settings["z${i}Timeout"] ?: 15) * 60
@@ -490,24 +557,29 @@ def motionHandler(evt) {
             }
         }
     }
+    
+    state.zoneLastActive = tZoneLast
+    state.motionHitCount = tMotionHit
+    state.motionActiveSince = tMotionSince
 }
 
 def vibrationHandler(evt) {
-    if (!state.vibeLastActive) state.vibeLastActive = [:]
-    if (!state.vibeHitCount) state.vibeHitCount = [:]
+    def tVibeLast = state.vibeLastActive ? state.vibeLastActive.clone() : [:]
+    def tVibeHit = state.vibeHitCount ? state.vibeHitCount.clone() : [:]
     
     def isActive = (evt.value == "active")
     
     for (int i = 1; i <= 12; i++) {
         if (settings["enableZ${i}"]) {
+            def zKey = "z${i}".toString()
             def vDevs = settings["z${i}Vibration"]
             if (vDevs && vDevs.find { it.id == evt.device.id }) {
                 
                 if (isActive) {
-                    state.vibeLastActive["z${i}"] = now()
+                    tVibeLast[zKey] = now()
                     
-                    def count = (state.vibeHitCount["z${i}"] ?: 0) + 1
-                    state.vibeHitCount["z${i}"] = count
+                    def count = (tVibeHit[zKey] ?: 0) + 1
+                    tVibeHit[zKey] = count
                     
                     def windowMs = (settings["z${i}VibeActivationWindow"] ?: 1) * 60000
                     if (count == 1 && windowMs > 0) {
@@ -530,135 +602,173 @@ def vibrationHandler(evt) {
             }
         }
     }
+    
+    state.vibeLastActive = tVibeLast
+    state.vibeHitCount = tVibeHit
 }
 
 def sensorHandler(evt) {
     if (evt.name == "switch") {
+        def tZoneLast = state.zoneLastActive ? state.zoneLastActive.clone() : [:]
         for (int i = 1; i <= 12; i++) {
             if (settings["enableZ${i}"] && settings["z${i}OverrideSwitch"]?.id == evt.device.id) {
+                def zKey = "z${i}".toString()
                 if (evt.value == "on") {
-                    if (!state.zoneLastActive) state.zoneLastActive = [:]
-                    state.zoneLastActive["z${i}"] = now() 
+                    tZoneLast[zKey] = now() 
                 }
             }
         }
+        state.zoneLastActive = tZoneLast
     }
     runIn(1, "evalR_All")
 }
 
 def getRoomOccupancyState(roomId) {
-    if (!state.currentRoomStates) state.currentRoomStates = [:]
-    if (!state.zoneLastActive) state.zoneLastActive = [:]
-    if (!state.vibeLastActive) state.vibeLastActive = [:]
-    if (!state.motionHitCount) state.motionHitCount = [:]
-    if (!state.vibeHitCount) state.vibeHitCount = [:]
-    if (!state.motionActiveSince) state.motionActiveSince = [:]
-
+    def zKey = "z${roomId}".toString()
+    
     def isOccupied = false
+    def reason = "All Conditions Cleared"
     def mDevs = settings["z${roomId}Motion"]
     def vDevs = settings["z${roomId}Vibration"]
     def pDevs = settings["z${roomId}Presence"]
     def oSwitch = settings["z${roomId}OverrideSwitch"]
     def pMonitor = settings["z${roomId}PowerMonitor"]
     
+    def onTriggers = settings["z${roomId}TurnOnTriggers"] ?: []
+    def offTriggers = settings["z${roomId}TurnOffTriggers"] ?: []
+    
+    def showPresence = onTriggers.contains("Presence Sensor")
+    def showMotion = onTriggers.contains("Motion Hit Count") || onTriggers.contains("Continuous Motion") || offTriggers.contains("Motion/Vibe Timeout")
+    def showVibe = onTriggers.contains("Vibration") || offTriggers.contains("Motion/Vibe Timeout")
+    
     // 1. Check Active Wattage Failsafe (Ultimate Override)
     if (pMonitor) {
         def currentDraw = pMonitor.currentValue("power") ?: 0.0
         def safeThresh = settings["z${roomId}ActiveWattageThreshold"] ?: 15.0
         if (currentDraw > safeThresh) {
-            state.zoneLastActive["z${roomId}"] = now()
+            def tZoneLast = state.zoneLastActive ? state.zoneLastActive.clone() : [:]
+            def tReasons = state.roomReasons ? state.roomReasons.clone() : [:]
+            
+            tZoneLast[zKey] = now()
+            tReasons[zKey] = "Power Lock Active (${currentDraw}W)"
+            
+            state.zoneLastActive = tZoneLast
+            state.roomReasons = tReasons
             return true
         }
     }
     
     def isHardActive = false
-    if (pDevs && pDevs.any { it.currentValue("presence") == "present" }) isHardActive = true
-    if (mDevs && mDevs.any { it.currentValue("motion") == "active" }) isHardActive = true
-    if (vDevs && vDevs.any { it.currentValue("acceleration") == "active" }) isHardActive = true
+    if (showPresence && pDevs && pDevs.any { it.currentValue("presence") == "present" }) isHardActive = true
+    if (showMotion && mDevs && mDevs.any { it.currentValue("motion") == "active" }) isHardActive = true
+    if (showVibe && vDevs && vDevs.any { it.currentValue("acceleration") == "active" }) isHardActive = true
 
-    def wasAlreadyOccupied = (state.currentRoomStates["z${roomId}"] == "occupied")
-    def onTriggers = settings["z${roomId}TurnOnTriggers"] ?: ["Virtual Switch", "Motion Hit Count", "Continuous Motion", "Vibration", "Presence Sensor"]
-    def offTriggers = settings["z${roomId}TurnOffTriggers"] ?: ["Motion/Vibe Timeout", "Virtual Switch OFF"]
+    def wasAlreadyOccupied = (state.currentRoomStates && state.currentRoomStates[zKey] == "occupied")
 
     // --- EVALUATE TURN ON TRIGGERS ---
     
     // A. Presence
     if (onTriggers.contains("Presence Sensor") && pDevs && pDevs.any { it.currentValue("presence") == "present" }) {
         isOccupied = true
+        reason = "Presence Detected"
     }
     
     // B. Virtual Switch ON
-    if (!isOccupied && onTriggers.contains("Virtual Switch") && oSwitch && oSwitch.currentValue("switch") == "on") {
+    else if (!isOccupied && onTriggers.contains("Virtual Switch") && oSwitch && oSwitch.currentValue("switch") == "on") {
         def oTimeout = settings["z${roomId}OverrideTimeout"]
-        if (oTimeout && oTimeout > 0) {
-            if (!isHardActive) {
-                def maxLast = Math.max(state.zoneLastActive["z${roomId}"] ?: 0, state.vibeLastActive["z${roomId}"] ?: 0)
-                if (maxLast == 0) maxLast = now()
-                if ((now() - maxLast) > (oTimeout * 60000)) {
-                    logAction("${settings["z${roomId}Name"]}: Virtual Override Switch timed out due to inactivity. Turning OFF.")
-                    oSwitch.off()
-                } else {
-                    isOccupied = true
-                }
+        if (oTimeout && oTimeout > 0 && !isHardActive) {
+            def maxLast = Math.max(state.zoneLastActive ? (state.zoneLastActive[zKey] ?: 0) : 0, state.vibeLastActive ? (state.vibeLastActive[zKey] ?: 0) : 0)
+            if (maxLast == 0) maxLast = now()
+            if ((now() - maxLast) > (oTimeout * 60000)) {
+                logAction("${settings["z${roomId}Name"]}: Virtual Override Switch timed out due to inactivity. Turning OFF.")
+                oSwitch.off()
             } else {
-                isOccupied = true 
+                isOccupied = true
+                reason = "Virtual Switch Enabled"
             }
         } else {
             isOccupied = true 
+            reason = "Virtual Switch Enabled"
         }
     }
 
-    // C. Continuous Motion Duration
-    if (!isOccupied && onTriggers.contains("Continuous Motion") && mDevs) {
-        def activeSince = state.motionActiveSince["z${roomId}"]
+    // C. Continuous Motion Duration (WITH FAILSAFE)
+    else if (!isOccupied && onTriggers.contains("Continuous Motion") && mDevs) {
+        def activeSince = state.motionActiveSince ? state.motionActiveSince[zKey] : null
         def reqMins = settings["z${roomId}MotionContinuousDuration"] ?: 3
-        if (activeSince && (now() - activeSince) >= (reqMins * 60000)) {
+        def isActuallyMoving = mDevs.any { it.currentValue("motion") == "active" }
+        
+        if (activeSince && isActuallyMoving && (now() - activeSince) >= (reqMins * 60000)) {
             isOccupied = true
+            reason = "Motion Duration Reached"
+        } else if (activeSince && !isActuallyMoving) {
+            // Memory trapped a ghost timestamp. Force clear it to DB immediately.
+            def tSince = state.motionActiveSince ? state.motionActiveSince.clone() : [:]
+            tSince.remove(zKey)
+            state.motionActiveSince = tSince
         }
     }
 
     // D. Motion Hit Count
-    if (!isOccupied && onTriggers.contains("Motion Hit Count") && mDevs) {
+    else if (!isOccupied && onTriggers.contains("Motion Hit Count") && mDevs) {
         def reqHits = settings["z${roomId}MotionActivationHits"] ?: 1
-        def hitCount = state.motionHitCount["z${roomId}"] ?: 0
+        def hitCount = state.motionHitCount ? (state.motionHitCount[zKey] ?: 0) : 0
         if (hitCount >= reqHits) {
             isOccupied = true
+            reason = "Motion Count Reached"
         }
     }
 
     // E. Vibration Hit Count
-    if (!isOccupied && onTriggers.contains("Vibration") && vDevs) {
+    else if (!isOccupied && onTriggers.contains("Vibration") && vDevs) {
         def reqHits = settings["z${roomId}VibeActivationHits"] ?: 1
-        def hitCount = state.vibeHitCount["z${roomId}"] ?: 0
+        def hitCount = state.vibeHitCount ? (state.vibeHitCount[zKey] ?: 0) : 0
         if (hitCount >= reqHits) {
             isOccupied = true
+            reason = "Vibration Detected"
         }
     }
 
     // --- EVALUATE TURN OFF/MAINTAIN CONDITIONS ---
     if (wasAlreadyOccupied && !isOccupied) {
         def holdOccupied = false
+        def holdReason = ""
         
         if (offTriggers.contains("Motion/Vibe Timeout")) {
             def mTimeoutMs = (settings["z${roomId}Timeout"] ?: 15) * 60000
             def vTimeoutMs = (settings["z${roomId}VibeTimeout"] ?: 5) * 60000
-            def mLastActive = state.zoneLastActive["z${roomId}"] ?: 0
-            def vLastActive = state.vibeLastActive["z${roomId}"] ?: 0
+            def mLastActive = state.zoneLastActive ? (state.zoneLastActive[zKey] ?: 0) : 0
+            def vLastActive = state.vibeLastActive ? (state.vibeLastActive[zKey] ?: 0) : 0
             
-            if (mDevs && (mDevs.any { it.currentValue("motion") == "active" } || (mLastActive && (now() - mLastActive) < mTimeoutMs))) holdOccupied = true
-            if (vDevs && (vDevs.any { it.currentValue("acceleration") == "active" } || (vLastActive && (now() - vLastActive) < vTimeoutMs))) holdOccupied = true
+            if (mDevs && (mDevs.any { it.currentValue("motion") == "active" } || (mLastActive && (now() - mLastActive) < mTimeoutMs))) {
+                holdOccupied = true
+                holdReason = "Motion Timer Active"
+            }
+            if (!holdOccupied && vDevs && (vDevs.any { it.currentValue("acceleration") == "active" } || (vLastActive && (now() - vLastActive) < vTimeoutMs))) {
+                holdOccupied = true
+                holdReason = "Vibration Timer Active"
+            }
         }
         
-        if (offTriggers.contains("Virtual Switch OFF")) {
+        if (!holdOccupied && offTriggers.contains("Virtual Switch OFF")) {
             if (oSwitch && oSwitch.currentValue("switch") == "on") {
                 holdOccupied = true
+                holdReason = "Virtual Switch Active"
             }
         }
         
         if (holdOccupied) {
             isOccupied = true
+            reason = holdReason
+        } else {
+            reason = "All Conditions Cleared"
         }
     }
+    
+    // Force DB update of reason map
+    def tReasons = state.roomReasons ? state.roomReasons.clone() : [:]
+    tReasons[zKey] = reason
+    state.roomReasons = tReasons
     
     return isOccupied
 }
@@ -671,12 +781,12 @@ def getRoomRestrictionReason(roomId) {
     }
     
     if (restrictedModes && (restrictedModes as List).contains(currentMode)) {
-        return "Global Mode"
+        return "Global Restricted Mode"
     }
     
     def roomModes = settings["z${roomId}OperatingModes"]
     if (roomModes && !(roomModes as List).contains(currentMode)) {
-        return "Room Mode"
+        return "Room Restricted Mode"
     }
     
     def activeDays = settings["z${roomId}ActiveDays"]
@@ -684,7 +794,7 @@ def getRoomRestrictionReason(roomId) {
         def df = new java.text.SimpleDateFormat("EEEE")
         df.setTimeZone(location.timeZone)
         def day = df.format(new Date())
-        if (!activeDays.contains(day)) return "Day"
+        if (!activeDays.contains(day)) return "Restricted Day"
     }
     
     def startTime = settings["z${roomId}StartTime"]
@@ -700,7 +810,7 @@ def getRoomRestrictionReason(roomId) {
         } else {
             isTimeActive = (currTime >= start || currTime <= end)
         }
-        if (!isTimeActive) return "Time"
+        if (!isTimeActive) return "Restricted Time"
     }
     
     return null
@@ -709,24 +819,39 @@ def getRoomRestrictionReason(roomId) {
 def evaluateRooms(boolean forceSync = false) {
     if (appEnableSwitch && appEnableSwitch.currentValue("switch") == "off") return
     
-    if (!state.shutdownDelayActive) state.shutdownDelayActive = []
-    if (!state.currentRoomStates) state.currentRoomStates = [:]
+    // Setup Clones to guarantee Database Updates
+    def tMotionSince = state.motionActiveSince ? state.motionActiveSince.clone() : [:]
+    def tZoneLast = state.zoneLastActive ? state.zoneLastActive.clone() : [:]
+    def tVibeLast = state.vibeLastActive ? state.vibeLastActive.clone() : [:]
+    def tMotionHit = state.motionHitCount ? state.motionHitCount.clone() : [:]
+    def tVibeHit = state.vibeHitCount ? state.vibeHitCount.clone() : [:]
+    def tStates = state.currentRoomStates ? state.currentRoomStates.clone() : [:]
+    def tReasons = state.roomReasons ? state.roomReasons.clone() : [:]
 
     for (int i = 1; i <= 12; i++) {
         if (settings["enableZ${i}"]) {
+            def zKey = "z${i}".toString()
             def zName = settings["z${i}Name"] ?: "Room ${i}"
+            def mDevs = settings["z${i}Motion"]
+            
+            // Failsafe Sweeper
+            if (mDevs && !mDevs.any { it.currentValue("motion") == "active" }) {
+                if (tMotionSince[zKey]) tMotionSince.remove(zKey)
+            }
+            
             def restriction = getRoomRestrictionReason(i)
             
             if (restriction) {
                 stopSavingsTimer(i)
-                state.currentRoomStates["z${i}"] = "restricted"
+                tStates[zKey] = "restricted"
+                tReasons[zKey] = restriction
                 
                 // Deep-Clean Reset on Restricted Mode
-                state.motionHitCount["z${i}"] = 0
-                state.vibeHitCount["z${i}"] = 0
-                if (state.zoneLastActive) state.zoneLastActive.remove("z${i}")
-                if (state.vibeLastActive) state.vibeLastActive.remove("z${i}")
-                if (state.motionActiveSince) state.motionActiveSince.remove("z${i}")
+                tMotionHit[zKey] = 0
+                tVibeHit[zKey] = 0
+                tZoneLast.remove(zKey)
+                tVibeLast.remove(zKey)
+                tMotionSince.remove(zKey)
                 
                 unschedule("evalR${i}")
                 unschedule("resetMotionZ${i}")
@@ -740,26 +865,107 @@ def evaluateRooms(boolean forceSync = false) {
                 continue
             }
 
+            // Sync clones to state so getRoomOccupancyState sees fresh data
+            state.motionActiveSince = tMotionSince
+            state.zoneLastActive = tZoneLast
+            state.vibeLastActive = tVibeLast
+            state.motionHitCount = tMotionHit
+            state.vibeHitCount = tVibeHit
+
             def isOccupied = getRoomOccupancyState(i)
-            def currentState = state.currentRoomStates["z${i}"]
+            def currentState = tStates[zKey]
             def targetState = isOccupied ? "occupied" : "empty"
             
             if (currentState != targetState || forceSync) {
-                state.currentRoomStates["z${i}"] = targetState
+                tStates[zKey] = targetState
                 
                 if (targetState == "occupied") {
-                    if (!forceSync) logAction("${zName} is now OCCUPIED. Powering ON devices.")
-                    state.shutdownDelayActive.remove((Object)i) 
+                    if (!forceSync) logAction("${zName} is now OCCUPIED (${state.roomReasons[zKey]}). Powering ON devices.")
+                    state.shutdownDelayActive?.remove((Object)i) 
                     turnRoomDevicesOn(i)
                     stopSavingsTimer(i)
                 } else {
-                    if (!forceSync) logAction("${zName} is now EMPTY. Initiating shutdown sequence.")
+                    if (!forceSync) logAction("${zName} is now EMPTY (${state.roomReasons[zKey]}). Initiating shutdown sequence.")
                     initiateRoomShutdown(i)
                 }
             }
         }
     }
+    
+    // Final Database Commit
+    state.currentRoomStates = tStates
+    state.roomReasons = state.roomReasons // Just forcing dirty flag
 }
+
+// === MANUAL SYSTEM OVERRIDES ===
+
+def forceAllRoomsOccupied() {
+    logAction("MANUAL OVERRIDE: Forcing ALL rooms to OCCUPIED.")
+    def tStates = state.currentRoomStates ? state.currentRoomStates.clone() : [:]
+    def tReasons = state.roomReasons ? state.roomReasons.clone() : [:]
+    
+    for (int i = 1; i <= 12; i++) {
+        if (settings["enableZ${i}"]) {
+            def zKey = "z${i}".toString()
+            tStates[zKey] = "occupied"
+            tReasons[zKey] = "Global Force Occupied"
+            state.shutdownDelayActive?.remove((Object)i)
+            turnRoomDevicesOn(i)
+            stopSavingsTimer(i)
+        }
+    }
+    
+    state.currentRoomStates = tStates
+    state.roomReasons = tReasons
+}
+
+def forceAllRoomsEmpty() {
+    logAction("MANUAL OVERRIDE: Forcing ALL rooms to EMPTY.")
+    def tStates = state.currentRoomStates ? state.currentRoomStates.clone() : [:]
+    def tReasons = state.roomReasons ? state.roomReasons.clone() : [:]
+    def tMotionHit = state.motionHitCount ? state.motionHitCount.clone() : [:]
+    def tVibeHit = state.vibeHitCount ? state.vibeHitCount.clone() : [:]
+    def tZoneLast = state.zoneLastActive ? state.zoneLastActive.clone() : [:]
+    def tVibeLast = state.vibeLastActive ? state.vibeLastActive.clone() : [:]
+    def tMotionSince = state.motionActiveSince ? state.motionActiveSince.clone() : [:]
+    
+    for (int i = 1; i <= 12; i++) {
+        if (settings["enableZ${i}"]) {
+            def zKey = "z${i}".toString()
+            tStates[zKey] = "empty"
+            tReasons[zKey] = "Global Force Empty"
+            
+            // Deep purge of triggers so the room doesn't instantly snap back on
+            tMotionHit[zKey] = 0
+            tVibeHit[zKey] = 0
+            tZoneLast.remove(zKey)
+            tVibeLast.remove(zKey)
+            tMotionSince.remove(zKey)
+            
+            def oSwitch = settings["z${i}OverrideSwitch"]
+            if (oSwitch && oSwitch.currentValue("switch") == "on") {
+                oSwitch.off() 
+            }
+            
+            unschedule("evalR${i}")
+            unschedule("resetMotionZ${i}")
+            unschedule("resetVibeZ${i}")
+            
+            initiateRoomShutdown(i)
+        }
+    }
+    
+    // Force absolute commit to Database
+    state.currentRoomStates = tStates
+    state.roomReasons = tReasons
+    state.motionHitCount = tMotionHit
+    state.vibeHitCount = tVibeHit
+    state.zoneLastActive = tZoneLast
+    state.vibeLastActive = tVibeLast
+    state.motionActiveSince = tMotionSince
+}
+
+// ===================================
 
 def turnRoomDevicesOn(roomId) {
     def hardDevs = settings["z${roomId}Switches"]
@@ -777,7 +983,8 @@ def turnRoomDevicesOn(roomId) {
 
 def executeSoftBoot(data) {
     def roomId = data.room
-    if (state.currentRoomStates["z${roomId}"] == "occupied") {
+    def zKey = "z${roomId}".toString()
+    if (state.currentRoomStates && state.currentRoomStates[zKey] == "occupied") {
         def softDevs = settings["z${roomId}SoftKillDevices"]
         softDevs?.each { dev -> 
             if (dev.currentValue("switch") != "on") dev.on() 
@@ -816,14 +1023,15 @@ def initiateRoomShutdown(roomId) {
 
 def executeHardKill(data) {
     def roomId = data.room
+    def zKey = "z${roomId}".toString()
     
-    if (state.currentRoomStates["z${roomId}"] != "empty") {
+    if (state.currentRoomStates && state.currentRoomStates[zKey] != "empty") {
         logAction("Hard kill aborted. Room ${roomId} became occupied during the shutdown delay.")
-        state.shutdownDelayActive.remove((Object)roomId)
+        state.shutdownDelayActive?.remove((Object)roomId)
         return
     }
 
-    state.shutdownDelayActive.remove((Object)roomId)
+    state.shutdownDelayActive?.remove((Object)roomId)
     
     def hardDevs = settings["z${roomId}Switches"]
     if (hardDevs) {
@@ -840,32 +1048,39 @@ def executeHardKill(data) {
 
 // === ROI SAVINGS TRACKING ===
 def startSavingsTimer(roomId) {
-    if (!state.roomStats) state.roomStats = [:]
-    if (!state.roomStats["z${roomId}"]) state.roomStats["z${roomId}"] = [totalSecondsOff: 0, unoccupiedSince: null]
+    def zKey = "z${roomId}".toString()
+    def tStats = state.roomStats ? state.roomStats.clone() : [:]
+    if (!tStats[zKey]) tStats[zKey] = [totalSecondsOff: 0, unoccupiedSince: null]
     
-    if (state.roomStats["z${roomId}"].unoccupiedSince == null) {
-        state.roomStats["z${roomId}"].unoccupiedSince = now()
+    if (tStats[zKey].unoccupiedSince == null) {
+        tStats[zKey].unoccupiedSince = now()
     }
+    state.roomStats = tStats
 }
 
 def stopSavingsTimer(roomId) {
-    if (state.roomStats && state.roomStats["z${roomId}"] && state.roomStats["z${roomId}"].unoccupiedSince != null) {
-        def since = state.roomStats["z${roomId}"].unoccupiedSince
+    def zKey = "z${roomId}".toString()
+    def tStats = state.roomStats ? state.roomStats.clone() : [:]
+    
+    if (tStats[zKey] && tStats[zKey].unoccupiedSince != null) {
+        def since = tStats[zKey].unoccupiedSince
         def elapsedSecs = ((now() - since) / 1000).toLong()
         
-        state.roomStats["z${roomId}"].totalSecondsOff += elapsedSecs
-        state.roomStats["z${roomId}"].unoccupiedSince = null
+        tStats[zKey].totalSecondsOff += elapsedSecs
+        tStats[zKey].unoccupiedSince = null
     }
+    state.roomStats = tStats
 }
 
 def resetAllSavings() {
     logAction("MANUAL OVERRIDE: Resetting all ROI Savings Data to zero.")
-    if (!state.roomStats) state.roomStats = [:]
-    if (!state.currentRoomStates) state.currentRoomStates = [:]
+    def tStats = state.roomStats ? state.roomStats.clone() : [:]
     
     for (int i = 1; i <= 12; i++) {
-        state.roomStats["z${i}"] = [totalSecondsOff: 0, unoccupiedSince: (state.currentRoomStates["z${i}"] == "empty" ? now() : null)]
+        def zKey = "z${i}".toString()
+        tStats[zKey] = [totalSecondsOff: 0, unoccupiedSince: (state.currentRoomStates && state.currentRoomStates[zKey] == "empty" ? now() : null)]
     }
+    state.roomStats = tStats
 }
 
 def logAction(msg) { 
@@ -879,7 +1094,7 @@ def logAction(msg) {
 def logInfo(msg) { if(txtEnable) log.info "${app.label}: ${msg}" }
 
 // ==============================================================================
-// SCHEDULING WRAPPERS (Prevents cross-room overwriting in Hubitat memory)
+// SCHEDULING WRAPPERS
 // ==============================================================================
 def evalR_All() { evaluateRooms(false) }
 
@@ -896,28 +1111,28 @@ def evalR10() { evaluateRooms(false) }
 def evalR11() { evaluateRooms(false) }
 def evalR12() { evaluateRooms(false) }
 
-def resetMotionZ1() { if (state.motionHitCount) state.motionHitCount["z1"] = 0 }
-def resetMotionZ2() { if (state.motionHitCount) state.motionHitCount["z2"] = 0 }
-def resetMotionZ3() { if (state.motionHitCount) state.motionHitCount["z3"] = 0 }
-def resetMotionZ4() { if (state.motionHitCount) state.motionHitCount["z4"] = 0 }
-def resetMotionZ5() { if (state.motionHitCount) state.motionHitCount["z5"] = 0 }
-def resetMotionZ6() { if (state.motionHitCount) state.motionHitCount["z6"] = 0 }
-def resetMotionZ7() { if (state.motionHitCount) state.motionHitCount["z7"] = 0 }
-def resetMotionZ8() { if (state.motionHitCount) state.motionHitCount["z8"] = 0 }
-def resetMotionZ9() { if (state.motionHitCount) state.motionHitCount["z9"] = 0 }
-def resetMotionZ10() { if (state.motionHitCount) state.motionHitCount["z10"] = 0 }
-def resetMotionZ11() { if (state.motionHitCount) state.motionHitCount["z11"] = 0 }
-def resetMotionZ12() { if (state.motionHitCount) state.motionHitCount["z12"] = 0 }
+def resetMotionZ1() { def t = state.motionHitCount ? state.motionHitCount.clone() : [:]; t["z1"] = 0; state.motionHitCount = t }
+def resetMotionZ2() { def t = state.motionHitCount ? state.motionHitCount.clone() : [:]; t["z2"] = 0; state.motionHitCount = t }
+def resetMotionZ3() { def t = state.motionHitCount ? state.motionHitCount.clone() : [:]; t["z3"] = 0; state.motionHitCount = t }
+def resetMotionZ4() { def t = state.motionHitCount ? state.motionHitCount.clone() : [:]; t["z4"] = 0; state.motionHitCount = t }
+def resetMotionZ5() { def t = state.motionHitCount ? state.motionHitCount.clone() : [:]; t["z5"] = 0; state.motionHitCount = t }
+def resetMotionZ6() { def t = state.motionHitCount ? state.motionHitCount.clone() : [:]; t["z6"] = 0; state.motionHitCount = t }
+def resetMotionZ7() { def t = state.motionHitCount ? state.motionHitCount.clone() : [:]; t["z7"] = 0; state.motionHitCount = t }
+def resetMotionZ8() { def t = state.motionHitCount ? state.motionHitCount.clone() : [:]; t["z8"] = 0; state.motionHitCount = t }
+def resetMotionZ9() { def t = state.motionHitCount ? state.motionHitCount.clone() : [:]; t["z9"] = 0; state.motionHitCount = t }
+def resetMotionZ10() { def t = state.motionHitCount ? state.motionHitCount.clone() : [:]; t["z10"] = 0; state.motionHitCount = t }
+def resetMotionZ11() { def t = state.motionHitCount ? state.motionHitCount.clone() : [:]; t["z11"] = 0; state.motionHitCount = t }
+def resetMotionZ12() { def t = state.motionHitCount ? state.motionHitCount.clone() : [:]; t["z12"] = 0; state.motionHitCount = t }
 
-def resetVibeZ1() { if (state.vibeHitCount) state.vibeHitCount["z1"] = 0 }
-def resetVibeZ2() { if (state.vibeHitCount) state.vibeHitCount["z2"] = 0 }
-def resetVibeZ3() { if (state.vibeHitCount) state.vibeHitCount["z3"] = 0 }
-def resetVibeZ4() { if (state.vibeHitCount) state.vibeHitCount["z4"] = 0 }
-def resetVibeZ5() { if (state.vibeHitCount) state.vibeHitCount["z5"] = 0 }
-def resetVibeZ6() { if (state.vibeHitCount) state.vibeHitCount["z6"] = 0 }
-def resetVibeZ7() { if (state.vibeHitCount) state.vibeHitCount["z7"] = 0 }
-def resetVibeZ8() { if (state.vibeHitCount) state.vibeHitCount["z8"] = 0 }
-def resetVibeZ9() { if (state.vibeHitCount) state.vibeHitCount["z9"] = 0 }
-def resetVibeZ10() { if (state.vibeHitCount) state.vibeHitCount["z10"] = 0 }
-def resetVibeZ11() { if (state.vibeHitCount) state.vibeHitCount["z11"] = 0 }
-def resetVibeZ12() { if (state.vibeHitCount) state.vibeHitCount["z12"] = 0 }
+def resetVibeZ1() { def t = state.vibeHitCount ? state.vibeHitCount.clone() : [:]; t["z1"] = 0; state.vibeHitCount = t }
+def resetVibeZ2() { def t = state.vibeHitCount ? state.vibeHitCount.clone() : [:]; t["z2"] = 0; state.vibeHitCount = t }
+def resetVibeZ3() { def t = state.vibeHitCount ? state.vibeHitCount.clone() : [:]; t["z3"] = 0; state.vibeHitCount = t }
+def resetVibeZ4() { def t = state.vibeHitCount ? state.vibeHitCount.clone() : [:]; t["z4"] = 0; state.vibeHitCount = t }
+def resetVibeZ5() { def t = state.vibeHitCount ? state.vibeHitCount.clone() : [:]; t["z5"] = 0; state.vibeHitCount = t }
+def resetVibeZ6() { def t = state.vibeHitCount ? state.vibeHitCount.clone() : [:]; t["z6"] = 0; state.vibeHitCount = t }
+def resetVibeZ7() { def t = state.vibeHitCount ? state.vibeHitCount.clone() : [:]; t["z7"] = 0; state.vibeHitCount = t }
+def resetVibeZ8() { def t = state.vibeHitCount ? state.vibeHitCount.clone() : [:]; t["z8"] = 0; state.vibeHitCount = t }
+def resetVibeZ9() { def t = state.vibeHitCount ? state.vibeHitCount.clone() : [:]; t["z9"] = 0; state.vibeHitCount = t }
+def resetVibeZ10() { def t = state.vibeHitCount ? state.vibeHitCount.clone() : [:]; t["z10"] = 0; state.vibeHitCount = t }
+def resetVibeZ11() { def t = state.vibeHitCount ? state.vibeHitCount.clone() : [:]; t["z11"] = 0; state.vibeHitCount = t }
+def resetVibeZ12() { def t = state.vibeHitCount ? state.vibeHitCount.clone() : [:]; t["z12"] = 0; state.vibeHitCount = t }
