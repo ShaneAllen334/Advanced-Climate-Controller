@@ -19,10 +19,10 @@ def mainPage() {
     dynamicPage(name: "mainPage", title: "<b>Advanced Room Good Night</b>", install: true, uninstall: true) {
         
         section("<b>Global Sync & Override Status</b>") {
-            paragraph "<div style='font-size:13px; color:#555;'><b>House Sleep Status:</b> Live indicator of active blocking devices and lead room countdowns.</div>"
+            paragraph "<div style='font-size:12px; color:#555;'><b>House Sleep Status:</b> Live indicator of active blocking devices and lead room countdowns.</div>"
             
             if (settings.enableGlobalMode) {
-                def syncHtml = "<div style='background-color:#fdfdfd; border: 1px solid #ccc; border-radius: 5px; padding: 10px; margin-bottom: 10px; font-size:13px;'>"
+                def syncHtml = "<div style='background-color:#fdfdfd; border: 1px solid #ccc; border-radius: 5px; padding: 6px; margin-bottom: 6px; font-size:12px;'>"
                 
                 // Check blocking devices
                 def activeBlockers = []
@@ -35,24 +35,24 @@ def mainPage() {
                 }
                 
                 if (activeBlockers.size() > 0) {
-                    syncHtml += "<div style='color:#d9534f; font-weight:bold; margin-bottom:5px;'>⚠️ Night Mode Blocked By:</div>"
-                    syncHtml += "<ul style='margin-top:0; padding-left:20px; color:#d9534f; margin-bottom:8px;'>"
+                    syncHtml += "<div style='color:#d9534f; font-weight:bold; margin-bottom:2px;'>⚠️ Night Mode Blocked By:</div>"
+                    syncHtml += "<ul style='margin-top:0; padding-left:20px; color:#d9534f; margin-bottom:4px;'>"
                     activeBlockers.each { syncHtml += "<li>${it}</li>" }
                     syncHtml += "</ul>"
                 } else {
-                    syncHtml += "<div style='color:#28a745; font-weight:bold; margin-bottom:8px;'>✅ No Blocking Devices Active</div>"
+                    syncHtml += "<div style='color:#28a745; font-weight:bold; margin-bottom:4px;'>✅ No Blocking Devices Active</div>"
                 }
                 
                 // Check Lead Room Countdown
                 if (settings.enableLeadRoomOverride && state.overrideScheduledTime) {
                     def timeLeft = Math.round((state.overrideScheduledTime - now()) / 60000.0)
                     if (timeLeft > 0) {
-                        syncHtml += "<div style='color:#f39c12; font-weight:bold; border-top: 1px solid #eee; padding-top:8px;'>⏳ Lead Room Timer Active: ~${timeLeft} min(s) until forced Good Night evaluation.</div>"
+                        syncHtml += "<div style='color:#f39c12; font-weight:bold; border-top: 1px solid #eee; padding-top:4px;'>⏳ Lead Room Timer Active: ~${timeLeft} min(s) until forced Good Night evaluation.</div>"
                     } else {
-                        syncHtml += "<div style='color:#f39c12; font-weight:bold; border-top: 1px solid #eee; padding-top:8px;'>⏳ Lead Room Timer: Evaluation Pending...</div>"
+                        syncHtml += "<div style='color:#f39c12; font-weight:bold; border-top: 1px solid #eee; padding-top:4px;'>⏳ Lead Room Timer: Evaluation Pending...</div>"
                     }
                 } else if (settings.enableLeadRoomOverride) {
-                    syncHtml += "<div style='color:#6c757d; border-top: 1px solid #eee; padding-top:8px;'>⏳ Lead Room Timer: Not Active</div>"
+                    syncHtml += "<div style='color:#6c757d; border-top: 1px solid #eee; padding-top:4px;'>⏳ Lead Room Timer: Not Active</div>"
                 }
                 
                 syncHtml += "</div>"
@@ -122,38 +122,38 @@ def mainPage() {
                     def histList = state."sleepHistory${i}" ?: []
                     def histHtml = ""
                     if (histList.size() > 0) {
-                        histHtml = "<table style='width:100%; font-size:12px; border-collapse:collapse; margin-top:2px;'>"
-                        histHtml += "<tr style='background-color:#f4f4f4; border-bottom:1px solid #ddd;'><th style='text-align:left; padding:3px;'>Date</th><th style='text-align:left; padding:3px;'>Duration</th></tr>"
+                        histHtml = "<table style='width:100%; font-size: 11px; border-collapse: collapse; border: 1px solid #ccc; margin-top:2px;'>"
+                        histHtml += "<tr style='background-color: #eee; border-bottom: 1px solid #ccc; text-align: left;'><th style='padding: 2px 4px;'>Date</th><th style='padding: 2px 4px;'>Duration</th></tr>"
                         histList.each { entry ->
-                            histHtml += "<tr style='border-bottom:1px solid #eee;'><td style='padding:3px;'>${entry.date}</td><td style='padding:3px;'>${entry.duration}</td></tr>"
+                            histHtml += "<tr style='border-bottom: 1px solid #eee;'><td style='padding: 2px 4px;'>${entry.date}</td><td style='padding: 2px 4px;'><b>${entry.duration}</b></td></tr>"
                         }
                         histHtml += "</table>"
                     } else {
-                        histHtml = "<div style='font-size:12px; color:#888;'><i>No history recorded yet.</i></div>"
+                        histHtml = "<div style='font-size:11px; color:#888;'><i>No history recorded yet.</i></div>"
                     }
 
                     // --- COMBINED HTML CARD ---
                     def dashHTML = """
-                    <div style='background-color:#fdfdfd; border: 1px solid #ccc; border-radius: 5px; padding: 10px; margin-bottom: 10px;'>
-                        <div style='font-size:15px; font-weight:bold; border-bottom: 2px solid #007bff; margin-bottom:8px; padding-bottom:3px;'>
+                    <div style='background-color:#fdfdfd; border: 1px solid #ccc; border-radius: 5px; padding: 6px; margin-bottom: 6px;'>
+                        <div style='font-size:14px; font-weight:bold; border-bottom: 2px solid #007bff; margin-bottom:4px; padding-bottom:2px;'>
                             ${rName} - ${isAsleep ? '🌙 ASLEEP' : '☀️ AWAKE'}
                         </div>
                         
-                        <table style='width:100%; font-size:13px; margin-bottom:8px; border-collapse:collapse;'>
-                            <tr style='background-color:#f0f0f0;'><th colspan='2' style='text-align:left; padding:4px; border-radius:3px;'>Live Environment</th></tr>
-                            <tr><td style='width:40%; padding-top:4px;'><b>Current Temp:</b></td><td style='padding-top:4px;'>${cTemp != null ? cTemp + '°F' : '--'}</td></tr>
-                            <tr><td><b>Humidity:</b></td><td>${cHum != null ? cHum + '%' : '--'}</td></tr>
-                            <tr><td><b>Environment:</b></td><td>${sleepQuality}</td></tr>
-                            <tr><td style='padding-bottom:4px;'><b>Tonight's Audio:</b></td><td style='padding-bottom:4px;'><span style='font-size:11px; font-family:monospace; word-break:break-all;'>${tonightTrack}</span></td></tr>
+                        <table style='width:100%; border-collapse: collapse; font-size: 11px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc; margin-bottom:6px; line-height: 1.2;'>
+                            <tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th colspan='2' style='padding: 3px 4px;'>Live Environment</th></tr>
+                            <tr style='border-bottom: 1px solid #ddd;'><td style='width:35%; padding: 2px 4px; white-space: nowrap;'><b>Current Temp:</b></td><td style='padding: 2px 4px;'>${cTemp != null ? cTemp + '°F' : '--'}</td></tr>
+                            <tr style='border-bottom: 1px solid #ddd;'><td style='padding: 2px 4px; white-space: nowrap;'><b>Humidity:</b></td><td style='padding: 2px 4px;'>${cHum != null ? cHum + '%' : '--'}</td></tr>
+                            <tr style='border-bottom: 1px solid #ddd;'><td style='padding: 2px 4px; white-space: nowrap;'><b>Environment:</b></td><td style='padding: 2px 4px;'>${sleepQuality}</td></tr>
+                            <tr style='border-bottom: 1px solid #ddd;'><td style='padding: 2px 4px; white-space: nowrap;'><b>Tonight's Audio:</b></td><td style='padding: 2px 4px;'><span style='font-size:10px; font-family:monospace; word-break:break-all;'>${tonightTrack}</span></td></tr>
                             
-                            <tr style='background-color:#f0f0f0;'><th colspan='2' style='text-align:left; padding:4px; border-radius:3px;'>Expected States</th></tr>
-                            <tr><td style='padding-top:4px;'><b>Ceiling Fan:</b></td><td style='padding-top:4px;'>${expCeiling}</td></tr>
-                            <tr><td><b>Standard Fans:</b></td><td>${expStdFan}</td></tr>
-                            <tr><td><b>Lights/Shades:</b></td><td>${expLights}</td></tr>
-                            <tr><td style='padding-bottom:4px;'><b>Audio Track:</b></td><td style='padding-bottom:4px;'>${expAudio}</td></tr>
+                            <tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th colspan='2' style='padding: 3px 4px;'>Expected States</th></tr>
+                            <tr style='border-bottom: 1px solid #ddd;'><td style='padding: 2px 4px; white-space: nowrap;'><b>Ceiling Fan:</b></td><td style='padding: 2px 4px;'>${expCeiling}</td></tr>
+                            <tr style='border-bottom: 1px solid #ddd;'><td style='padding: 2px 4px; white-space: nowrap;'><b>Standard Fans:</b></td><td style='padding: 2px 4px;'>${expStdFan}</td></tr>
+                            <tr style='border-bottom: 1px solid #ddd;'><td style='padding: 2px 4px; white-space: nowrap;'><b>Lights/Shades:</b></td><td style='padding: 2px 4px;'>${expLights}</td></tr>
+                            <tr style='border-bottom: 1px solid #ddd;'><td style='padding: 2px 4px; white-space: nowrap;'><b>Audio Track:</b></td><td style='padding: 2px 4px;'>${expAudio}</td></tr>
                         </table>
                         
-                        <div style='font-weight:bold; font-size:13px; border-bottom:1px solid #eee; margin-bottom:4px;'>7-Day Sleep History:</div>
+                        <div style='font-weight:bold; font-size:12px; border-bottom:1px solid #eee; margin-bottom:2px;'>7-Day Sleep History:</div>
                         ${histHtml}
                     </div>
                     """
@@ -166,9 +166,9 @@ def mainPage() {
         section("<b>Command History (Last 20)</b>") {
             def logList = state.eventLog ?: []
             if (logList.size() > 0) {
-                def logHtml = "<div style='background-color:#fdfdfd; color:#333; border: 1px solid #ccc; padding:10px; border-radius:5px; font-family:monospace; font-size:11px; overflow-y:auto; max-height:300px;'>"
+                def logHtml = "<div style='background-color:#fdfdfd; color:#333; border: 1px solid #ccc; padding:6px; border-radius:5px; font-family:monospace; font-size:11px; overflow-y:auto; max-height:200px; line-height:1.2;'>"
                 logList.each { entry ->
-                    logHtml += "${entry}<br><div style='border-bottom:1px solid #eee; margin:4px 0;'></div>"
+                    logHtml += "${entry}<br><div style='border-bottom:1px solid #eee; margin:2px 0;'></div>"
                 }
                 logHtml += "</div>"
                 paragraph logHtml
@@ -408,11 +408,15 @@ def periodicEnforcementHandler() {
                 def rName = settings["roomName${i}"] ?: "Room ${i}"
                 
                 if (sw && sw.currentValue("switch") == "on") {
-                    // Enforce Lights OFF
+                    // Enforce Lights OFF with Flashbang Fix
                     def lights = settings["roomLights${i}"]
                     if (lights) {
                         lights.each { lgt -> 
                             if (lgt.currentValue("switch") == "on") {
+                                if (lgt.hasCommand("setLevel")) {
+                                    lgt.setLevel(1)
+                                    pauseExecution(400)
+                                }
                                 lgt.off()
                                 logInfo("ENFORCEMENT: ${rName} is asleep but light [${lgt.displayName}] was ON. Forced OFF.")
                             }
@@ -731,12 +735,22 @@ def executeRoomGoodNight(roomNum) {
     unschedule("fanPowerOffRoom${roomNum}")
 
     def lights = settings["roomLights${roomNum}"]
-    if (lights) { lights.off(); logInfo("${rName}: Lights turned OFF.") }
+    if (lights) { 
+        lights.each { lgt ->
+            if (lgt.hasCommand("setLevel")) {
+                lgt.setLevel(1)
+                pauseExecution(400)
+            }
+            lgt.off()
+        }
+        logInfo("${rName}: Lights turned OFF (w/ 1% flashbang protection if applicable).") 
+    }
     
     def shadeContact = settings["shadeContact${roomNum}"]
     def shade = settings["roomShade${roomNum}"]
     if (shadeContact && shade && shadeContact.currentValue("contact") == "open") {
-        shade.close(); logInfo("${rName}: Shade contact is open. Closing shade.")
+        shade.close();
+        logInfo("${rName}: Shade contact is open. Closing shade.")
     }
     
     def speaker = settings["roomSpeaker${roomNum}"]
