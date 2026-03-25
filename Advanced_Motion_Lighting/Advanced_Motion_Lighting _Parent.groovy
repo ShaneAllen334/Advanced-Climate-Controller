@@ -67,6 +67,12 @@ def mainPage() {
             input "masterEnableSwitch", "capability.switch", title: "Master Disable Switch", required: false, description: "Turn ON to pause all motion lighting globally."
         }
         
+        // NEW SECTION ADDED HERE
+        section("Global Color Temperature") {
+            paragraph "Tie a global Hub Variable here. When it changes, all active Color/CT zones will instantly update to the new color."
+            input "globalCTVar", "string", title: "Global CT Hub Variable Name (Exact text)", required: false
+        }
+        
         section("Arrival Lighting Strategy") {
             paragraph "Triggers a staggered turn-on of selected child zones when arriving. Reverts to standard motion logic after the set duration."
             input "arrivalMode", "mode", title: "Trigger Mode (e.g., Arrival/Home)", multiple: false, required: false
@@ -113,6 +119,31 @@ def initialize() {
     }
     if (arrivalShadesSensor) {
         subscribe(arrivalShadesSensor, "contact", shadesContactHandler)
+    }
+    // NEW: Subscribe to Global CT Variable
+    if (globalCTVar) {
+        subscribe(location, "variable.${globalCTVar}", globalCTHandler)
+    }
+}
+
+// --- GLOBAL CT LOGIC ---
+def globalCTHandler(evt) {
+    try {
+        // Safely parse the variable change to an Integer
+        def newCT = Math.round(evt.value.toFloat()).toInteger()
+        log.info "ADVANCED MOTION LIGHTING: Global CT Variable changed to ${newCT}K. Pushing to active zones."
+        
+        def children = getChildApps()
+        children.each { child ->
+            try {
+                // Push the update to each child app
+                child.dynamicCTUpdate(newCT)
+            } catch (e) {
+                log.debug "Skipping ${child.label}: Zone does not support dynamic CT updates or needs a code update."
+            }
+        }
+    } catch (ex) {
+        log.error "Failed to parse Global CT Variable update: ${ex.message}"
     }
 }
 
