@@ -31,10 +31,9 @@ def mainPage() {
                 
                 children.each { child ->
                     try {
-                        // Directly call the method. The try/catch will handle older child apps safely.
                         def z = child.getZoneStatus()
                         if (z) {
-                            def lightColor = z.light.startsWith("ON") ? "green" : "grey"
+                            def lightColor = z.light == "ON" ? "green" : "grey"
                             def motionColor = z.motion == "ACTIVE" ? "blue" : (z.motion == "KEEP-ALIVE" ? "#00aadd" : "grey")
                             def rowBg = (renderedCount % 2 == 0) ? "#ffffff" : "#f9f9f9"
                             
@@ -49,7 +48,6 @@ def mainPage() {
                             renderedCount++
                         }
                     } catch (e) {
-                        // If the child hasn't been updated yet, it throws a missing method exception here. We safely ignore it.
                         log.debug "Skipping dashboard render for ${child.label} (Likely needs code update or initialization)"
                     }
                 }
@@ -82,6 +80,9 @@ def mainPage() {
         section("System Maintenance & Recovery") {
             paragraph "If lights are stuck ON due to missed events from older app versions or sensor mesh delays, use this to force every inactive room to turn off."
             input "btnGlobalSweep", "button", title: "Execute Global Sweep Now"
+            
+            paragraph "Clear any rooms currently locked ON due to a human physically turning on the switch."
+            input "btnClearOverrides", "button", title: "Clear All Manual Overrides"
         }
         
         section("Lighting Rules") {
@@ -184,7 +185,7 @@ def revertArrivalLights() {
     }
 }
 
-// --- SWEEP LOGIC ---
+// --- BUTTON/SWEEP LOGIC ---
 
 def appButtonHandler(btn) {
     if (btn == "btnGlobalSweep") {
@@ -203,5 +204,21 @@ def appButtonHandler(btn) {
             }
         }
         log.info "ADVANCED MOTION LIGHTING: Global Sweep command successfully sent to ${sweptCount} lighting rules."
+        
+    } else if (btn == "btnClearOverrides") {
+        log.info "ADVANCED MOTION LIGHTING: Clear Manual Overrides triggered by user."
+        def children = getChildApps()
+        def clearedCount = 0
+        
+        children.each { child ->
+            try {
+                if (child.clearManualOverride()) {
+                    clearedCount++
+                }
+            } catch (e) {
+                log.error "Failed to clear override for child app ${child.label}: ${e.message}"
+            }
+        }
+        log.info "ADVANCED MOTION LIGHTING: Manual overrides cleared on ${clearedCount} active zones."
     }
 }
