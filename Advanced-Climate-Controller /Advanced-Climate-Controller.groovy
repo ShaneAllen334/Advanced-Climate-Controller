@@ -775,7 +775,6 @@ def evaluateSystem() {
                 // but the house average is already at or below the base target, cancel the shift.
                 def coolSnapped = false
                 if (calcCool < baseCool && currentAvg <= baseCool) {
-                    calcCool = baseCool
                     coolSnapped = true
                 }
                 
@@ -783,14 +782,17 @@ def evaluateSystem() {
                 // but the house average is already at or above the base target, cancel the shift.
                 def heatSnapped = false
                 if (calcHeat > baseHeat && currentAvg >= baseHeat) {
-                    calcHeat = baseHeat
                     heatSnapped = true
                 }
                 
-                if (coolSnapped && heatSnapped) syncMessage = " [Alignment Satisfied: Snapped to Base]"
-                else if (coolSnapped) syncMessage = " [Alignment Satisfied: Cooling Snapped to Base]"
-                else if (heatSnapped) syncMessage = " [Alignment Satisfied: Heating Snapped to Base]"
-                else syncMessage = " [Alignment Active: Shifted by ${String.format('%.1f', -offset)}°]"
+                // Tie them together: If either side is satisfied and idling, snap BOTH back to baseline
+                if (coolSnapped || heatSnapped) {
+                    calcCool = baseCool
+                    calcHeat = baseHeat
+                    syncMessage = " [Alignment Satisfied: System Idle, Snapped to Base]"
+                } else {
+                    syncMessage = " [Alignment Active: Shifted by ${String.format('%.1f', -offset)}°]"
+                }
                 
                 targetCool = calcCool
                 targetHeat = calcHeat
