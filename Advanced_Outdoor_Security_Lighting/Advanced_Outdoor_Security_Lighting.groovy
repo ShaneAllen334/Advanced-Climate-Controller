@@ -85,9 +85,15 @@ def mainPage() {
         
         def zoneCount = settings["numZones"] ?: 1
         if (zoneCount > 0 && zoneCount <= 10) {
+            
+            section("<b>Lighting Zone Configurations</b>") {
+                paragraph "<div style='font-size:13px; color:#555;'>Click on a zone below to expand its configuration settings.</div>"
+            }
+            
             for (int i = 1; i <= (zoneCount as Integer); i++) {
                 def zName = settings["zoneName_${i}"] ?: "Zone ${i}"
-                section("=== ${zName} Configuration ===") {
+                
+                section("<b>⚙️ ${zName} Configuration</b>", hideable: true, hidden: true) {
                     input "zoneName_${i}", "text", title: "Custom Zone Name", required: false, defaultValue: "Zone ${i}", submitOnChange: true
                     input "zoneLights_${i}", "capability.switch", title: "Select Lights for this Zone", multiple: true, required: true
                     
