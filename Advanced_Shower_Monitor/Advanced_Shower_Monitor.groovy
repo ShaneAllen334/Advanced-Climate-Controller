@@ -91,8 +91,13 @@ def mainPage() {
         
         def count = settings["numShowers"] ?: 1
         for (int i = 1; i <= count; i++) {
-            section("Shower ${i} Setup") {
-                input "showerName_${i}", "text", title: "Custom Name", required: false, defaultValue: "Shower ${i}"
+            // Dynamically pull the custom shower name, or default to "Shower X"
+            def sName = settings["showerName_${i}"] ?: "Shower ${i}"
+            
+            // Added hideable and hidden parameters, and dynamic title
+            section("<b>${sName} Setup</b>", hideable: true, hidden: true) {
+                // Added submitOnChange: true so the section title updates immediately
+                input "showerName_${i}", "text", title: "Custom Name", required: false, defaultValue: "Shower ${i}", submitOnChange: true
                 input "motion_${i}", "capability.motionSensor", title: "Shower Motion Sensor", required: false
                 input "light_${i}", "capability.switch", title: "Bathroom Light to Flash", required: false
                 
