@@ -34,7 +34,7 @@ def mainPage() {
                 statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>Mail Delivery</b></td><td style='padding: 8px; color: green;'>${tDelivery}</td><td style='padding: 8px;'>${avgDel}</td></tr>"
                 statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>Mail Retrieval</b></td><td style='padding: 8px; color: blue;'>${tRetrieval}</td><td style='padding: 8px;'>${avgRet}</td></tr>"
                 statusText += "</table>"
-                
+ 
                 // Sensor Status & Battery Tracking Table
                 def batteryHtml = "<table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc; margin-top: 10px;'>"
                 batteryHtml += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Mailbox Sensor</th><th style='padding: 8px;'>Current State</th><th style='padding: 8px;'>Battery Health</th></tr>"
@@ -54,7 +54,7 @@ def mainPage() {
                 }
                 batteryHtml += "</table>"
                 statusText += batteryHtml
-                
+       
                 if (tempSensor) {
                     def currentTemp = tempSensor.currentValue("temperature") ?: "--"
                     statusText += "<div style='margin-top: 10px; padding: 10px; background: #fff3e0; border: 1px solid #ffcc80; border-radius: 4px; font-size: 13px; color: #e65100;'><b>Mailbox Internal Temperature:</b> ${currentTemp}°</div>"
@@ -70,11 +70,15 @@ def mainPage() {
                 statusText += "</div>"
 
                 paragraph statusText
+                
+                // ADDED: Manual clear button right on the dashboard
+                input "btnClearMail", "button", title: "Manually Clear Mail Status & Lights"
+                
             } else {
                 paragraph "<i>Configure devices below to see live system status.</i>"
             }
         }
-        
+    
         section("Application History (Last 20 Events)") {
             if (state.historyLog && state.historyLog.size() > 0) {
                 def logText = state.historyLog.join("<br>")
@@ -116,7 +120,7 @@ def mainPage() {
             input "sendPushDelivery", "bool", title: "Push on Delivery?", defaultValue: false
             input "sendPushRetrieval", "bool", title: "Push on Retrieval?", defaultValue: false
         }
-        
+       
         section("Security & Nags") {
             input "securityStartTime", "time", title: "Security Start", required: false
             input "securityEndTime", "time", title: "Security End", required: false
@@ -147,6 +151,39 @@ def initialize() {
     }
     schedule("0 0 0 * * ?", "midnightReset")
     if (enableNag && nagTime) schedule(nagTime, "nagHandler")
+}
+
+// ADDED: App Button Handler to process UI buttons
+def appButtonHandler(btn) {
+    if (btn == "btnClearMail") {
+        log.info "Manually clearing mail status..."
+        
+        // Turn off the virtual switch
+        if (mailSwitch) mailSwitch.off()
+        
+        // Force lights off
+        if (indicatorLight) indicatorLight.off()
+        if (inovelliSwitches) {
+            inovelliSwitches.each { device -> 
+                if (device.hasCommand("ledEffectAll")) {
+                    device.ledEffectAll(255, 0, 0, 0) 
+                }
+            }
+        }
+        
+        addToHistory("MANUAL CLEAR: System reset via app dashboard.")
+        
+    } else if (btn == "btnForceReset") {
+        log.info "Resetting historical data..."
+        state.historyLog = []
+        state.avgDeliveryTime = null
+        state.avgRetrievalTime = null
+        state.deliveryCount = 0
+        state.retrievalCount = 0
+        state.todayDeliveryTime = null
+        state.todayRetrievalTime = null
+        addToHistory("SYSTEM WIPE: Historical data reset.")
+    }
 }
 
 def homeActivityHandler(evt) { state.lastHomeActivity = new Date().time }
@@ -180,9 +217,10 @@ def sensorOpenHandler(evt) {
         addToHistory("RETRIEVAL DETECTED.")
         if (retrievalLightAction == "Turn Off") {
             if (indicatorLight) indicatorLight.off()
-            // Stop Inovelli LED Effect: 255 = Stop [cite: 33, 92, 93, 116]
+            // Stop Inovelli LED Effect: 255 = Stop
             if (inovelliSwitches) inovelliSwitches.each { it.ledEffectAll(255, 0, 0, 0) }
         }
+  
         if (sendPushRetrieval) sendMessage("📬 Mail retrieved!")
         if (ttsSpeakers && ttsRetrievalText) ttsSpeakers.speak(ttsRetrievalText)
     } else {
@@ -200,24 +238,53 @@ def sensorOpenHandler(evt) {
 
 def setLightColor(devices, colorName, level) {
     def inovelliHue = 0 
+    def standardHue = 0
+    def standardSat = 100
+    
     switch(colorName) {
-        case "White": inovelliHue = 255; break // White = 255 [cite: 33, 169]
-        case "Red": inovelliHue = 0; break // Red = 0 [cite: 33, 281]
-        case "Green": inovelliHue = 85; break // Green = 85 [cite: 33, 281]
-        case "Blue": inovelliHue = 170; break // Blue = 170 [cite: 33, 281, 316]
-        case "Yellow": inovelliHue = 42; break 
-        case "Orange": inovelliHue = 14; break // Orange = 14 [cite: 281]
-        case "Purple": inovelliHue = 191; break // Violet = 191 [cite: 33, 281]
-        case "Pink": inovelliHue = 234; break // Pink = 234 [cite: 33, 281]
+        case "White": 
+            inovelliHue = 255
+            standardSat = 0 // Drop saturation to 0 for white
+            break 
+        case "Red": 
+            inovelliHue = 0
+            standardHue = 0
+            break 
+        case "Green": 
+            inovelliHue = 85
+            standardHue = 33
+            break 
+        case "Blue": 
+            inovelliHue = 170
+            standardHue = 66
+            break 
+        case "Yellow": 
+            inovelliHue = 42
+            standardHue = 16
+            break 
+        case "Orange": 
+            inovelliHue = 14
+            standardHue = 10
+            break 
+        case "Purple": 
+            inovelliHue = 191
+            standardHue = 75
+            break 
+        case "Pink": 
+            inovelliHue = 234
+            standardHue = 83
+            break 
     }
     
     devices.each { device -> 
-        // Use Inovelli specific ledEffectAll command [cite: 32, 33, 113]
+        // Use Inovelli specific ledEffectAll command
         if (device.hasCommand("ledEffectAll")) {
-            // Effect 1 = Solid, Duration 255 = Indefinite [cite: 33, 93, 113]
+            // Effect 1 = Solid, Duration 255 = Indefinite
             device.ledEffectAll(1, inovelliHue, level as Integer, 255) 
         } else {
-            device.on() // Standard RGB logic placeholder
+            // Standard RGB logic 
+            device.on() 
+            device.setColor([hue: standardHue, saturation: standardSat, level: level as Integer])
         }
     }
 }
