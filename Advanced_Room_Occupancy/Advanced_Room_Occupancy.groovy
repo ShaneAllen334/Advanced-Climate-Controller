@@ -29,7 +29,7 @@ def mainPage() {
             def totalAppSavings = 0.0
 
             def statusText = "<table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc;'>"
-            statusText += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Room</th><th style='padding: 8px;'>Occupancy State</th><th style='padding: 8px;'>Managed Devices</th><th style='padding: 8px;'>Power Profile</th><th style='padding: 8px;'>Est. Savings</th></tr>"
+            statusText += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Room</th><th style='padding: 8px;'>State & Timers</th><th style='padding: 8px;'>Sensors</th><th style='padding: 8px;'>Devices & Power</th><th style='padding: 8px;'>Est. Savings</th></tr>"
 
             for (int i = 1; i <= 12; i++) {
                 if (settings["enableZ${i}"]) {
@@ -43,57 +43,101 @@ def mainPage() {
                     def devs = settings["z${i}Switches"]
                     def softDevs = settings["z${i}SoftKillDevices"]
                     def pMonitor = settings["z${i}PowerMonitor"]
+                    def oSwitch = settings["z${i}OverrideSwitch"]
                     
                     def statusAdditions = []
+                    def sensorDetails = []
                     def maxRemainingMs = 0
+                    def isHardActive = false
 
-                    def isHardActive = (pDevs && pDevs.any{it.currentValue("presence") == "present"}) ||
-                                       (vDevs && vDevs.any{it.currentValue("acceleration") == "active"}) ||
-                                       (mDevs && mDevs.any{it.currentValue("motion") == "active"})
+                    // Check Presence Sensors
+                    if (pDevs) {
+                        pDevs.each { dev ->
+                            def val = dev.currentValue("presence")
+                            def color = val == "present" ? "blue" : "gray"
+                            def fw = val == "present" ? "bold" : "normal"
+                            sensorDetails << "<span style='color:${color}; font-weight:${fw}; font-size:11px;'>👤 ${dev.displayName}: ${val}</span>"
+                            if (val == "present") isHardActive = true
+                        }
+                    }
+
+                    // Check Motion Sensors & Timers
+                    if (mDevs) {
+                        mDevs.each { dev ->
+                            def val = dev.currentValue("motion")
+                            def color = val == "active" ? "blue" : "gray"
+                            def fw = val == "active" ? "bold" : "normal"
+                            sensorDetails << "<span style='color:${color}; font-weight:${fw}; font-size:11px;'>🏃 ${dev.displayName}: ${val}</span>"
+                            if (val == "active") isHardActive = true
+                        }
+
+                        def mTimeout = (settings["z${i}Timeout"] ?: 15) * 60000
+                        def mLast = state.zoneLastActive ? state.zoneLastActive["z${i}"] : null
+                        def mReqHits = settings["z${i}MotionActivationHits"] ?: 1
+                        def mHits = state.motionHitCount ? (state.motionHitCount["z${i}"] ?: 0) : 0
+                        
+                        if (mLast && !mDevs.any{it.currentValue("motion") == "active"}) {
+                            def mLeft = mTimeout - (now() - mLast)
+                            if (mLeft > maxRemainingMs) maxRemainingMs = mLeft
+                        }
+                        
+                        // Hit Counter Window Timer
+                        if (mReqHits > 1 && !isOccupied && mHits > 0 && mLast) {
+                            def windowMs = (settings["z${i}MotionActivationWindow"] ?: 1) * 60000
+                            def windowLeft = (mLast + windowMs) - now()
+                            if (windowLeft > 0) {
+                                def secsLeft = Math.ceil(windowLeft / 1000).toInteger()
+                                statusAdditions << "<span style='color:purple; font-size:11px;'>Motion Hits: ${mHits}/${mReqHits} (Resets in ${secsLeft}s)</span>"
+                            }
+                        }
+                    }
+
+                    // Check Vibration Sensors & Timers
+                    if (vDevs) {
+                        vDevs.each { dev ->
+                            def val = dev.currentValue("acceleration")
+                            def color = val == "active" ? "blue" : "gray"
+                            def fw = val == "active" ? "bold" : "normal"
+                            sensorDetails << "<span style='color:${color}; font-weight:${fw}; font-size:11px;'>📳 ${dev.displayName}: ${val}</span>"
+                            if (val == "active") isHardActive = true
+                        }
+
+                        def vTimeout = (settings["z${i}VibeTimeout"] ?: 5) * 60000
+                        def vLast = state.vibeLastActive ? state.vibeLastActive["z${i}"] : null
+                        def vReqHits = settings["z${i}VibeActivationHits"] ?: 1
+                        def vHits = state.vibeHitCount ? (state.vibeHitCount["z${i}"] ?: 0) : 0
+
+                        if (vLast && !vDevs.any{it.currentValue("acceleration") == "active"}) {
+                            def vLeft = vTimeout - (now() - vLast)
+                            if (vLeft > maxRemainingMs) maxRemainingMs = vLeft
+                        }
+                        
+                        // Hit Counter Window Timer
+                        if (vReqHits > 1 && !isOccupied && vHits > 0 && vLast) {
+                            def windowMs = (settings["z${i}VibeActivationWindow"] ?: 1) * 60000
+                            def windowLeft = (vLast + windowMs) - now()
+                            if (windowLeft > 0) {
+                                def secsLeft = Math.ceil(windowLeft / 1000).toInteger()
+                                statusAdditions << "<span style='color:purple; font-size:11px;'>Vibe Hits: ${vHits}/${vReqHits} (Resets in ${secsLeft}s)</span>"
+                            }
+                        }
+                    }
+                    
+                    if (oSwitch && oSwitch.currentValue("switch") == "on") {
+                        sensorDetails << "<span style='color:orange; font-weight:bold; font-size:11px;'>🔘 Override Switch: ON</span>"
+                    }
 
                     // Check Wattage Failsafe
                     if (pMonitor) {
                         def currentDraw = pMonitor.currentValue("power") ?: 0.0
                         def safeThresh = settings["z${i}ActiveWattageThreshold"] ?: 15.0
                         if (currentDraw > safeThresh) {
-                            statusAdditions << "<span style='color:red; font-weight:bold;'>Power Lock Active (${currentDraw}W)</span>"
+                            statusAdditions << "<span style='color:red; font-size:11px; font-weight:bold;'>Power Lock Active (${currentDraw}W)</span>"
                             isHardActive = true
                         }
                     }
 
-                    // --- Motion & Vibe Timeouts & Hit Counters ---
-                    if (mDevs) {
-                        def mTimeout = (settings["z${i}Timeout"] ?: 15) * 60000
-                        def mLast = state.zoneLastActive ? state.zoneLastActive["z${i}"] : null
-                        if (mLast && !mDevs.any{it.currentValue("motion") == "active"}) {
-                            def mLeft = mTimeout - (now() - mLast)
-                            if (mLeft > maxRemainingMs) maxRemainingMs = mLeft
-                        }
-                        
-                        def mReqHits = settings["z${i}MotionActivationHits"] ?: 1
-                        if (mReqHits > 1 && !isOccupied) {
-                            def mHits = state.motionHitCount ? (state.motionHitCount["z${i}"] ?: 0) : 0
-                            if (mHits > 0) statusAdditions << "<span style='color:purple;'>Motion Hits: ${mHits}/${mReqHits}</span>"
-                        }
-                    }
-
-                    if (vDevs) {
-                        def vTimeout = (settings["z${i}VibeTimeout"] ?: 5) * 60000
-                        def vLast = state.vibeLastActive ? state.vibeLastActive["z${i}"] : null
-                        if (vLast && !vDevs.any{it.currentValue("acceleration") == "active"}) {
-                            def vLeft = vTimeout - (now() - vLast)
-                            if (vLeft > maxRemainingMs) maxRemainingMs = vLeft
-                        }
-                        
-                        def vReqHits = settings["z${i}VibeActivationHits"] ?: 1
-                        if (vReqHits > 1 && !isOccupied) {
-                            def vHits = state.vibeHitCount ? (state.vibeHitCount["z${i}"] ?: 0) : 0
-                            if (vHits > 0) statusAdditions << "<span style='color:purple;'>Vibe Hits: ${vHits}/${vReqHits}</span>"
-                        }
-                    }
-
                     // --- Override Switch Timeout Display ---
-                    def oSwitch = settings["z${i}OverrideSwitch"]
                     if (oSwitch && oSwitch.currentValue("switch") == "on") {
                         def oTimeout = settings["z${i}OverrideTimeout"]
                         if (oTimeout && oTimeout > 0 && !isHardActive) {
@@ -104,28 +148,33 @@ def mainPage() {
                                 def timeLeft = (oTimeout * 60000) - (now() - maxLast)
                                 if (timeLeft > 0) {
                                     def minsLeft = Math.ceil(timeLeft / 60000).toInteger()
-                                    statusAdditions << "<span style='color:blue;'>Override Auto-Off: ~${minsLeft}m</span>"
+                                    statusAdditions << "<span style='color:blue; font-size:11px;'>Override Auto-Off: ~${minsLeft}m</span>"
                                 }
                             }
                         }
                     }
 
+                    // Precision Empty Countdown Timer
                     if (isOccupied && !isHardActive && maxRemainingMs > 0) {
-                        def remainingMins = Math.ceil(maxRemainingMs / 60000).toInteger()
-                        statusAdditions << "<span style='color:#888;'>Clearing in ~${remainingMins}m</span>"
+                        def mins = Math.floor(maxRemainingMs / 60000).toInteger()
+                        def secs = Math.floor((maxRemainingMs % 60000) / 1000).toInteger()
+                        def timeStr = mins > 0 ? "${mins}m ${secs}s" : "${secs}s"
+                        statusAdditions << "<span style='color:#888; font-size:11px;'>Unoccupied in: ${timeStr}</span>"
                     }
 
                     if (!isOccupied && state.shutdownDelayActive?.contains(i)) {
-                         statusAdditions << "<span style='color:orange;'>Safe Shutdown Sequence...</span>"
+                         statusAdditions << "<span style='color:orange; font-size:11px;'>Safe Shutdown Sequence...</span>"
                     }
 
-                    def remainingMinsDisplay = statusAdditions ? "<br><span style='font-size:11px;'>" + statusAdditions.join("<br>") + "</span>" : ""
+                    def remainingMinsDisplay = statusAdditions ? "<br>" + statusAdditions.join("<br>") : ""
                     def restrictionReason = getRoomRestrictionReason(i)
                     def stateColor = restrictionReason ? "orange" : (isOccupied ? "green" : "black")
                     def stateLabel = restrictionReason ? "PAUSED (${restrictionReason})" : (isOccupied ? "OCCUPIED" : "EMPTY")
                     def isOccupiedDisplay = "<b><span style='color:${stateColor};'>${stateLabel}</span></b>${remainingMinsDisplay}"
                     
-                    // --- Calculate Dynamic Wattage ---
+                    def sensorListDisplay = sensorDetails ? sensorDetails.join("<br>") : "<span style='color:gray; font-size:11px;'>None Monitored</span>"
+
+                    // --- Calculate Dynamic Wattage & Devices ---
                     def totalActive = 0.0
                     def totalStandby = 0.0
                     def devNames = []
@@ -138,19 +187,20 @@ def mainPage() {
                             totalStandby += standbyW
                             
                             def devState = dev.currentValue("switch") == "on" ? "<span style='color:green; font-weight:bold;'>ON</span>" : "<span style='color:gray;'>OFF</span>"
-                            devNames << "⚡ ${dev.displayName} (${devState})"
+                            devNames << "<span style='font-size:11px;'>⚡ ${dev.displayName} (${devState})</span>"
                         }
                     }
                     if (softDevs) {
                         softDevs.each { dev ->
                             def devState = dev.currentValue("switch") == "on" ? "<span style='color:green; font-weight:bold;'>ON</span>" : "<span style='color:gray;'>OFF</span>"
-                            devNames << "💻 ${dev.displayName} (${devState})"
+                            devNames << "<span style='font-size:11px;'>💻 ${dev.displayName} (${devState})</span>"
                         }
                     }
                     
-                    def devListDisplay = devNames ? devNames.join("<br>") : "<span style='color:gray;'>None</span>"
-                    def powerDisplay = "<b>Active:</b> ${totalActive}W<br><b>Standby:</b> ${totalStandby}W"
-                    
+                    def devListDisplay = devNames ? devNames.join("<br>") : "<span style='color:gray; font-size:11px;'>None Configured</span>"
+                    def powerDisplay = "<span style='font-size:11px;'><b>Active:</b> ${totalActive}W<br><b>Standby:</b> ${totalStandby}W</span>"
+                    def fullDeviceColumn = "${devListDisplay}<br><br>${powerDisplay}"
+
                     // --- Savings Calculation ---
                     def stats = state.roomStats ? state.roomStats["z${i}"] : [totalSecondsOff: 0, unoccupiedSince: null]
                     def secondsOff = stats?.totalSecondsOff ?: 0
@@ -165,7 +215,7 @@ def mainPage() {
                     
                     def formattedSavings = String.format('$%.2f', roomSavings)
 
-                    statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${zName}</b></td><td style='padding: 8px;'>${isOccupiedDisplay}</td><td style='padding: 8px; font-size:11px; color:#555;'>${devListDisplay}</td><td style='padding: 8px; font-size:11px;'>${powerDisplay}</td><td style='padding: 8px; color:#008800; font-weight:bold;'>${formattedSavings}</td></tr>"
+                    statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${zName}</b></td><td style='padding: 8px;'>${isOccupiedDisplay}</td><td style='padding: 8px;'>${sensorListDisplay}</td><td style='padding: 8px;'>${fullDeviceColumn}</td><td style='padding: 8px; color:#008800; font-weight:bold;'>${formattedSavings}</td></tr>"
                 }
             }
             
@@ -201,7 +251,10 @@ def mainPage() {
         section("<b>Global Configuration & Restrictions</b>") {
             input "kwhCost", "decimal", title: 'Electricity Cost ($ per kWh)', required: true, defaultValue: 0.13
             input "appEnableSwitch", "capability.switch", title: "Master Enable/Disable Switch (Optional)", required: false, multiple: false
+            
+            paragraph "<b>Global Mode Overrides</b>"
             input "restrictedModes", "mode", title: "Restricted Modes (Pause all occupancy rules)", multiple: true, required: false
+            input "forceOffModes", "mode", title: "Force OFF Modes (Immediately turns off all rooms when entering these modes)", multiple: true, required: false
             
             input "resetSavings", "bool", title: "Reset All Savings Data to Zero", defaultValue: false, submitOnChange: true
             if (settings["resetSavings"]) {
@@ -282,7 +335,8 @@ def roomConfigPage(params) {
                     input "z${i}ActiveWattageThreshold", "decimal", title: "↳ Protection Threshold (Watts)", required: true, defaultValue: 15.0, description: "If the monitor reads above this wattage, the room will ignore empty timeouts and stay ON."
                 }
                 
-                paragraph "<b>Room Scheduling Restrictions</b>"
+                paragraph "<b>Room Scheduling & Mode Restrictions</b>"
+                input "z${i}OperatingModes", "mode", title: "Active Modes (Leave blank for all modes)", multiple: true, required: false
                 input "z${i}ActiveDays", "enum", title: "Active Days (Leave blank for all days)", options: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"], multiple: true, required: false
                 input "z${i}StartTime", "time", title: "Active Start Time (Optional)", required: false
                 input "z${i}EndTime", "time", title: "Active End Time (Optional)", required: false
@@ -344,6 +398,18 @@ def hubRestartHandler(evt) {
 
 def modeChangeHandler(evt) {
     logAction("Location mode changed to: ${evt.value}")
+    
+    def isForceOff = forceOffModes && (forceOffModes as List).contains(evt.value)
+    if (isForceOff) {
+        logAction("GLOBAL FORCE OFF TRIGGERED: Mode changed to ${evt.value}.")
+        for (int i = 1; i <= 12; i++) {
+            if (settings["enableZ${i}"] && state.currentRoomStates["z${i}"] != "empty") {
+                state.currentRoomStates["z${i}"] = "empty"
+                initiateRoomShutdown(i)
+            }
+        }
+    }
+    
     evaluateRooms(false)
 }
 
@@ -533,8 +599,18 @@ def getRoomOccupancyState(roomId) {
 
 def getRoomRestrictionReason(roomId) {
     def currentMode = location.mode
+    
+    if (forceOffModes && (forceOffModes as List).contains(currentMode)) {
+        return "Force Off Mode"
+    }
+    
     if (restrictedModes && (restrictedModes as List).contains(currentMode)) {
-        return "Mode"
+        return "Global Mode"
+    }
+    
+    def roomModes = settings["z${roomId}OperatingModes"]
+    if (roomModes && !(roomModes as List).contains(currentMode)) {
+        return "Room Mode"
     }
     
     def activeDays = settings["z${roomId}ActiveDays"]
