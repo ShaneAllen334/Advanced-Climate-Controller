@@ -27,18 +27,19 @@ def mainPage() {
                 
                 def tDelivery = state.todayDeliveryTime ?: "--:-- --"
                 def tRetrieval = state.todayRetrievalTime ?: "--:-- --"
+                def tWalk = state.lastRetrievalWalkTime ? formatSeconds(state.lastRetrievalWalkTime) : "--"
                 
                 def avgDel = state.avgDeliveryTime ? minutesToTimeStr(state.avgDeliveryTime) : "--:-- --"
                 def avgRet = state.avgRetrievalTime ? minutesToTimeStr(state.avgRetrievalTime) : "--:-- --"
                 
                 statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>Mail Delivery</b></td><td style='padding: 8px; color: green;'>${tDelivery}</td><td style='padding: 8px;'>${avgDel}</td></tr>"
                 statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>Mail Retrieval</b></td><td style='padding: 8px; color: blue;'>${tRetrieval}</td><td style='padding: 8px;'>${avgRet}</td></tr>"
+                statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>Last Retrieval Trip</b></td><td style='padding: 8px; color: purple;'>${tWalk}</td><td style='padding: 8px;'>--</td></tr>"
                 statusText += "</table>"
  
-                // Sensor Status & Battery Tracking Table
                 def batteryHtml = "<table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc; margin-top: 10px;'>"
                 batteryHtml += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Mailbox Sensor</th><th style='padding: 8px;'>Current State</th><th style='padding: 8px;'>Battery Health</th></tr>"
-                
+         
                 mailSensors.each { sensor ->
                     def contactState = sensor.currentValue("contact")?.toUpperCase() ?: "UNKNOWN"
                     def contactColor = (contactState == "OPEN") ? "red" : "green"
@@ -55,9 +56,18 @@ def mainPage() {
                 batteryHtml += "</table>"
                 statusText += batteryHtml
        
-                if (tempSensor) {
-                    def currentTemp = tempSensor.currentValue("temperature") ?: "--"
-                    statusText += "<div style='margin-top: 10px; padding: 10px; background: #fff3e0; border: 1px solid #ffcc80; border-radius: 4px; font-size: 13px; color: #e65100;'><b>Mailbox Internal Temperature:</b> ${currentTemp}°</div>"
+                if (tempSensor || outsideTempSensor) {
+                    def currentTemp
+                    if (tempSensor) {
+                        currentTemp = tempSensor.currentValue("temperature")
+                    } else {
+                        def outTemp = outsideTempSensor.currentValue("temperature")
+                        currentTemp = outTemp ? (outTemp.toDouble() + (tempOffset ?: 20)) : null
+                    }
+                    
+                    if (currentTemp) {
+                        statusText += "<div style='margin-top: 10px; padding: 10px; background: #fff3e0; border: 1px solid #ffcc80; border-radius: 4px; font-size: 13px; color: #e65100;'><b>Mailbox Internal Temperature:</b> ${currentTemp}° ${outsideTempSensor && !tempSensor ? '(Estimated)' : ''}</div>"
+                    }
                 }
                 
                 def switchState = mailSwitch.currentValue("switch")?.toUpperCase() ?: "UNKNOWN"
@@ -71,7 +81,6 @@ def mainPage() {
 
                 paragraph statusText
                 
-                // ADDED: Manual clear button right on the dashboard
                 input "btnClearMail", "button", title: "Manually Clear Mail Status & Lights"
                 
             } else {
@@ -90,16 +99,21 @@ def mainPage() {
         
         section("Device Configuration") {
             input "mailSensors", "capability.contactSensor", title: "Mailbox Door Sensor(s)", multiple: true, required: true
-            input "tempSensor", "capability.temperatureMeasurement", title: "Mailbox Temperature Sensor (Optional)", required: false
+            input "tempSensor", "capability.temperatureMeasurement", title: "Internal Mailbox Temperature Sensor (Preferred)", required: false
+            input "outsideTempSensor", "capability.temperatureMeasurement", title: "OR Outside Air Temperature Sensor (Fallback)", required: false
+            input "tempOffset", "number", title: "Estimated Mailbox Heat Offset (° added to outside temp)", defaultValue: 20, required: false
+            input "tempThreshold", "number", title: "Temperature Alert Threshold (°)", defaultValue: 90, required: false
             input "mailSwitch", "capability.switch", title: "Virtual Mail Indicator Switch", required: true
-            input "deliveryLockout", "number", title: "Delivery-to-Retrieval Lockout (Minutes)", defaultValue: 2, required: true
+            input "deliveryLockout", "number", title: "State Change Lockout (Minutes)", defaultValue: 2, required: true
         }
 
-        section("False Retrieval Prevention (Secondary Deliveries)") {
-            input "enableSecondaryCheck", "bool", title: "Enable Secondary Delivery Protection?", defaultValue: false, submitOnChange: true
+        section("Home Activity Tracking (Doors & Arrivals)") {
+            paragraph "These sensors are used to calculate your 'Retrieval Trip Time' and are optional. They can also be used to prevent false mail deliveries."
+            input "exteriorDoors", "capability.contactSensor", title: "Exterior Doors (Front, Garage, etc.)", multiple: true, required: false
+            input "arrivalSensors", "capability.presenceSensor", title: "Arrival Sensors (Mobile Phones)", multiple: true, required: false
+            
+            input "enableSecondaryCheck", "bool", title: "Enable False Retrieval Protection? (Requires sensors above)", defaultValue: false, submitOnChange: true
             if (enableSecondaryCheck) {
-                input "exteriorDoors", "capability.contactSensor", title: "Exterior Doors (Front, Garage, etc.)", multiple: true, required: false
-                input "arrivalSensors", "capability.presenceSensor", title: "Arrival Sensors (Mobile Phones)", multiple: true, required: false
                 input "activityTimeWindow", "number", title: "Activity Time Window (Minutes)", defaultValue: 10, required: true
             }
         }
@@ -144,24 +158,25 @@ def updated() { unsubscribe(); unschedule(); initialize() }
 def initialize() {
     state.historyLog = state.historyLog ?: []
     subscribe(mailSensors, "contact.open", sensorOpenHandler)
-    if (tempSensor) subscribe(tempSensor, "temperature", tempHandler)
-    if (enableSecondaryCheck) {
-        if (exteriorDoors) subscribe(exteriorDoors, "contact.open", homeActivityHandler)
-        if (arrivalSensors) subscribe(arrivalSensors, "presence.present", homeActivityHandler)
+    
+    if (tempSensor) {
+        subscribe(tempSensor, "temperature", tempHandler)
+    } else if (outsideTempSensor) {
+        subscribe(outsideTempSensor, "temperature", tempHandler)
     }
+    
+    // Subscribe to activity sensors regardless of secondary protection toggle
+    if (exteriorDoors) subscribe(exteriorDoors, "contact.open", homeActivityHandler)
+    if (arrivalSensors) subscribe(arrivalSensors, "presence.present", homeActivityHandler)
+    
     schedule("0 0 0 * * ?", "midnightReset")
     if (enableNag && nagTime) schedule(nagTime, "nagHandler")
 }
 
-// ADDED: App Button Handler to process UI buttons
 def appButtonHandler(btn) {
     if (btn == "btnClearMail") {
         log.info "Manually clearing mail status..."
-        
-        // Turn off the virtual switch
         if (mailSwitch) mailSwitch.off()
-        
-        // Force lights off
         if (indicatorLight) indicatorLight.off()
         if (inovelliSwitches) {
             inovelliSwitches.each { device -> 
@@ -170,7 +185,7 @@ def appButtonHandler(btn) {
                 }
             }
         }
-        
+        state.lastValidStateChange = new Date().time 
         addToHistory("MANUAL CLEAR: System reset via app dashboard.")
         
     } else if (btn == "btnForceReset") {
@@ -182,6 +197,7 @@ def appButtonHandler(btn) {
         state.retrievalCount = 0
         state.todayDeliveryTime = null
         state.todayRetrievalTime = null
+        state.lastRetrievalWalkTime = null
         addToHistory("SYSTEM WIPE: Historical data reset.")
     }
 }
@@ -190,47 +206,71 @@ def homeActivityHandler(evt) { state.lastHomeActivity = new Date().time }
 
 def sensorOpenHandler(evt) {
     def now = new Date().time
+    
+    // HARD DEBOUNCE (5 seconds) to kill simultaneous dual-sensor triggers
+    def lastEvt = state.lastSensorEvent ?: 0
+    if ((now - lastEvt) < 5000) return 
+    state.lastSensorEvent = now
+
     def switchState = mailSwitch.currentValue("switch")
     def tz = location.timeZone ?: TimeZone.getDefault()
     def currentTimeStr = new Date().format("h:mm a", tz)
     def currentMinutes = getMinutesSinceMidnight(new Date(), tz)
+    
+    // SYMMETRICAL LOCKOUT
+    def lastStateChange = state.lastValidStateChange ?: 0
+    def lockoutMillis = (deliveryLockout != null ? deliveryLockout.toInteger() : 2) * 60000
+    
+    if ((now - lastStateChange) < lockoutMillis) return
 
     if (switchState == "on") {
-        def lastDelivery = state.lastDeliveryTime ?: 0
-        def lockoutMillis = (deliveryLockout != null ? deliveryLockout.toInteger() : 2) * 60000
-        if ((now - lastDelivery) < lockoutMillis) return
-
+        // Evaluate Secondary Delivery check if enabled
         if (enableSecondaryCheck && (exteriorDoors || arrivalSensors)) {
             def lastActivity = state.lastHomeActivity ?: 0
             def window = (activityTimeWindow ?: 10) * 60000
             if ((now - lastActivity) > window) {
-                state.lastDeliveryTime = now
+                state.lastValidStateChange = now
                 if (sendPushDelivery) sendMessage("📫 More mail was delivered!")
                 addToHistory("SECONDARY DELIVERY: No home activity detected.")
                 return
             }
         }
 
+        // Calculate Trip Time (max valid trip is 15 mins / 900,000 ms)
+        def tripTimeStr = ""
+        if ((exteriorDoors || arrivalSensors) && state.lastHomeActivity) {
+            def timeDiff = now - state.lastHomeActivity
+            if (timeDiff <= 900000) { 
+                def totalSecs = Math.round(timeDiff / 1000).toInteger()
+                state.lastRetrievalWalkTime = totalSecs
+                tripTimeStr = " (Trip Time: ${formatSeconds(totalSecs)})"
+            }
+        }
+
         mailSwitch.off()
+        state.lastValidStateChange = now
         state.todayRetrievalTime = currentTimeStr
         updateAverage("retrieval", currentMinutes)
-        addToHistory("RETRIEVAL DETECTED.")
+        addToHistory("RETRIEVAL DETECTED.${tripTimeStr}")
+        
         if (retrievalLightAction == "Turn Off") {
             if (indicatorLight) indicatorLight.off()
-            // Stop Inovelli LED Effect: 255 = Stop
             if (inovelliSwitches) inovelliSwitches.each { it.ledEffectAll(255, 0, 0, 0) }
         }
   
         if (sendPushRetrieval) sendMessage("📬 Mail retrieved!")
         if (ttsSpeakers && ttsRetrievalText) ttsSpeakers.speak(ttsRetrievalText)
+        
     } else {
         mailSwitch.on()
+        state.lastValidStateChange = now
         state.todayDeliveryTime = currentTimeStr
-        state.lastDeliveryTime = now
         updateAverage("delivery", currentMinutes)
         addToHistory("DELIVERY DETECTED.")
+        
         if (indicatorLight) setLightColor(indicatorLight, deliveryColor, lightLevel ?: 100)
         if (inovelliSwitches) setLightColor(inovelliSwitches, deliveryColor, lightLevel ?: 100)
+ 
         if (sendPushDelivery) sendMessage("📫 Mail delivered!")
         if (ttsSpeakers && ttsDeliveryText) ttsSpeakers.speak(ttsDeliveryText)
     }
@@ -243,46 +283,27 @@ def setLightColor(devices, colorName, level) {
     
     switch(colorName) {
         case "White": 
-            inovelliHue = 255
-            standardSat = 0 // Drop saturation to 0 for white
-            break 
+            inovelliHue = 255; standardSat = 0; break 
         case "Red": 
-            inovelliHue = 0
-            standardHue = 0
-            break 
+            inovelliHue = 0; standardHue = 0; break 
         case "Green": 
-            inovelliHue = 85
-            standardHue = 33
-            break 
+            inovelliHue = 85; standardHue = 33; break 
         case "Blue": 
-            inovelliHue = 170
-            standardHue = 66
-            break 
+            inovelliHue = 170; standardHue = 66; break 
         case "Yellow": 
-            inovelliHue = 42
-            standardHue = 16
-            break 
+            inovelliHue = 42; standardHue = 16; break 
         case "Orange": 
-            inovelliHue = 14
-            standardHue = 10
-            break 
+            inovelliHue = 14; standardHue = 10; break 
         case "Purple": 
-            inovelliHue = 191
-            standardHue = 75
-            break 
+            inovelliHue = 191; standardHue = 75; break 
         case "Pink": 
-            inovelliHue = 234
-            standardHue = 83
-            break 
+            inovelliHue = 234; standardHue = 83; break 
     }
     
     devices.each { device -> 
-        // Use Inovelli specific ledEffectAll command
         if (device.hasCommand("ledEffectAll")) {
-            // Effect 1 = Solid, Duration 255 = Indefinite
             device.ledEffectAll(1, inovelliHue, level as Integer, 255) 
         } else {
-            // Standard RGB logic 
             device.on() 
             device.setColor([hue: standardHue, saturation: standardSat, level: level as Integer])
         }
@@ -291,10 +312,12 @@ def setLightColor(devices, colorName, level) {
 
 def tempHandler(evt) {
     def currentTemp = evt.numericValue ?: evt.value.toDouble()
+    if (evt.device.id == outsideTempSensor?.id) currentTemp += (tempOffset ?: 20)
+
     if (mailSwitch.currentValue("switch") == "on" && currentTemp >= (tempThreshold ?: 90)) {
         def today = new Date().format("yyyy-MM-dd", location.timeZone ?: TimeZone.getDefault())
         if (state.lastTempAlertDate != today) {
-            sendMessage("🌡️ Warning: Box is ${currentTemp}°. Get mail soon!")
+            sendMessage("🌡️ Warning: Box is estimated to be ${currentTemp}°. Get mail soon!")
             state.lastTempAlertDate = today
         }
     }
@@ -315,11 +338,20 @@ def getMinutesSinceMidnight(date, tz) {
 
 def minutesToTimeStr(minutesNum) {
     if (!minutesNum) return "--:-- --"
-    int h = (minutesNum / 60).toInteger()
-    int m = minutesNum % 60
+    int totalMins = Math.round(minutesNum.toDouble()).toInteger() 
+    int h = (totalMins / 60).toInteger()
+    int m = totalMins % 60
     def ampm = h >= 12 ? "PM" : "AM"
     h = h % 12 ?: 12
     return "${h}:${m < 10 ? '0'+m : m} ${ampm}"
+}
+
+def formatSeconds(totalSecs) {
+    if (!totalSecs) return "--"
+    int m = (totalSecs / 60).toInteger()
+    int s = totalSecs % 60
+    if (m > 0) return "${m}m ${s}s"
+    return "${s}s"
 }
 
 def addToHistory(msg) {
@@ -330,6 +362,7 @@ def addToHistory(msg) {
 
 def midnightReset() {
     state.todayDeliveryTime = state.todayRetrievalTime = state.lastTempAlertDate = null
+    state.lastRetrievalWalkTime = null // Clear the walk timer for the new day
     if (mailSwitch.currentValue("switch") == "on") {
         addToHistory("SYSTEM RESET: Mail left overnight.")
     }
