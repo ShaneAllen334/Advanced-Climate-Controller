@@ -1,13 +1,13 @@
 /**
  * Advanced Overcast Detector
  *
- * Author: Custom
+ * Author: ShaneAllen
  */
 definition(
     name: "Advanced Overcast Detector",
-    namespace: "custom",
-    author: "User",
-    description: "Advanced environmental lux monitor with Proportional Dimming, Universal Darkness enforcement, and Astro Countdowns.",
+    namespace: "ShaneAllen",
+    author: "ShaneAllen",
+    description: "Advanced environmental lux monitor with Proportional Dimming, Universal Darkness enforcement, Astro Countdowns, Cloud History, and Solar Baseline Graphing.",
     category: "Green Living",
     iconUrl: "",
     iconX2Url: ""
@@ -33,7 +33,7 @@ def mainPage() {
             if (sState == "Nighttime") sColor = "purple"
             
             def pendingMsg = ""
-            if (state.pendingOvercast) pendingMsg = "<br><span style='font-size: 11px; color: #555;'>Verifying Overcast...</span>"
+            if (state.pendingOvercast) pendingMsg = "<br><span style='font-size: 11px; color: #555;'>Verifying Weather Event...</span>"
             if (state.pendingClear) pendingMsg = "<br><span style='font-size: 11px; color: #555;'>Verifying Clear...</span>"
             if (state.isNight) pendingMsg = "<br><span style='font-size: 11px; color: purple;'>Nighttime Hard-Lock Active</span>"
 
@@ -83,6 +83,45 @@ def mainPage() {
             paragraph statusText
         }
         
+        section("Weather Event & Cloud History") {
+            if (state.cloudHistory && state.cloudHistory.size() > 0) {
+                def tableHtml = "<table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; border: 1px solid #ccc;'>"
+                tableHtml += "<tr style='background-color: #e0e0e0; text-align: left;'><th style='padding: 6px; border-bottom: 1px solid #ccc;'>Event Start</th><th style='padding: 6px; border-bottom: 1px solid #ccc;'>Duration</th><th style='padding: 6px; border-bottom: 1px solid #ccc;'>Lux Drop</th><th style='padding: 6px; border-bottom: 1px solid #ccc;'>Lowest Point</th></tr>"
+                
+                state.cloudHistory.each { event ->
+                    tableHtml += "<tr style='border-bottom: 1px solid #eee;'>"
+                    tableHtml += "<td style='padding: 6px;'>${event.time}</td>"
+                    tableHtml += "<td style='padding: 6px;'><b>${event.duration}</b></td>"
+                    tableHtml += "<td style='padding: 6px; color: #d2691e;'>-${event.drop}</td>"
+                    tableHtml += "<td style='padding: 6px; color: #555;'>${event.minLux}</td>"
+                    tableHtml += "</tr>"
+                }
+                tableHtml += "</table>"
+                
+                if (state.activeCloudEvent) {
+                    tableHtml += "<div style='margin-top: 8px; font-size: 12px; color: blue; font-weight: bold;'>☁️ Event currently in progress...</div>"
+                }
+                
+                paragraph tableHtml
+            } else {
+                paragraph "<i>No passing clouds or sudden drops recorded yet.</i>"
+            }
+        }
+        
+        section("24-Hour Lux Trend vs. Expected Solar Baseline") {
+            if (state.luxHistory && state.luxHistory.size() > 2) {
+                def chartUrl = generateChartUrl()
+                paragraph "<div style='text-align:center;'><img src='${chartUrl}' width='100%' style='max-width:600px; border: 1px solid #ccc; border-radius: 5px;' /></div>"
+            } else {
+                paragraph "<i>Collecting data... Graph will appear once enough data points are gathered.</i>"
+            }
+        }
+        
+        section("Graph Calibration (Solar Baseline)") {
+            input "peakClearLux", "number", title: "Expected Peak Clear-Sky Brightness (Lux)", defaultValue: 10000, required: true,
+                description: "Set this to whatever your sensor typically reads at Solar Noon on a perfectly clear day. This scales the theoretical sun curve on your graph."
+        }
+        
         section("Application History (Last 20 Events)") {
             if (state.historyLog && state.historyLog.size() > 0) {
                 def logText = state.historyLog.join("<br>")
@@ -122,6 +161,9 @@ def mainPage() {
                 
             input "debounceTime", "number", title: "Anti-Yo-Yo Debounce Time (Minutes)", defaultValue: 10, required: true,
                 description: "How long the sky must stay below/above the threshold before flipping the virtual outputs."
+                
+            input "useDynamicClear", "bool", title: "Enable Automatic Time-of-Year & Time-of-Day Adjustments?", defaultValue: true, submitOnChange: true,
+                description: "If enabled, the Clear Sky Recovery Threshold dynamically curves based on solar position and season to prevent evening/winter yo-yoing."
         }
         
         section("Universal Darkness (Nighttime Logic)") {
@@ -151,10 +193,16 @@ def updated() {
 
 def initialize() {
     state.historyLog = state.historyLog ?: []
+    state.luxHistory = state.luxHistory ?: []
+    state.cloudHistory = state.cloudHistory ?: []
+    state.activeCloudEvent = null
     state.currentCondition = "Evaluating..."
     state.pendingOvercast = false
     state.pendingClear = false
     state.isNight = false
+    state.lastLuxCheckTime = now()
+    state.lastLuxValue = null
+    state.dipReason = null
     
     if (luxSensor) subscribe(luxSensor, "illuminance", luxHandler)
     subscribe(location, "mode", modeHandler)
@@ -167,14 +215,49 @@ def initialize() {
         state.isNight = false
     }
     
-    // Force immediate evaluation on boot to fix "Evaluating" hang
+    runEvery15Minutes(logGraphData)
     forceImmediateEvaluation()
+}
+
+// --- UTILITY: CLOUD EVENT LOGGER ---
+def closeActiveCloudEvent() {
+    if (!state.activeCloudEvent) return
+    
+    def endTime = now()
+    def durationSecs = (endTime - state.activeCloudEvent.startTime) / 1000
+    def durationStr = ""
+    
+    if (durationSecs < 60) {
+        durationStr = "${durationSecs.toInteger()} sec"
+    } else {
+        def mins = (durationSecs / 60).toInteger()
+        def secs = (durationSecs % 60).toInteger()
+        durationStr = "${mins}m ${secs}s"
+    }
+    
+    def maxDrop = state.activeCloudEvent.startLux - state.activeCloudEvent.minLux
+    def eventTime = new Date(state.activeCloudEvent.startTime).format("MM/dd HH:mm", location.timeZone)
+    
+    def newEvent = [
+        time: eventTime,
+        duration: durationStr,
+        drop: "${maxDrop} lx",
+        minLux: "${state.activeCloudEvent.minLux} lx"
+    ]
+   
+    if (!state.cloudHistory) state.cloudHistory = []
+    state.cloudHistory.add(0, newEvent)
+    
+    if (state.cloudHistory.size() > 15) {
+        state.cloudHistory = state.cloudHistory.take(15)
+    }
+    state.activeCloudEvent = null
 }
 
 // --- UTILITY: HISTORY LOGGER ---
 def addToHistory(String msg) {
     if (!state.historyLog) state.historyLog = []
-    def timestamp = new Date().format("MM/dd HH:mm:ss", location.timeZone)
+    def timestamp = new Date().format("MM/dd HH:mm", location.timeZone)
     state.historyLog.add(0, "<b>[${timestamp}]</b> ${msg}")
     
     if (state.historyLog.size() > 20) {
@@ -182,6 +265,104 @@ def addToHistory(String msg) {
     }
     def cleanMsg = msg.replaceAll("\\<.*?\\>", "")
     log.info "HISTORY: [${timestamp}] ${cleanMsg}"
+}
+
+// --- DYNAMIC CLEAR SKY CALCULATOR ---
+def getDynamicClearThreshold() {
+    def baseClear = clearThreshold ?: 4000
+    def baseOvercast = overcastThreshold ?: 2000
+    
+    if (!useDynamicClear) return baseClear
+    
+    def sunInfo = getSunriseAndSunset()
+    if (!sunInfo || !sunInfo.sunrise || !sunInfo.sunset) return baseClear
+    
+    def nowTime = new Date().time
+    def sunrise = sunInfo.sunrise.time
+    def sunset = sunInfo.sunset.time
+    
+    // Outside daylight hours, return base
+    if (nowTime < sunrise || nowTime > sunset) return baseClear
+    
+    // 1. Calculate Time-of-Day Arc (0.0 to 1.0)
+    def totalDaylightMillis = sunset - sunrise
+    def currentDaylightMillis = nowTime - sunrise
+    def dayPercentage = currentDaylightMillis / totalDaylightMillis
+    def timeMultiplier = Math.sin(dayPercentage * Math.PI)
+    
+    // 2. Calculate Seasonal Arc (Day of Year)
+    def cal = Calendar.getInstance()
+    def dayOfYear = cal.get(Calendar.DAY_OF_YEAR)
+    
+    // Approx Summer Solstice (172) as Peak, Winter Solstice (355) as Trough
+    def seasonalOffset = ((dayOfYear - 172) / 365.0) * (Math.PI * 2)
+    def seasonMultiplier = 0.7 + (0.3 * Math.cos(seasonalOffset))
+    
+    // 3. Combine Math
+    def dynamicLimit = (baseClear * timeMultiplier * seasonMultiplier).toInteger()
+    
+    // Keep a sensible minimum deadband so Clear Sky doesn't dip below the Overcast Threshold
+    def safeMinimum = baseOvercast + 500
+    
+    return Math.max(dynamicLimit, safeMinimum)
+}
+
+// --- UTILITY: GRAPHING & SOLAR BASELINE ---
+def logGraphData() {
+    if (!luxSensor) return
+    
+    def currentLux = luxSensor.currentValue("illuminance")?.toInteger() ?: 0
+    def timestamp = new Date().format("HH:mm", location.timeZone)
+    def nowTime = now()
+    
+    def expectedLux = 0
+    
+    if (useDynamicClear) {
+        // Trace the actual dynamic limit being enforced
+        expectedLux = getDynamicClearThreshold()
+    } else {
+        // Trace standard theoretical curve based on peak calibration
+        def sunInfo = getSunriseAndSunset()
+        if (sunInfo && sunInfo.sunrise && sunInfo.sunset) {
+            def sr = sunInfo.sunrise.time
+            def ss = sunInfo.sunset.time
+            
+            if (nowTime >= sr && nowTime <= ss) {
+                def fraction = (nowTime - sr) / (ss - sr)
+                def peak = peakClearLux ?: 10000
+                expectedLux = (peak * Math.sin(fraction * Math.PI)).toInteger()
+            }
+        }
+    }
+    
+    if (!state.luxHistory) state.luxHistory = []
+    
+    // Add new data point including expected baseline
+    state.luxHistory.add([time: timestamp, lux: currentLux, expected: expectedLux])
+    
+    if (state.luxHistory.size() > 96) {
+        state.luxHistory = state.luxHistory.drop(1)
+    }
+}
+
+def generateChartUrl() {
+    if (!state.luxHistory) return ""
+    
+    def labels = []
+    def actualData = []
+    def expectedData = []
+    
+    state.luxHistory.each { pt ->
+        labels << "'${pt.time}'"
+        actualData << (pt.lux ?: 0)
+        expectedData << (pt.expected ?: 0) // Handles older data points safely
+    }
+    
+    // Compact JSON string to prevent URL encoding issues
+    def chartConfig = "{type:'line',data:{labels:[${labels.join(',')}],datasets:[{label:'Actual Lux',data:[${actualData.join(',')}],fill:true,backgroundColor:'rgba(54,162,235,0.1)',borderColor:'rgba(54,162,235,1)',borderWidth:2,pointRadius:0},{label:'Expected Clear Sky',data:[${expectedData.join(',')}],fill:false,borderColor:'rgba(255,159,64,0.8)',borderWidth:2,borderDash:[5,5],pointRadius:0}]},options:{legend:{display:true,position:'bottom'},scales:{xAxes:[{ticks:{autoSkip:true,maxTicksLimit:8}}]}}}"
+    
+    def encodedConfig = java.net.URLEncoder.encode(chartConfig, "UTF-8")
+    return "https://quickchart.io/chart?c=${encodedConfig}&w=600&h=300"
 }
 
 // --- SYSTEM CHECKS ---
@@ -224,7 +405,6 @@ def updateDimmerLevel(currentLux) {
     } else if (currentLux >= overLimit) {
         targetLevel = minLvl
     } else {
-        // Inverse interpolation: Lower Lux = Higher Level
         def luxRange = overLimit - stormLimit
         def levelRange = maxLvl - minLvl
         def luxDrop = overLimit - currentLux
@@ -236,49 +416,10 @@ def updateDimmerLevel(currentLux) {
     def currentDimmerLevel = targetDimmer.currentValue("level")?.toInteger() ?: 0
     def currentDimmerState = targetDimmer.currentValue("switch")
 
-    // Mesh Protection: Only adjust if it's off, or if the level changed by more than 2%
     if (currentDimmerState != "on" || Math.abs(currentDimmerLevel - targetLevel) > 2) {
         addToHistory("DIMMER: Dynamic adjustment to ${targetLevel}% (Lux: ${currentLux}).")
         targetDimmer.setLevel(targetLevel)
     }
-}
-
-// --- DYNAMIC CLEAR SKY CALCULATOR ---
-def getDynamicClearThreshold() {
-    def baseClear = clearThreshold ?: 4000
-    def baseOvercast = overcastThreshold ?: 2000
-    
-    def sunInfo = getSunriseAndSunset()
-    if (!sunInfo || !sunInfo.sunrise || !sunInfo.sunset) return baseClear
-    
-    def now = new Date().time
-    def sunrise = sunInfo.sunrise.time
-    def sunset = sunInfo.sunset.time
-    
-    // Outside daylight hours, return base
-    if (now < sunrise || now > sunset) return baseClear
-    
-    // 1. Calculate Time-of-Day Arc (0.0 to 1.0)
-    def totalDaylightMillis = sunset - sunrise
-    def currentDaylightMillis = now - sunrise
-    def dayPercentage = currentDaylightMillis / totalDaylightMillis
-    def timeMultiplier = Math.sin(dayPercentage * Math.PI)
-    
-    // 2. Calculate Seasonal Arc (Day of Year)
-    def cal = Calendar.getInstance()
-    def dayOfYear = cal.get(Calendar.DAY_OF_YEAR)
-    
-    // Approx Summer Solstice (172) as Peak, Winter Solstice (355) as Trough
-    def seasonalOffset = ((dayOfYear - 172) / 365.0) * (Math.PI * 2)
-    def seasonMultiplier = 0.7 + (0.3 * Math.cos(seasonalOffset))
-    
-    // 3. Combine Math (Using the user's set clearThreshold as the absolute summer peak)
-    def dynamicLimit = (baseClear * timeMultiplier * seasonMultiplier).toInteger()
-    
-    // Keep a sensible minimum deadband so Clear Sky doesn't dip below the Overcast Threshold
-    def safeMinimum = baseOvercast + 500
-    
-    return Math.max(dynamicLimit, safeMinimum)
 }
 
 // --- CORE LUX EVALUATION ---
@@ -317,31 +458,76 @@ def evaluateLuxCondition() {
     def clearLimit = getDynamicClearThreshold()
     def debounceSecs = (debounceTime ?: 10) * 60
     
-    // Dynamic Dimming Hook (If already overcast, constantly adjust level based on new lux)
+    def timeNow = now()
+    if (state.lastLuxValue != null && state.lastLuxCheckTime != null) {
+        def timeDeltaMins = (timeNow - state.lastLuxCheckTime) / 60000
+        def luxDrop = state.lastLuxValue - lux
+        
+        // Calculate the percentage of the drop
+        def dropPercentage = state.lastLuxValue > 0 ? (luxDrop / state.lastLuxValue) : 0
+        
+        // Trigger a cloud event if lux drops by 30% OR drops by more than 15,000 lux rapidly
+        if ((dropPercentage >= 0.30 || luxDrop > 15000) && timeDeltaMins <= 10) {
+            if (!state.activeCloudEvent) {
+                state.activeCloudEvent = [startTime: timeNow, startLux: state.lastLuxValue, minLux: lux]
+                state.dipReason = "Sudden Drop"
+                addToHistory("ANALYSIS: Sharp lux plunge detected. Tracking as active weather event.")
+            } else if (lux < state.activeCloudEvent.minLux) {
+                state.activeCloudEvent.minLux = lux 
+            }
+        } else if (luxDrop > 0 && timeDeltaMins > 15 && lux <= overLimit && !state.pendingOvercast) {
+            state.dipReason = "Gradual Fade"
+        }
+    }
+    
+    // Close the cloud event if it recovers by at least 50% of what it dropped, or exceeds the start lux
+    if (state.activeCloudEvent) {
+        def recoveryAmount = lux - state.activeCloudEvent.minLux
+        def totalDrop = state.activeCloudEvent.startLux - state.activeCloudEvent.minLux
+        
+        if (lux >= state.activeCloudEvent.startLux || recoveryAmount >= (totalDrop * 0.50)) {
+            closeActiveCloudEvent()
+            addToHistory("ANALYSIS: Cloud/Weather event passed and logged to history.")
+        }
+    }
+    
+    state.lastLuxValue = lux
+    state.lastLuxCheckTime = timeNow
+
     if (state.currentCondition == "Overcast") {
         updateDimmerLevel(lux)
     }
     
-    // Scenario 1: Entering Overcast Conditions
     if (lux <= overLimit && state.currentCondition != "Overcast") {
         if (state.pendingClear) {
             unschedule("triggerClear")
             state.pendingClear = false
-            addToHistory("Sky darkened back to ${lux} lx. Canceled Clear Verification.")
+            
+            if (state.dipReason == "Sudden Drop") {
+                addToHistory("Sky darkened back to ${lux} lx rapidly. Passing cloud verified. Canceled Clear.")
+            } else {
+                addToHistory("Sky darkened back to ${lux} lx. Canceled Clear Verification.")
+            }
         }
         
         if (!state.pendingOvercast) {
             state.pendingOvercast = true
             runIn(debounceSecs, "triggerOvercast", [overwrite: true])
-            addToHistory("Lux dropped to ${lux}. Starting ${(debounceSecs/60).toInteger()}m Overcast verification timer.")
+            
+            def causeStr = (state.dipReason == "Sudden Drop") ? "Monitoring for Storm vs Cloud..." : "Monitoring for Overcast..."
+            addToHistory("Lux dropped to ${lux}. Starting ${(debounceSecs/60).toInteger()}m verification. ${causeStr}")
         }
     } 
-    // Scenario 2: Entering Clear Conditions
     else if (lux >= clearLimit && state.currentCondition != "Clear") {
         if (state.pendingOvercast) {
             unschedule("triggerOvercast")
             state.pendingOvercast = false
-            addToHistory("Sky brightened back to ${lux} lx. Canceled Overcast Verification.")
+            
+            if (state.dipReason == "Sudden Drop") {
+                addToHistory("Sky brightened to ${lux} lx rapidly. Logged as PASSING CLOUD. Canceled Overcast Verification.")
+            } else {
+                addToHistory("Sky brightened back to ${lux} lx. Canceled Overcast Verification.")
+            }
         }
         
         if (!state.pendingClear) {
@@ -350,9 +536,7 @@ def evaluateLuxCondition() {
             addToHistory("Lux rose to ${lux}. Starting ${(debounceSecs/60).toInteger()}m Clear verification timer.")
         }
     }
-    // Scenario 3: The Deadband (Between Thresholds)
     else if (lux > overLimit && lux < clearLimit) {
-        // If we are lingering in the middle, cancel any pending timers to enforce strict adherence to limits
         if (state.pendingOvercast) {
             unschedule("triggerOvercast")
             state.pendingOvercast = false
@@ -366,14 +550,17 @@ def evaluateLuxCondition() {
     }
 }
 
-// --- STATE EXECUTION ---
 def triggerOvercast() {
     if (isSystemPaused() || !isModeAllowed() || (state.isNight && useAstro)) return
     
     state.pendingOvercast = false
     state.currentCondition = "Overcast"
     
-    addToHistory("CONFIRMED: Conditions remained Overcast. Activating targets.")
+    if (state.dipReason == "Sudden Drop") {
+        addToHistory("CONFIRMED: Lux remained low. Logged as STORM or HEAVY OVERCAST. Activating targets.")
+    } else {
+        addToHistory("CONFIRMED: Conditions remained Overcast. Activating targets.")
+    }
     
     if (targetSwitch && targetSwitch.currentValue("switch") != "on") targetSwitch.on()
     
@@ -395,7 +582,6 @@ def triggerClear() {
     if (targetDimmer && targetDimmer.currentValue("switch") != "off") targetDimmer.off()
 }
 
-// --- ASTRO & TIME SCHEDULER ---
 def scheduleAstro() {
     def sunInfo = getSunriseAndSunset()
     if (sunInfo && sunInfo.sunrise) {
@@ -433,6 +619,8 @@ def checkInitialAstroState() {
 def executeSunset() {
     if (!useAstro) return
   
+    if (state.activeCloudEvent) closeActiveCloudEvent()
+    
     state.isNight = true
     state.currentCondition = "Nighttime"
     state.pendingOvercast = false
