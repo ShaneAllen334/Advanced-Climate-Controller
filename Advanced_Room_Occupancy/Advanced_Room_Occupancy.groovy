@@ -436,6 +436,13 @@ def sensorHandler(evt) {
 }
 
 def getRoomOccupancyState(roomId) {
+    // Inject Safety Guards here to protect dynamic pages on fresh installs
+    if (!state.currentRoomStates) state.currentRoomStates = [:]
+    if (!state.zoneLastActive) state.zoneLastActive = [:]
+    if (!state.vibeLastActive) state.vibeLastActive = [:]
+    if (!state.motionHitCount) state.motionHitCount = [:]
+    if (!state.vibeHitCount) state.vibeHitCount = [:]
+
     def isOccupied = false
     def mDevs = settings["z${roomId}Motion"]
     def vDevs = settings["z${roomId}Vibration"]
@@ -448,7 +455,6 @@ def getRoomOccupancyState(roomId) {
         def currentDraw = pMonitor.currentValue("power") ?: 0.0
         def safeThresh = settings["z${roomId}ActiveWattageThreshold"] ?: 15.0
         if (currentDraw > safeThresh) {
-            if (!state.zoneLastActive) state.zoneLastActive = [:]
             state.zoneLastActive["z${roomId}"] = now()
             return true
         }
@@ -464,8 +470,8 @@ def getRoomOccupancyState(roomId) {
         def oTimeout = settings["z${roomId}OverrideTimeout"]
         if (oTimeout && oTimeout > 0) {
             if (!isHardActive) {
-                def lastM = state.zoneLastActive ? state.zoneLastActive["z${roomId}"] : 0
-                def lastV = state.vibeLastActive ? state.vibeLastActive["z${roomId}"] : 0
+                def lastM = state.zoneLastActive["z${roomId}"] ?: 0
+                def lastV = state.vibeLastActive["z${roomId}"] ?: 0
                 def maxLast = Math.max(lastM ?: 0, lastV ?: 0)
                 
                 if (maxLast == 0) {
@@ -495,10 +501,10 @@ def getRoomOccupancyState(roomId) {
     // 4. Check Vibration with Integer Hit Counter
     if (vDevs) {
         def vTimeoutMs = (settings["z${roomId}VibeTimeout"] ?: 5) * 60000
-        def vLastActive = state.vibeLastActive ? state.vibeLastActive["z${roomId}"] : null
+        def vLastActive = state.vibeLastActive["z${roomId}"] ?: null
         
         def reqHits = settings["z${roomId}VibeActivationHits"] ?: 1
-        def hitCount = state.vibeHitCount ? (state.vibeHitCount["z${roomId}"] ?: 0) : 0
+        def hitCount = state.vibeHitCount["z${roomId}"] ?: 0
         
         if (hitCount >= reqHits || (wasAlreadyOccupied && vDevs.any { it.currentValue("acceleration") == "active" })) {
             isOccupied = true
@@ -510,10 +516,10 @@ def getRoomOccupancyState(roomId) {
     // 5. Check Motion with Integer Hit Counter
     if (mDevs && !isOccupied) { 
         def mTimeoutMs = (settings["z${roomId}Timeout"] ?: 15) * 60000
-        def mLastActive = state.zoneLastActive ? state.zoneLastActive["z${roomId}"] : null
+        def mLastActive = state.zoneLastActive["z${roomId}"] ?: null
         
         def reqHits = settings["z${roomId}MotionActivationHits"] ?: 1
-        def hitCount = state.motionHitCount ? (state.motionHitCount["z${roomId}"] ?: 0) : 0
+        def hitCount = state.motionHitCount["z${roomId}"] ?: 0
         
         if (hitCount >= reqHits || (wasAlreadyOccupied && mDevs.any { it.currentValue("motion") == "active" })) {
             isOccupied = true
@@ -548,7 +554,7 @@ def getRoomRestrictionReason(roomId) {
         
         def isTimeActive = false
         if (start <= end) {
-             isTimeActive = (currTime >= start && currTime <= end)
+            isTimeActive = (currTime >= start && currTime <= end)
         } else {
             isTimeActive = (currTime >= start || currTime <= end)
         }
@@ -558,10 +564,12 @@ def getRoomRestrictionReason(roomId) {
     return null
 }
 
-// Adding the default parameter value (forceSync = false) immediately prevents the Hubitat String.call() error
 def evaluateRooms(boolean forceSync = false) {
     if (appEnableSwitch && appEnableSwitch.currentValue("switch") == "off") return
+    
+    // Inject Safety Guards here
     if (!state.shutdownDelayActive) state.shutdownDelayActive = []
+    if (!state.currentRoomStates) state.currentRoomStates = [:]
 
     for (int i = 1; i <= 12; i++) {
         if (settings["enableZ${i}"]) {
@@ -695,6 +703,11 @@ def stopSavingsTimer(roomId) {
 
 def resetAllSavings() {
     logAction("MANUAL OVERRIDE: Resetting all ROI Savings Data to zero.")
+    
+    // Inject Safety Guards here
+    if (!state.roomStats) state.roomStats = [:]
+    if (!state.currentRoomStates) state.currentRoomStates = [:]
+    
     for (int i = 1; i <= 12; i++) {
         state.roomStats["z${i}"] = [totalSecondsOff: 0, unoccupiedSince: (state.currentRoomStates["z${i}"] == "empty" ? now() : null)]
     }
