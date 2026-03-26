@@ -76,9 +76,6 @@ preferences {
             input "allowedModes", "mode", title: "Allowed Location Modes", multiple: true, required: false
             input "sickDaySwitch", "capability.switch", title: "Sick Day Virtual Switch", required: false
             input "busLight", "capability.colorControl", title: "Select Hue Light", required: true
-            
-            paragraph "<b>Integration & Overrides</b>"
-            input "overrideSwitch", "capability.switch", title: "State Override Switch (Freezes Motion Lighting while Active)", required: false
         }
 
         section("2. Weather & Umbrella Warning") {
@@ -111,6 +108,11 @@ preferences {
             input "testAmBtn", "button", title: "Test Morning Pickup Routine"
             input "testPmBtn", "button", title: "Test Afternoon Drop-Off Routine"
             input "stopTestBtn", "button", title: "Stop Active Test & Turn Off Light"
+        }
+        
+        section("8. Integration & External Overrides") {
+            paragraph "<b>Freeze other applications during sequence</b><br>If you are using shared lights for your bus indicator (such as a porch light managed by a motion lighting app), those other apps might try to turn the light off while the bus notification is active.<br><br>Select a Virtual Switch here. This app will turn it ON during an active bus sequence. You can use that switch in your other apps to 'freeze' or 'disable' them until the sequence completes."
+            input "overrideSwitch", "capability.switch", title: "State Override Switch (Freezes external apps)", required: false
         }
 
         section("Morning Pickup Schedule") {
