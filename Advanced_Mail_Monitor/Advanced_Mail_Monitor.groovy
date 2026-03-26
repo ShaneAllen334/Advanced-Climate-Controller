@@ -129,6 +129,9 @@ def mainPage() {
         section("Integration & External Overrides") {
             paragraph "<b>Freeze other applications during delivery</b><br>If you are using shared lights for your mail notification (such as a living room lamp managed by a motion lighting app), those other apps might try to turn the light off while the mail notification is active.<br><br>Select a Virtual Switch here. This app will turn it ON during a delivery. You can use that switch in your other apps to 'freeze' or 'disable' them until the mail is retrieved."
             input "overrideSwitch", "capability.switch", title: "State Override Switch (Freezes external apps)", required: false
+            
+            paragraph "<b>Yield to Higher Priority Applications</b><br>If another app (like the School Bus sequence) is actively using the lights, select its active switch here. Mail deliveries will be tracked, but the lights will wait to turn on until the priority app is finished."
+            input "priorityYieldSwitch", "capability.switch", title: "Priority Yield Switch (e.g., School Active Switch)", required: false
         }
 
         section("Audio Announcements & Notifications") {
@@ -172,9 +175,29 @@ def initialize() {
     
     if (exteriorDoors) subscribe(exteriorDoors, "contact.open", homeActivityHandler)
     if (arrivalSensors) subscribe(arrivalSensors, "presence.present", homeActivityHandler)
+    if (priorityYieldSwitch) subscribe(priorityYieldSwitch, "switch", priorityYieldHandler)
  
     schedule("0 0 0 * * ?", "midnightReset")
     if (enableNag && nagTime) schedule(nagTime, "nagHandler")
+}
+
+def priorityYieldHandler(evt) {
+    // If the priority sequence (like School Bus) just ended, check if we missed a delivery!
+    if (evt.value == "off") {
+        if (mailSwitch.currentValue("switch") == "on") {
+            log.info "Priority sequence ended. Mail is waiting. Activating indicators."
+            addToHistory("RESUMING: Priority ended. Turning on mail lights.")
+            
+            // FREEZE Motion App & Capture State BEFORE changing lights
+            if (overrideSwitch && overrideSwitch.currentValue("switch") != "on") {
+                overrideSwitch.on()
+                if (indicatorLight) captureLightState(indicatorLight)
+            }
+            
+            if (indicatorLight) setLightColor(indicatorLight, deliveryColor, lightLevel ?: 100)
+            if (inovelliSwitches) setLightColor(inovelliSwitches, deliveryColor, lightLevel ?: 100)
+        }
+    }
 }
 
 def appButtonHandler(btn) {
@@ -273,22 +296,28 @@ def sensorOpenHandler(evt) {
         // --- MAIL DELIVERY LOGIC ---
         mailSwitch.on()
         
+        state.lastValidStateChange = now
+        state.todayDeliveryTime = currentTimeStr
+        updateAverage("delivery", currentMinutes)
+        addToHistory("DELIVERY DETECTED.")
+        
+        if (sendPushDelivery) sendMessage("📫 Mail delivered!")
+        if (ttsSpeakers && ttsDeliveryText) ttsSpeakers.speak(ttsDeliveryText)
+
+        // PRIORITY YIELD CHECK
+        if (priorityYieldSwitch && priorityYieldSwitch.currentValue("switch") == "on") {
+            addToHistory("YIELD: Priority sequence active. Delaying lights.")
+            return // Skip freezing other apps and skip turning on the indicator lights
+        }
+        
         // FREEZE Motion App & Capture State BEFORE changing lights
         if (overrideSwitch && overrideSwitch.currentValue("switch") != "on") {
             overrideSwitch.on()
             if (indicatorLight) captureLightState(indicatorLight)
         }
         
-        state.lastValidStateChange = now
-        state.todayDeliveryTime = currentTimeStr
-        updateAverage("delivery", currentMinutes)
-        addToHistory("DELIVERY DETECTED.")
-        
         if (indicatorLight) setLightColor(indicatorLight, deliveryColor, lightLevel ?: 100)
         if (inovelliSwitches) setLightColor(inovelliSwitches, deliveryColor, lightLevel ?: 100)
- 
-        if (sendPushDelivery) sendMessage("📫 Mail delivered!")
-        if (ttsSpeakers && ttsDeliveryText) ttsSpeakers.speak(ttsDeliveryText)
     }
 }
 
