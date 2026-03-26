@@ -76,6 +76,9 @@ preferences {
             input "allowedModes", "mode", title: "Allowed Location Modes", multiple: true, required: false
             input "sickDaySwitch", "capability.switch", title: "Sick Day Virtual Switch", required: false
             input "busLight", "capability.colorControl", title: "Select Hue Light", required: true
+            
+            paragraph "<b>Integration & Overrides</b>"
+            input "overrideSwitch", "capability.switch", title: "State Override Switch (Freezes Motion Lighting while Active)", required: false
         }
 
         section("2. Weather & Umbrella Warning") {
@@ -157,7 +160,7 @@ def initialize() {
     state.pmDoorCount = state.pmDoorCount ?: 0
     state.isBlinking = false
     state.isTesting = false
-    state.lightActiveByApp = state.lightActiveByApp ?: false // NEW: Initialize the app light control state
+    state.lightActiveByApp = state.lightActiveByApp ?: false 
     state.actionHistory = state.actionHistory ?: []
     state.calendarForecastHtml = state.calendarForecastHtml ?: ""
 
@@ -177,7 +180,6 @@ def initialize() {
     if (amStage3) schedule(amStage3, "amSetStage3")
     if (amClear) schedule(amClear, "turnLightOff")
 
-    // Setup daily PM event calculator to run at 12:01 AM every day
     schedule("0 1 0 ? * *", "scheduleDailyPMEvents")
     scheduleDailyPMEvents() 
 }
@@ -189,7 +191,7 @@ def logAction(String msg) {
     def entry = "<b>${timeString}</b>: ${msg}"
     def list = state.actionHistory ?: []
     list.add(0, entry)
-    if (list.size() > 10) list = list[0..9] // Keep last 10 events
+    if (list.size() > 10) list = list[0..9] 
     state.actionHistory = list
     log.info "UI LOG: ${msg}"
 }
@@ -229,7 +231,6 @@ def scheduleTodayEvent(timeInput, handlerMethod) {
         use(groovy.time.TimeCategory) { scheduledTime = scheduledTime - offset.minutes }
     }
     
-    // Only schedule if the calculated time is still in the future today
     if (scheduledTime.after(new Date())) {
         runOnce(scheduledTime, handlerMethod, [overwrite: true])
     }
@@ -304,6 +305,45 @@ def appButtonHandler(btn) {
     }
 }
 
+// --- STATE CAPTURE ENGINE ---
+def captureLightState(dev) {
+    if (!state.savedLightState) state.savedLightState = [:]
+    
+    state.savedLightState = [
+        switch: dev.currentValue("switch"),
+        hue: dev.currentValue("hue"),
+        saturation: dev.currentValue("saturation"),
+        level: dev.currentValue("level"),
+        colorTemperature: dev.currentValue("colorTemperature")
+    ]
+    log.info "Captured previous state for ${dev.displayName}: ${state.savedLightState}"
+}
+
+def restoreLightState(dev) {
+    if (!state.savedLightState) {
+        dev.off()
+        return
+    }
+    
+    def saved = state.savedLightState
+    if (saved.switch == "on") {
+        if (saved.colorTemperature) {
+            dev.setColorTemperature(saved.colorTemperature, saved.level)
+        } else if (saved.hue != null && saved.saturation != null) {
+            dev.setColor([hue: saved.hue, saturation: saved.saturation, level: saved.level])
+        } else {
+            dev.on()
+            if (saved.level) dev.setLevel(saved.level)
+        }
+        log.info "Restored ${dev.displayName} to ON state."
+    } else {
+        dev.off()
+        log.info "Restored ${dev.displayName} to OFF state."
+    }
+    
+    state.savedLightState = [:] // Clear saved state
+}
+
 // --- Dynamic Blink Engine ---
 
 def startLightingSequence(colorName, isRainOverride, nextTargetEpoch) {
@@ -313,7 +353,13 @@ def startLightingSequence(colorName, isRainOverride, nextTargetEpoch) {
         logAction("Rain detected: Overriding light color to Blue.")
     }
 
-    state.lightActiveByApp = true // NEW: Flag that the app has taken control of the light
+    // FREEZE Motion App & Capture State BEFORE changing lights
+    if (overrideSwitch && overrideSwitch.currentValue("switch") != "on") {
+        overrideSwitch.on()
+        if (busLight) captureLightState(busLight)
+    }
+
+    state.lightActiveByApp = true 
 
     state.currentStageColor = colorMap
     if (busLight) busLight.setColor([hue: colorMap.hue, saturation: colorMap.saturation, level: 80])
@@ -566,18 +612,19 @@ def checkSafeArrival() {
 }
 
 def turnLightOff() {
-    // NEW: Abort if the app didn't actually turn the light on 
     if (!state.lightActiveByApp && !state.isTesting) {
-        return // Leave the light alone!
+        return 
     }
 
-    state.lightActiveByApp = false // NEW: Reset the flag
-    
+    state.lightActiveByApp = false 
     state.isBlinking = false
     state.isTesting = false
-    if (busLight) busLight.off()
     state.waitingForArrival = false
     state.waitingForDeparture = false
+    
+    // RESTORE STATE & UNFREEZE Motion App
+    if (busLight) restoreLightState(busLight)
+    if (overrideSwitch) overrideSwitch.off()
     
     unschedule("testAmStage2")
     unschedule("testAmStage3")
@@ -615,13 +662,11 @@ def doCalendarSync(boolean isForced) {
                     onlineSuccess = true
                     String icsData = ""
                     
-                    // Safely extract data without triggering sandbox reflection errors
                     if (response.data == null) {
                         log.warn "iCal fetch returned empty data payload."
                     } else if (response.data instanceof String) {
                         icsData = response.data
                     } else {
-                        // If it is not a String, it is a data stream. We safely request the text via a try-catch to prevent sandbox crashes.
                         try {
                             icsData = response.data.text
                         } catch (e) {
