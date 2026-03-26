@@ -8,7 +8,8 @@ definition(
     description: "Predictive TV engine with watch-time tracking, Acoustic Management, TV Shows, and automatic safety interruptions.",
     category: "Convenience",
     iconUrl: "",
-    iconX2Url: ""
+    iconX2Url: "",
+    singleThreaded: true
 )
 
 preferences {
@@ -29,10 +30,10 @@ def mainPage() {
                     def tv = settings["tv_${i}"]
                     
                     if (!tv) {
-                         statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${tvName}</b></td><td style='padding: 8px; color: #888;'>Not Configured</td><td style='padding: 8px;'>-</td><td style='padding: 8px;'>-</td><td style='padding: 8px;'>-</td></tr>"
+                        statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${tvName}</b></td><td style='padding: 8px; color: #888;'>Not Configured</td><td style='padding: 8px;'>-</td><td style='padding: 8px;'>-</td><td style='padding: 8px;'>-</td></tr>"
                         continue
                     }
-                
+               
                     def isTrulyOn = isTvActuallyOn(tv)
                     def powerState = isTrulyOn ? "ON" : "STANDBY / OFF"
                     def pwrColor = isTrulyOn ? "green" : "red"
@@ -48,14 +49,14 @@ def mainPage() {
                     if (state.appStats?."${i}") {
                         state.appStats["${i}"].each { app, time ->
                             if (time > topTime) {
-                                 topApp = app
+                                topApp = app
                                 topTime = time
                             }
-                         }
+                        }
                     }
                     
                     def cost = "\$" + (state.costToday?."${i}" ?: 0.00).setScale(2, BigDecimal.ROUND_HALF_UP)
-                   
+                 
                     statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${tvName}</b></td><td style='padding: 8px;'><span style='color: ${pwrColor}; font-weight:bold;'>${powerState}</span><br><span style='font-size:11px; color:#555;'>${currentApp}</span></td><td style='padding: 8px;'>${watchDisplay}</td><td style='padding: 8px;'>${topApp}</td><td style='padding: 8px;'>${cost}</td></tr>"
                 }
                 statusText += "</table>"
@@ -137,7 +138,9 @@ def tvPage(params) {
         
         section("Control Devices") {
             input "tv_${tNum}", "capability.switch", title: "Television Device", required: true, description: "The primary Smart TV device (e.g., Roku)."
+            input "tvPlug_${tNum}", "capability.switch", title: "Smart Plug Powering TV (Optional)", required: false, description: "Select the smart plug that powers this TV. The app will turn it on for routines and restore its state when finished."
             input "tvAudio_${tNum}", "capability.audioVolume", title: "Dedicated Audio/Soundbar (Optional)", required: false, description: "Select this ONLY if your TV uses an external, smart-controlled soundbar (like Sonos or Denon) for volume instead of native speakers."
+            input "isAudioOnkyo_${tNum}", "bool", title: "Is this Audio Device an Onkyo AVR?", defaultValue: false, description: "Check this if your soundbar/audio device is an Onkyo AVR so the app sends setLevel commands instead of click volume commands."
         }
         
         section("TV Show Favorites (Auto-Tune & Turn Off)") {
@@ -198,7 +201,6 @@ def tvPage(params) {
                 input "tvBlinds_${tNum}", "capability.contactSensor", title: "Room Blinds Evaluator (Contact)", required: false, description: "If selected, the app will ONLY restore the lights upon TV shutdown if these blinds are closed."
                 input "lightRestoreTimeStart_${tNum}", "time", title: "Light Restore Start Time", required: false, description: "Earliest time of day lights are allowed to automatically turn back on."
                 input "lightRestoreTimeEnd_${tNum}", "time", title: "Light Restore End Time", required: false, description: "Latest time of day lights are allowed to automatically turn back on."
-                
                 input "evaluateRoomBtn_${tNum}", "button", title: "Evaluate Room (Force OFF Lights & Appliances if TV is ON)"
             }
         }
@@ -263,6 +265,11 @@ def initialize() {
     state.noiseSwitchesPaused = state.noiseSwitchesPaused ?: [:]
     state.hvacVolumeBoosted = state.hvacVolumeBoosted ?: [:]
     
+    // Power State Trackers
+    state.plugWasOffBeforeShow = state.plugWasOffBeforeShow ?: [:]
+    state.plugWasOffBeforeMorning = state.plugWasOffBeforeMorning ?: [:]
+    state.plugWasOffBeforeWeather = state.plugWasOffBeforeWeather ?: [:]
+    
     unschedule("trackUsageStep")
     trackUsageStep()
     schedule("0 0/3 * * * ?", "refreshTVs") 
@@ -303,6 +310,81 @@ def initialize() {
     }
 }
 
+// --- Central Routine Handlers (Plug + TV Sequencing) ---
+
+def triggerRoutine(i, channel, source, showNum = null) {
+    def plug = settings["tvPlug_${i}"]
+    def tv = settings["tv_${i}"]
+    def isPlugOff = plug && plug.currentValue("switch") == "off"
+    
+    if (isPlugOff) {
+        if (source == "weather") state.plugWasOffBeforeWeather["${i}"] = true
+        else if (source == "morning") state.plugWasOffBeforeMorning["${i}"] = true
+        else if (source == "show") state.plugWasOffBeforeShow["${i}_${showNum}"] = true
+        
+        addToHistory("${getTvName(i)}: Powering on smart plug for ${source} routine.")
+        plug.on()
+        
+        // Wait 20 seconds for TV to boot before issuing commands
+        runIn(20, "executeTvPowerOn", [data: [tvNum: i, channel: channel], overwrite: false])
+    } else {
+        if (source == "weather") state.plugWasOffBeforeWeather["${i}"] = false
+        else if (source == "morning") state.plugWasOffBeforeMorning["${i}"] = false
+        else if (source == "show") state.plugWasOffBeforeShow["${i}_${showNum}"] = false
+        
+        executeTvPowerOn([tvNum: i, channel: channel])
+    }
+}
+
+def executeTvPowerOn(data) {
+    def i = data.tvNum as Integer
+    def tv = settings["tv_${i}"]
+    def channel = data.channel
+    
+    if (!isTvActuallyOn(tv)) {
+        tv.on()
+        if (channel) runIn(18, "executeSetChannel", [data: [tvNum: i, channel: channel], overwrite: false])
+    } else {
+        if (channel) runIn(4, "executeSetChannel", [data: [tvNum: i, channel: channel], overwrite: false])
+    }
+}
+
+def endRoutine(i, source, showNum = null) {
+    def tv = settings["tv_${i}"]
+    if (tv && isTvActuallyOn(tv)) {
+        addToHistory("${getTvName(i)}: Routine (${source}) ended. Powering OFF.")
+        tv.off()
+    }
+    
+    // Let TV turn off gracefully before cutting plug
+    runIn(8, "evaluatePlugShutdown", [data: [tvNum: i, source: source, showNum: showNum], overwrite: false])
+}
+
+def evaluatePlugShutdown(data) {
+    def i = data.tvNum as Integer
+    def source = data.source
+    def showNum = data.showNum
+    def plug = settings["tvPlug_${i}"]
+    
+    def cutPower = false
+    if (source == "weather" && state.plugWasOffBeforeWeather["${i}"]) cutPower = true
+    else if (source == "morning" && state.plugWasOffBeforeMorning["${i}"]) cutPower = true
+    else if (source == "show" && state.plugWasOffBeforeShow["${i}_${showNum}"]) cutPower = true
+    
+    if (cutPower && plug) {
+        addToHistory("${getTvName(i)}: Cutting power to smart plug (was off before routine).")
+        plug.off()
+        
+        // Clear state to prevent accidental cutoffs later
+        if (source == "weather") state.plugWasOffBeforeWeather["${i}"] = false
+        else if (source == "morning") state.plugWasOffBeforeMorning["${i}"] = false
+        else if (source == "show") state.plugWasOffBeforeShow["${i}_${showNum}"] = false
+    }
+}
+
+
+// --- Scheduled TV Shows ---
+
 def checkTvShows() {
     if (isSystemPaused()) return
     def now = new Date()
@@ -312,7 +394,6 @@ def checkTvShows() {
     for (int i = 1; i <= (numTVs as Integer); i++) {
         for (int s = 1; s <= 2; s++) {
             if (settings["enableShow_${i}_${s}"]) {
-                
                 def days = settings["showDays_${i}_${s}"]
                 if (days && !days.contains(today)) continue
 
@@ -340,30 +421,21 @@ def checkTvShows() {
 }
 
 def startTvShow(i, s) {
-    def tv = settings["tv_${i}"]
-    def channel = settings["showChannel_${i}_${s}"]
     def showName = settings["showName_${i}_${s}"] ?: "TV Show ${s}"
-
-    if (tv) {
-        addToHistory("${getTvName(i)}: Starting scheduled show [${showName}].")
-        if (!isTvActuallyOn(tv)) {
-            tv.on()
-            if (channel) runIn(18, "executeSetChannel", [data: [tvNum: i, channel: channel], overwrite: false])
-        } else {
-            if (channel) runIn(4, "executeSetChannel", [data: [tvNum: i, channel: channel], overwrite: false])
-        }
-    }
+    def channel = settings["showChannel_${i}_${s}"]
+    
+    addToHistory("${getTvName(i)}: Starting scheduled show [${showName}].")
+    triggerRoutine(i, channel, "show", s)
 }
 
 def endTvShow(i, s) {
-    def tv = settings["tv_${i}"]
     def showName = settings["showName_${i}_${s}"] ?: "TV Show ${s}"
-
-    if (tv && isTvActuallyOn(tv)) {
-        addToHistory("${getTvName(i)}: Scheduled show [${showName}] ended. Powering OFF.")
-        tv.off()
-    }
+    addToHistory("${getTvName(i)}: Scheduled show [${showName}] ended.")
+    endRoutine(i, "show", s)
 }
+
+
+// --- TV State & Power Evaluator ---
 
 def refreshTVs() {
     if (isSystemPaused()) return
@@ -380,17 +452,13 @@ def isTvActuallyOn(tv) {
     def app = tv.currentValue("application") ?: "Home"
     def transport = tv.currentValue("transportStatus")
     
-    // 1. Hard power off states
     if (sw == "off" || pwr in ["PowerOff", "Off", "DisplayOff", "Headless"]) return false
     
-    // 2. Force OFF state if the TV is sitting idle on a home screen or screensaver
     def idleApps = ["Roku Dynamic Menu", "Backdrops", "Roku Media Player", "Home", "none", null]
     if (idleApps.contains(app)) return false
     
-    // 3. Media ready but stopped
     if (sw == "on" && pwr == "Ready" && transport == "stopped") return false
     
-    // If it passes all the safety checks above, it's genuinely ON
     return sw == "on"
 }
 
@@ -414,8 +482,12 @@ def tvPowerEvaluator(evt) {
                 if (settings["enableVolumeMgmt_${i}"]) {
                     def targetVol = settings["startupVolume_${i}"]
                     def audioDevice = settings["tvAudio_${i}"]
-                    if (targetVol != null && audioDevice && audioDevice.hasCommand("setVolume")) {
-                        audioDevice.setVolume(targetVol)
+                    if (targetVol != null && audioDevice) {
+                        if (settings["isAudioOnkyo_${i}"] || (!audioDevice.hasCommand("setVolume") && audioDevice.hasCommand("setLevel"))) {
+                            audioDevice.setLevel(targetVol)
+                        } else if (audioDevice.hasCommand("setVolume")) {
+                            audioDevice.setVolume(targetVol)
+                        }
                         addToHistory("${tvName}: Startup absolute volume adjusted to ${targetVol}.")
                     }
                 }
@@ -448,7 +520,6 @@ def tvPowerEvaluator(evt) {
                     }
                 }
                 
-                // Initial Sweeper Run (isPeriodic flag set to false so it logs everything)
                 if (settings["enableSweeper_${i}"]) {
                     runIn(4, "executeSweeperDelay", [data: [tvNum: i, isPeriodic: false], overwrite: false])
                 }
@@ -466,7 +537,7 @@ def tvPowerEvaluator(evt) {
                         }
                     }
                  }
-                
+                 
             } else if (!isTrulyOn && lastEvaluatedState) {
                 state.evaluatedPowerState["${i}"] = false
                 state.hvacVolumeBoosted["${i}"] = false 
@@ -477,7 +548,7 @@ def tvPowerEvaluator(evt) {
                     if (reduceClicks && reduceClicks > 0) {
                         def audioDev = settings["tvAudio_${i}"] ?: tv
                         addToHistory("${tvName}: Tapering volume down by ${reduceClicks} clicks for quiet startup.")
-                        adjustVolumeRelative(audioDev, reduceClicks, "down")
+                        adjustVolumeRelative(audioDev, reduceClicks, "down", settings["isAudioOnkyo_${i}"])
                      }
                 }
 
@@ -507,7 +578,7 @@ def tvPowerEvaluator(evt) {
                         if (startTime && endTime) timeOk = timeOfDayIsBetween(timeToday(startTime, location.timeZone), timeToday(endTime, location.timeZone), new Date(), location.timeZone)
                         
                         if (isBlindClosed && timeOk) {
-                            addToHistory("${tvName}: Conditions met. Restoring lights.")
+                             addToHistory("${tvName}: Conditions met. Restoring lights.")
                              lights.each { it.on() } 
                         }
                     }
@@ -535,6 +606,40 @@ def tvPowerEvaluator(evt) {
         }
     }
 }
+
+// --- Volume Normalization Engine ---
+
+def adjustVolumeRelative(audioDevice, amount, direction, isOnkyo = false) {
+    if (!audioDevice) return
+    
+    // Check if device is an Onkyo AVR, or relies on setLevel for volume control instead of standard volume clicks
+    if (isOnkyo || (!audioDevice.hasCommand("volumeUp") && audioDevice.hasCommand("setLevel"))) {
+        def currentLevelObj = audioDevice.currentValue("level") ?: audioDevice.currentValue("volume") ?: 50
+        def currentLevel = currentLevelObj as Integer
+        def amountInt = amount as Integer
+        def newLevel = direction == "up" ? currentLevel + amountInt : currentLevel - amountInt
+        
+        if (newLevel < 0) newLevel = 0
+        if (newLevel > 100) newLevel = 100
+        
+        if (audioDevice.hasCommand("setLevel")) audioDevice.setLevel(newLevel)
+        else if (audioDevice.hasCommand("setVolume")) audioDevice.setVolume(newLevel)
+        return
+    }
+    
+    // Standard soundbar/television volume command loop
+    for (int j = 0; j < amount; j++) {
+        if (direction == "up") {
+            if (audioDevice.hasCommand("volumeUp")) audioDevice.volumeUp()
+        } else {
+            if (audioDevice.hasCommand("volumeDown")) audioDevice.volumeDown()
+        }
+        pauseExecution(300) 
+    }
+}
+
+
+// --- Secondary Feature Handlers ---
 
 def delayedLightTurnOff(data) {
     def i = data.tvNum
@@ -579,7 +684,6 @@ def executeSweeper(i, isPeriodic) {
         addToHistory("${getTvName(i)}: Sweeper turned OFF: ${sweptDevices.join(', ')}")
     }
     
-    // Only log the bypass reason on the initial manual TV power-on to prevent log spam every 5 minutes
     if (bypassedDevices && !isPeriodic) {
         addToHistory("${getTvName(i)}: Sweeper bypassed (Motion Active): ${bypassedDevices.join(', ')}")
     }
@@ -620,7 +724,6 @@ def evaluateRoomLights(i) {
             }
         }
         
-        // Also force a manual sweeper check when they press the evaluate button
         if (settings["enableSweeper_${i}"]) {
              executeSweeper(i, false)
              actionTaken = true
@@ -653,28 +756,16 @@ def hvacStateHandler(evt) {
                 if (isRunning && !state.hvacVolumeBoosted["${i}"]) {
                     addToHistory("${tvName}: HVAC started (${opState}). Boosting volume by ${boostAmount} ticks.")
                     state.hvacVolumeBoosted["${i}"] = true
-                    adjustVolumeRelative(audioDevice, boostAmount, "up")
+                    adjustVolumeRelative(audioDevice, boostAmount, "up", settings["isAudioOnkyo_${i}"])
                 } else if (!isRunning && state.hvacVolumeBoosted["${i}"]) {
                     addToHistory("${tvName}: HVAC stopped. Reducing volume by ${boostAmount} ticks.")
                     state.hvacVolumeBoosted["${i}"] = false
-                    adjustVolumeRelative(audioDevice, boostAmount, "down")
+                    adjustVolumeRelative(audioDevice, boostAmount, "down", settings["isAudioOnkyo_${i}"])
                 }
             } else {
                 state.hvacVolumeBoosted["${i}"] = false
             }
         }
-    }
-}
-
-def adjustVolumeRelative(audioDevice, amount, direction) {
-    if (!audioDevice) return
-    for (int j = 0; j < amount; j++) {
-        if (direction == "up") {
-            if (audioDevice.hasCommand("volumeUp")) audioDevice.volumeUp()
-        } else {
-            if (audioDevice.hasCommand("volumeDown")) audioDevice.volumeDown()
-        }
-        pauseExecution(300) 
     }
 }
 
@@ -692,7 +783,6 @@ def trackUsageStep() {
             if (!state.appStats["${i}"]) state.appStats["${i}"] = [:]
             state.appStats["${i}"][currentApp] = (state.appStats["${i}"][currentApp] ?: 0) + 5
             
-            // Run the background motion sweeper
             if (settings["enableSweeper_${i}"]) {
                 executeSweeper(i, true)
             }
@@ -764,28 +854,23 @@ def morningMotionHandler(evt) {
             if (startTime && endTime && !timeOfDayIsBetween(timeToday(startTime, location.timeZone), timeToday(endTime, location.timeZone), new Date(), location.timeZone)) continue
             
             state.morningRoutineRunDate["${i}"] = today
-            def tv = settings["tv_${i}"]
-             def channel = settings["morningChannel_${i}"]
-             def duration = settings["morningDuration_${i}"]
+            def channel = settings["morningChannel_${i}"]
+            def duration = settings["morningDuration_${i}"]
              
-            if (!isTvActuallyOn(tv)) {
-                tv.on()
-                if (channel) runIn(18, "executeSetChannel", [data: [tvNum: i, channel: channel], overwrite: false])
-            } else {
-                if (channel) runIn(4, "executeSetChannel", [data: [tvNum: i, channel: channel], overwrite: false])
+            triggerRoutine(i, channel, "morning")
+            
+            if (duration) {
+                // Buffer the duration by 15s to account for plug bootup timing delay
+                runIn((duration * 60) + 15, "endMorningRoutine", [data: [tvNum: i], overwrite: false])
             }
-            if (duration) runIn((duration * 60) + 18, "endMorningRoutine", [data: [tvNum: i], overwrite: false])
         }
     }
 }
 
 def endMorningRoutine(data) {
-    def i = data.tvNum
-    def tv = settings["tv_${i}"]
-    if (tv && isTvActuallyOn(tv)) {
-        addToHistory("${getTvName(i)}: Morning routine duration met. Powering OFF.")
-        tv.off()
-    }
+    def i = data.tvNum as Integer
+    addToHistory("${getTvName(i)}: Morning routine duration met.")
+    endRoutine(i, "morning")
 }
 
 def weatherSwitchHandler(evt) {
@@ -800,9 +885,9 @@ def weatherSwitchHandler(evt) {
             if (tv) {
                  if (!isTvActuallyOn(tv)) {
                     state.tvWasOffBeforeWeather["${i}"] = true
-                    tv.on()
-                    if (channel) runIn(18, "executeSetChannel", [data: [tvNum: i, channel: channel], overwrite: false])
+                    triggerRoutine(i, channel, "weather")
                 } else {
+                    state.tvWasOffBeforeWeather["${i}"] = false
                     if (channel) runIn(4, "executeSetChannel", [data: [tvNum: i, channel: channel], overwrite: false])
                 }
              }
@@ -818,7 +903,9 @@ def endWeatherAlert() {
     unschedule("endWeatherAlert")
     for (int i = 1; i <= (numTVs as Integer); i++) {
         def tv = settings["tv_${i}"]
-        if (tv && state.tvWasOffBeforeWeather["${i}"]) tv.off()
+        if (tv && state.tvWasOffBeforeWeather["${i}"]) {
+            endRoutine(i, "weather")
+        }
     }
     state.tvWasOffBeforeWeather = [:]
 }
@@ -829,7 +916,7 @@ def executeSetChannel(data) {
     if (tv) {
         def currentInput = tv.currentValue("mediaInputSource")
         if (currentInput != "Antenna TV" && currentInput != "InputTuner" && currentInput != "Tuner") {
-             if (tv.hasCommand("input_Tuner")) tv.input_Tuner()
+            if (tv.hasCommand("input_Tuner")) tv.input_Tuner()
             else if (tv.hasCommand("keyPress")) tv.keyPress("InputTuner")
         }
         runIn(6, "finalizeSetChannel", [data: [tvNum: i, channel: data.channel], overwrite: false])
@@ -842,7 +929,7 @@ def finalizeSetChannel(data) {
     if (tv) {
         def cleanChannel = data.channel.toString().trim()
         if (tv.hasCommand("tuneChannel")) {
-             tv.tuneChannel(cleanChannel)
+            tv.tuneChannel(cleanChannel)
         } else if (tv.hasCommand("setChannel")) {
             try {
                 tv.setChannel(cleanChannel as Number)
@@ -941,30 +1028,20 @@ def appButtonHandler(btn) {
 }
 
 def testMorningRoutine(i) {
-    def tv = settings["tv_${i}"]
     def channel = settings["morningChannel_${i}"]
     def duration = settings["morningDuration_${i}"]
     
-    if (tv) {
-        addToHistory("${getTvName(i)}: Morning routine TEST initiated via button.")
-        if (!isTvActuallyOn(tv)) {
-            tv.on()
-            if (channel) runIn(18, "executeSetChannel", [data: [tvNum: i, channel: channel], overwrite: false])
-        } else {
-            if (channel) runIn(4, "executeSetChannel", [data: [tvNum: i, channel: channel], overwrite: false])
-        }
-        if (duration) {
-            runIn((duration * 60) + 18, "endMorningRoutine", [data: [tvNum: i], overwrite: false])
-        }
+    addToHistory("${getTvName(i)}: Morning routine TEST initiated via button.")
+    triggerRoutine(i, channel, "morning")
+    
+    if (duration) {
+        runIn((duration * 60) + 15, "endMorningRoutine", [data: [tvNum: i], overwrite: false])
     }
 }
 
 def stopMorningRoutineTest(i) {
-    def tv = settings["tv_${i}"]
-    if (tv) {
-        addToHistory("${getTvName(i)}: Morning routine TEST stopped via button. Powering OFF.")
-        tv.off()
-    }
+    addToHistory("${getTvName(i)}: Morning routine TEST stopped via button.")
+    endRoutine(i, "morning")
 }
 
 def testHvacBoost(i, isRunning) {
@@ -977,11 +1054,11 @@ def testHvacBoost(i, isRunning) {
         if (isRunning && !state.hvacVolumeBoosted["${i}"]) {
             addToHistory("${tvName}: TEST HVAC started. Boosting volume by ${boostAmount} ticks.")
             state.hvacVolumeBoosted["${i}"] = true
-            adjustVolumeRelative(audioDevice, boostAmount, "up")
+            adjustVolumeRelative(audioDevice, boostAmount, "up", settings["isAudioOnkyo_${i}"])
         } else if (!isRunning && state.hvacVolumeBoosted["${i}"]) {
             addToHistory("${tvName}: TEST HVAC stopped. Reducing volume by ${boostAmount} ticks.")
             state.hvacVolumeBoosted["${i}"] = false
-            adjustVolumeRelative(audioDevice, boostAmount, "down")
+            adjustVolumeRelative(audioDevice, boostAmount, "down", settings["isAudioOnkyo_${i}"])
         } else {
             addToHistory("${tvName}: TEST HVAC ignored (already in requested state).")
         }
