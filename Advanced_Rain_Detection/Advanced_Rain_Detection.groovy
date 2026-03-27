@@ -32,7 +32,7 @@ def mainPage() {
                 // Fetch raw data using multi-attribute fallback
                 def t = getFloat(sensorTemp, ["temperature", "tempf"])
                 def h = getFloat(sensorHum, ["humidity"])
-                def p = getFloat(sensorPress, ["pressure", "Baromrelin", "Baromabsin", "barometricPressure"])
+                def p = getFloat(sensorPress, ["pressure", "Baromrelin", "baromrelin", "Baromabsin", "baromabsin", "barometricPressure"])
                 def r = getFloat(sensorRain, ["rainRate", "hourlyrainin", "precipRate", "hourlyRain"])
                 def lux = getFloat(sensorLux, ["illuminance", "solarradiation", "solarRadiation"], "N/A")
                 def wind = getFloat(sensorWind, ["windSpeed", "windspeedmph", "wind"], "N/A")
@@ -277,7 +277,7 @@ def initialize() {
     // Multi-Attribute Subscriptions (Agnostic to Ecowitt/Tempest/Ambient)
     subscribeMulti(sensorTemp, ["temperature", "tempf"], "tempHandler")
     subscribeMulti(sensorHum, ["humidity"], "stdHandler")
-    subscribeMulti(sensorPress, ["pressure", "Baromrelin", "Baromabsin", "barometricPressure"], "pressureHandler")
+    subscribeMulti(sensorPress, ["pressure", "Baromrelin", "baromrelin", "Baromabsin", "baromabsin", "barometricPressure"], "pressureHandler")
     subscribeMulti(sensorLux, ["illuminance", "solarradiation", "solarRadiation"], "luxHandler")
     subscribeMulti(sensorWind, ["windSpeed", "windspeedmph", "wind"], "windHandler")
     subscribeMulti(sensorRain, ["rainRate", "hourlyrainin", "precipRate", "hourlyRain"], "stdHandler")
@@ -495,7 +495,7 @@ def evaluateWeather() {
     // Fetch dynamic attributes
     def t = getFloat(sensorTemp, ["temperature", "tempf"])
     def h = getFloat(sensorHum, ["humidity"])
-    def p = getFloat(sensorPress, ["pressure", "Baromrelin", "Baromabsin", "barometricPressure"])
+    def p = getFloat(sensorPress, ["pressure", "Baromrelin", "baromrelin", "Baromabsin", "baromabsin", "barometricPressure"])
     def r = getFloat(sensorRain, ["rainRate", "hourlyrainin", "precipRate", "hourlyRain"])
     def luxVal = getFloat(sensorLux, ["illuminance", "solarradiation", "solarRadiation"])
     def windVal = getFloat(sensorWind, ["windSpeed", "windspeedmph", "wind"])
