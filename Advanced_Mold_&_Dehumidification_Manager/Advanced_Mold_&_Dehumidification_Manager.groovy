@@ -8,7 +8,7 @@ definition(
     name: "Advanced Mold & Dehumidification Manager",
     namespace: "ShaneAllen",
     author: "ShaneAllen",
-    description: "ASHRAE-based mold engine with Energy Saver Overrides, Granular Notifications, Compressor Protection, Leak Emergencies, and Dew Point Tracking.",
+    description: "ASHRAE-based mold engine with System Boot Recovery, Energy Saver Overrides, Granular Notifications, Compressor Protection, Leak Emergencies, and Dew Point Tracking.",
     category: "Safety & Security",
     iconUrl: "",
     iconX2Url: "",
@@ -553,8 +553,19 @@ def getRiskColor(score) { return score > 80 ? "#cc0000" : score > 50 ? "#e67e22"
 
 def installed() { initialize() }
 def updated() { initialize() }
+
+def hubRebootHandler(evt) {
+    logAction("SYSTEM ALERT: Hub reboot detected. Re-initializing schedules and evaluating zones.")
+    initialize()
+    evaluateZones()
+}
+
 def initialize() {
     unschedule()
+    
+    // Subscribe to Hub Reboots to ensure recovery
+    subscribe(location, "systemStart", "hubRebootHandler")
+    
     for (int i = 1; i <= 8; i++) { 
         if (settings["z${i}Hum"]) subscribe(settings["z${i}Hum"], "humidity", "handleEnvChange") 
         if (settings["z${i}Temp"]) subscribe(settings["z${i}Temp"], "temperature", "handleEnvChange")
@@ -564,6 +575,8 @@ def initialize() {
     if (outdoorTempSensor) subscribe(outdoorTempSensor, "temperature", "handleEnvChange")
     if (outdoorHumSensor) subscribe(outdoorHumSensor, "humidity", "handleEnvChange")
     if (energyModeSwitch) subscribe(energyModeSwitch, "switch", "handleEnvChange")
+    
     runEvery5Minutes("evaluateZones")
 }
+
 def handleEnvChange(evt) { evaluateZones() }
