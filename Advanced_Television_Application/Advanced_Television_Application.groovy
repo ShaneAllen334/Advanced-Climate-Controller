@@ -107,6 +107,24 @@ def mainPage() {
                     def cost = "\$" + (state.costToday?."${i}" ?: 0.00).setScale(2, BigDecimal.ROUND_HALF_UP)
                  
                     statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${tvName}</b></td><td style='padding: 8px;'><span style='color: ${pwrColor}; font-weight:bold;'>${powerState}</span><br><span style='font-size:11px; color:#555;'>${currentApp}</span>${acousticText}</td><td style='padding: 8px;'>${watchDisplay}</td><td style='padding: 8px;'>${topApp}</td><td style='padding: 8px;'>${cost}</td></tr>"
+                    
+                    // --- ACTIVE MACRO BANNER INJECTION ---
+                    def activeMacro = state.activeMacro?."${i}"
+                    if (activeMacro) {
+                        def modeTitle = activeMacro == "movie" ? "🎬 MOVIE MODE ACTIVE" : "🎮 GAMING MODE ACTIVE"
+                        def color = activeMacro == "movie" ? "#e8f4f8" : "#f4e8f8"
+                        def border = activeMacro == "movie" ? "#3498db" : "#9b59b6"
+                        def controlledList = state."macroControlledList_${i}" ?: "Environment locked."
+                        
+                        statusText += "<tr style='background-color: ${color}; border-left: 4px solid ${border};'><td colspan='5' style='padding: 10px; font-size: 12px; color: #333;'>"
+                        statusText += "<strong style='color: ${border};'>${modeTitle}</strong><br>"
+                        statusText += "<i>System is orchestrating the room. Snapshot captured.</i><br>"
+                        statusText += "<b>Actively Controlling:</b> ${controlledList}<br>"
+                        if (bmsPriorityLock && bmsPriorityLock.currentValue("switch") == "on") {
+                            statusText += "<span style='color:#c0392b;'><b>🔒 Global Priority Lock is ON:</b> Protecting this room from other app automations.</span>"
+                        }
+                        statusText += "</td></tr>"
+                    }
                 }
                 statusText += "</table>"
                 
@@ -135,6 +153,14 @@ def mainPage() {
             } else {
                 paragraph "<i>No history available yet. Logs will appear as the system takes action.</i>"
             }
+        }
+        
+        section("BMS Integrity & System Robustness", hideable: true, hidden: true) {
+            paragraph "These features elevate the application from simple convenience to a robust Building Management Engine, ensuring commands land safely and preventing apps from fighting each other."
+            input "bmsPriorityLock", "capability.switch", title: "Global Priority Lock Switch", required: false, description: "Turns ON automatically when Movie, Gaming, or Weather modes are active. Use this switch as a 'Restriction' in your other apps to prevent them from turning off the lights or TV while you are watching."
+            input "bmsMeshJitter", "bool", title: "Enable Mesh Optimization (Surge Staggering)", defaultValue: false, description: "Adds a random 500ms-2000ms delay between device commands during global events (like weather alerts) to prevent Zigbee/Z-Wave network flooding and electrical power surges."
+            input "bmsHeartbeat", "bool", title: "Enable Device Heartbeat & Retries", defaultValue: false, description: "Actively verifies if TV/AVR power commands actually executed. It will retry the command up to 3 times if the device dropped off the network, and log a Comms Failure if it completely fails."
+            input "bmsNightlyMaintenance", "bool", title: "Enable Nightly Driver Maintenance", defaultValue: false, description: "Forcefully calls refresh() and initialize() on all linked TV and AVR drivers every night at 3:00 AM to prevent connection zombie-states."
         }
         
         section("Global Settings & Modes", hideable: true, hidden: true) {
@@ -210,32 +236,90 @@ def tvPage(params) {
         }
         
         section("Dedicated Movie Mode (Macro / Scene)", hideable: true, hidden: true) {
-            input "enableMovieMode_${tNum}", "bool", title: "Enable Movie Mode", defaultValue: false, submitOnChange: true, description: "Triggers a full home theater macro from a single virtual switch. Orchestrates TV power, inputs, volume, lights, locks, fans, and HVAC in one smooth sequence."
+            input "enableMovieMode_${tNum}", "bool", title: "Enable Movie Mode", defaultValue: false, submitOnChange: true, description: "Triggers a full home theater macro from a single virtual switch. Orchestrates TV power, inputs, volume, lights, shades, locks, fans, and HVAC in one smooth sequence."
             if (settings["enableMovieMode_${tNum}"]) {
                 input "movieSwitch_${tNum}", "capability.switch", title: "Movie Mode Trigger Switch", required: true, description: "Select the virtual switch that will trigger this entire macro when turned ON, and turn the TV off when turned OFF."
                 
+                paragraph "<b>Execution Constraints:</b> Define exactly when this mode is allowed to run."
+                input "movieModes_${tNum}", "mode", title: "Allowed Hub Modes", multiple: true, required: false, description: "Only allow Movie Mode to run if the house is in one of these modes."
+                input "movieTimeStart_${tNum}", "time", title: "Allowed Start Time", required: false, description: "Earliest time of day Movie Mode is allowed to execute."
+                input "movieTimeEnd_${tNum}", "time", title: "Allowed End Time", required: false, description: "Latest time of day Movie Mode is allowed to execute."
+                
+                paragraph "<b>Media & Audio:</b>"
                 if (settings["isAvrOnly_${tNum}"]) {
                     input "movieTarget_${tNum}", "text", title: "Target AVR Input (e.g., HDMI 1)", required: false, description: "The exact AVR input string to switch to for Movie Mode."
                 } else {
                     input "movieTarget_${tNum}", "text", title: "Target TV Channel or Input", required: false, description: "The OTA channel or Input string to automatically tune to."
                     input "movieAppSwitch_${tNum}", "capability.switch", title: "OR Target App Switch", required: false, description: "Turns on a virtual app switch (e.g., a Roku Netflix device switch) instead of tuning a channel."
                 }
-                
                 input "movieVol_${tNum}", "number", title: "Target Volume", required: false, description: "The volume level to set. NOTE: If using an AVR, it sets this absolute number (0-100). If using a Soundbar, it will send this exact number of 'Volume Up' clicks sequentially."
                 
+                paragraph "<b>Environmental Control:</b>"
                 input "movieLightsOff_${tNum}", "capability.switch", title: "Lights to Turn OFF", multiple: true, required: false, description: "Select any lights that should immediately turn off to darken the room."
-                
                 input "movieLightsOn_${tNum}", "capability.switchLevel", title: "Lights to Turn ON / Dim", multiple: true, required: false, description: "Select lights (like bias lighting or lamps) to turn on for ambiance."
                 input "movieLightsLevel_${tNum}", "number", title: "Ambiance Dim Level (%)", required: false, range: "1..100", description: "The exact brightness percentage for the ambiance lights."
-                
+                input "movieShades_${tNum}", "capability.windowShade", title: "Shades / Blinds to Close", multiple: true, required: false, description: "Select up to 3 motorized shades or blinds to automatically close."
                 input "movieLocks_${tNum}", "capability.lock", title: "Doors to Lock", multiple: true, required: false, description: "Ensure the house is secure by automatically locking these doors when the movie starts."
-                
                 input "movieFans_${tNum}", "capability.fanControl", title: "Ceiling Fans to Adjust (Bond RF / Smart)", multiple: true, required: false, description: "Select ceiling fans to automatically adjust for room comfort."
                 input "movieFanSpeed_${tNum}", "enum", title: "Fan Speed", options: ["low", "medium-low", "medium", "medium-high", "high", "on", "off"], required: false, description: "The target speed to set the chosen ceiling fans to."
                 
+                paragraph "<b>Thermodynamics & HVAC:</b>"
                 input "movieThermostat_${tNum}", "capability.thermostat", title: "Thermostat to Adjust", required: false, description: "Select the room's thermostat to push a temporary climate hold during the movie."
-                input "movieCoolSetpoint_${tNum}", "number", title: "Cooling Setpoint", required: false, description: "The target cooling temperature."
                 input "movieHeatSetpoint_${tNum}", "number", title: "Heating Setpoint", required: false, description: "The target heating temperature."
+                input "movieCoolSetpoint_${tNum}", "number", title: "Cooling Setpoint", required: false, description: "The target cooling temperature."
+                input "moviePreCool_${tNum}", "number", title: "Thermodynamic Pre-Cool Offset (Degrees)", required: false, description: "Automatically drops the cooling setpoint by this many extra degrees for the first 45 minutes to counter the heat load generated by occupants and A/V equipment."
+                
+                paragraph "<b>Snapshot & Smart Restore:</b>"
+                input "movieRestore_${tNum}", "bool", title: "Enable Smart Restore (Snap-Back)", defaultValue: false, submitOnChange: true, description: "If enabled, takes a snapshot of your lights, blinds, fans, and HVAC before the movie starts, and snaps them back to those exact states when the movie ends."
+                if (settings["movieRestore_${tNum}"]) {
+                    input "movieRestoreModes_${tNum}", "mode", title: "Only Restore in these Modes", multiple: true, required: false, description: "Prevent snap-back if the house mode has changed (e.g., don't turn lights back on if the house has gone to 'Night' mode)."
+                    input "movieRestoreTimeStart_${tNum}", "time", title: "Restore Time Window Start", required: false
+                    input "movieRestoreTimeEnd_${tNum}", "time", title: "Restore Time Window End", required: false
+                }
+            }
+        }
+        
+        section("Dedicated Gaming Mode (Macro / Scene)", hideable: true, hidden: true) {
+            input "enableGamingMode_${tNum}", "bool", title: "Enable Gaming Mode", defaultValue: false, submitOnChange: true, description: "A secondary macro designed for gaming consoles. Captures the room, adjusts environment, and intelligently restores when you're done."
+            if (settings["enableGamingMode_${tNum}"]) {
+                input "gamingSwitch_${tNum}", "capability.switch", title: "Gaming Mode Trigger Switch", required: true, description: "Select the virtual switch that will trigger this entire macro when turned ON."
+                
+                paragraph "<b>Execution Constraints:</b> Define exactly when this mode is allowed to run."
+                input "gamingModes_${tNum}", "mode", title: "Allowed Hub Modes", multiple: true, required: false, description: "Only allow Gaming Mode to run if the house is in one of these modes."
+                input "gamingTimeStart_${tNum}", "time", title: "Allowed Start Time", required: false, description: "Earliest time of day Gaming Mode is allowed to execute."
+                input "gamingTimeEnd_${tNum}", "time", title: "Allowed End Time", required: false, description: "Latest time of day Gaming Mode is allowed to execute."
+                
+                paragraph "<b>Media & Audio:</b>"
+                if (settings["isAvrOnly_${tNum}"]) {
+                    input "gamingTarget_${tNum}", "text", title: "Target AVR Input (e.g., HDMI 2)", required: false, description: "The exact AVR input string to switch to for the gaming console."
+                } else {
+                    input "gamingTarget_${tNum}", "text", title: "Target TV Channel or Input", required: false, description: "The OTA channel or Input string to automatically tune to."
+                    input "gamingAppSwitch_${tNum}", "capability.switch", title: "OR Target App Switch", required: false, description: "Turns on a virtual app switch instead of tuning a channel."
+                }
+                input "gamingVol_${tNum}", "number", title: "Target Volume", required: false, description: "The volume level to set."
+                
+                paragraph "<b>Environmental Control:</b>"
+                input "gamingLightsOff_${tNum}", "capability.switch", title: "Lights to Turn OFF", multiple: true, required: false, description: "Select any lights that should immediately turn off to reduce screen glare."
+                input "gamingLightsOn_${tNum}", "capability.switchLevel", title: "Lights to Turn ON / Dim", multiple: true, required: false, description: "Select lights (like LED strips behind the TV) to turn on for gaming ambiance."
+                input "gamingLightsLevel_${tNum}", "number", title: "Ambiance Dim Level (%)", required: false, range: "1..100", description: "The exact brightness percentage for the ambiance lights."
+                input "gamingShades_${tNum}", "capability.windowShade", title: "Shades / Blinds to Close", multiple: true, required: false, description: "Select up to 3 motorized shades or blinds to automatically close to eliminate glare."
+                input "gamingLocks_${tNum}", "capability.lock", title: "Doors to Lock", multiple: true, required: false, description: "Lock these doors when gaming starts."
+                input "gamingFans_${tNum}", "capability.fanControl", title: "Ceiling Fans to Adjust", multiple: true, required: false, description: "Select ceiling fans to automatically adjust for room comfort."
+                input "gamingFanSpeed_${tNum}", "enum", title: "Fan Speed", options: ["low", "medium-low", "medium", "medium-high", "high", "on", "off"], required: false, description: "The target speed to set the chosen ceiling fans to."
+                
+                paragraph "<b>Thermodynamics & HVAC:</b>"
+                input "gamingThermostat_${tNum}", "capability.thermostat", title: "Thermostat to Adjust", required: false, description: "Select the room's thermostat to push a temporary climate hold during gaming."
+                input "gamingHeatSetpoint_${tNum}", "number", title: "Heating Setpoint", required: false, description: "The target heating temperature."
+                input "gamingCoolSetpoint_${tNum}", "number", title: "Cooling Setpoint", required: false, description: "The target cooling temperature."
+                input "gamingPreCool_${tNum}", "number", title: "Thermodynamic Pre-Cool Offset (Degrees)", required: false, description: "Automatically drops the cooling setpoint by this many extra degrees for the first 45 minutes to counter console heat."
+                
+                paragraph "<b>Snapshot & Smart Restore:</b>"
+                input "gamingRestore_${tNum}", "bool", title: "Enable Smart Restore (Snap-Back)", defaultValue: false, submitOnChange: true, description: "If enabled, takes a snapshot of your lights, blinds, fans, and HVAC before gaming starts, and snaps them back to those exact states when finished."
+                if (settings["gamingRestore_${tNum}"]) {
+                    input "gamingRestoreModes_${tNum}", "mode", title: "Only Restore in these Modes", multiple: true, required: false, description: "Prevent snap-back if the house mode has changed (e.g., don't turn lights back on if the house has gone to 'Night' mode)."
+                    input "gamingRestoreTimeStart_${tNum}", "time", title: "Restore Time Window Start", required: false
+                    input "gamingRestoreTimeEnd_${tNum}", "time", title: "Restore Time Window End", required: false
+                }
             }
         }
         
@@ -410,35 +494,40 @@ def initialize() {
     state.noiseSwitchesPaused = state.noiseSwitchesPaused ?: [:]
     state.currentVolumeBoost = state.currentVolumeBoost ?: [:]
     state.cozyLightsActivatedByTv = state.cozyLightsActivatedByTv ?: [:]
+    state.activeMacro = state.activeMacro ?: [:]
+    state.macroControlledList = state.macroControlledList ?: [:]
     
     // Power State Trackers
     state.plugWasOffBeforeShow = state.plugWasOffBeforeShow ?: [:]
     state.plugWasOffBeforeMorning = state.plugWasOffBeforeMorning ?: [:]
     state.plugWasOffBeforeWeather = state.plugWasOffBeforeWeather ?: [:]
-    state.plugWasOffBeforeMovie = state.plugWasOffBeforeMovie ?: [:]
+    state.plugWasOffBeforeMacro = state.plugWasOffBeforeMacro ?: [:]
     
     unschedule("trackUsageStep")
     unschedule("pollThermostats")
+    unschedule("nightlyMaintenance")
     trackUsageStep()
     schedule("0 0/3 * * * ?", "refreshTVs") 
     schedule("0 0 0 * * ?", "midnightReset")
     schedule("0 * * * * ?", "checkTvShows")
     
-    // Evaluate if any TV requires active thermostat polling
+    if (settings["bmsNightlyMaintenance"]) {
+        schedule("0 0 3 * * ?", "nightlyMaintenance")
+    }
+    
     def needsPolling = false
     for (int i = 1; i <= (numTVs as Integer); i++) {
         if (settings["enableAcousticMgmt_${i}"] && settings["pollThermostat_${i}"] && settings["mainThermostat_${i}"]) {
             needsPolling = true
         }
-        
-        // Movie Mode Subs
         if (settings["enableMovieMode_${i}"] && settings["movieSwitch_${i}"]) {
-            subscribe(settings["movieSwitch_${i}"], "switch", movieModeHandler)
+            subscribe(settings["movieSwitch_${i}"], "switch", macroModeHandler)
+        }
+        if (settings["enableGamingMode_${i}"] && settings["gamingSwitch_${i}"]) {
+            subscribe(settings["gamingSwitch_${i}"], "switch", macroModeHandler)
         }
     }
-    if (needsPolling) {
-        schedule("0 * * * * ?", "pollThermostats") 
-    }
+    if (needsPolling) schedule("0 * * * * ?", "pollThermostats") 
     
     if (settings["enableSafetyMute"]) {
         if (muteContacts) subscribe(muteContacts, "contact", contactHandler)
@@ -477,6 +566,60 @@ def initialize() {
     }
 }
 
+// --- BMS Integrity Engines ---
+
+def nightlyMaintenance() {
+    log.info "BMS: Executing Nightly Driver Maintenance."
+    for (int i = 1; i <= (numTVs as Integer); i++) {
+        def tv = getPrimaryDevice(i)
+        if (tv) {
+            if (tv.hasCommand("refresh")) tv.refresh()
+            pauseExecution(1000)
+            if (tv.hasCommand("initialize")) tv.initialize()
+        }
+        def audio = getAudioDevice(i)
+        if (audio && audio.id != tv?.id) {
+            if (audio.hasCommand("refresh")) audio.refresh()
+            pauseExecution(1000)
+            if (audio.hasCommand("initialize")) audio.initialize()
+        }
+    }
+}
+
+def verifyPowerState(data) {
+    def i = data.tvNum
+    def action = data.action
+    def attempt = data.attempt
+    def tv = getPrimaryDevice(i)
+    
+    def isOn = isTvActuallyOn(tv, i)
+    def success = (action == "on" && isOn) || (action == "off" && !isOn)
+    
+    if (!success) {
+        if (attempt < 3) {
+            addToHistory("⚠️ ${getTvName(i)}: Heartbeat verification failed (${action}). Retrying attempt ${attempt + 1}...")
+            issuePowerCommand(i, action, attempt + 1)
+        } else {
+            addToHistory("❌ ${getTvName(i)}: Comms Failure. Device did not respond to ${action} command after 3 attempts. Check network connection.")
+        }
+    } else {
+        if (attempt > 1) addToHistory("✅ ${getTvName(i)}: Connection recovered on attempt ${attempt}.")
+    }
+}
+
+def issuePowerCommand(i, action, attempt = 1) {
+    def tv = getPrimaryDevice(i)
+    if (!tv) return
+    
+    if (settings["bmsMeshJitter"]) pauseExecution(new Random().nextInt(2000) + 500)
+    
+    if (action == "on") tv.on() else tv.off()
+    
+    if (settings["bmsHeartbeat"]) {
+        runIn(10, "verifyPowerState", [data: [tvNum: i, action: action, attempt: attempt]])
+    }
+}
+
 // --- Device Helpers ---
 
 def getPrimaryDevice(i) {
@@ -500,7 +643,6 @@ def pollThermostats() {
             def interval = settings["pollInterval_${i}"] ?: 5
             def lastPoll = state."lastThermoPoll_${i}" ?: 0
             
-            // Check if enough time has passed based on the user's defined interval
             if ((now - lastPoll) >= ((interval * 60000) - 2000)) { 
                 def thermo = settings["mainThermostat_${i}"]
                 if (thermo.hasCommand("refresh")) {
@@ -512,43 +654,156 @@ def pollThermostats() {
     }
 }
 
-// --- Dedicated Movie Mode Engine ---
+// --- Snapshot & Smart Restore Engine ---
 
-def movieModeHandler(evt) {
+def captureState(i, prefix) {
+    def cap = [:]
+    def lightsOff = settings["${prefix}LightsOff_${i}"]
+    if (lightsOff) cap.lightsOff = lightsOff.collectEntries { [(it.id): it.currentValue("switch")] }
+    
+    def lightsOn = settings["${prefix}LightsOn_${i}"]
+    if (lightsOn) cap.lightsOn = lightsOn.collectEntries { [(it.id): [switch: it.currentValue("switch"), level: it.currentValue("level")]] }
+    
+    def fans = settings["${prefix}Fans_${i}"]
+    if (fans) cap.fans = fans.collectEntries { [(it.id): it.currentValue("speed")] }
+    
+    def shades = settings["${prefix}Shades_${i}"]
+    if (shades) cap.shades = shades.collectEntries { [(it.id): it.currentValue("windowShade")] }
+    
+    def thermo = settings["${prefix}Thermostat_${i}"]
+    if (thermo) cap.thermo = [id: thermo.id, heat: thermo.currentValue("heatingSetpoint"), cool: thermo.currentValue("coolingSetpoint")]
+    
+    state."captured_${prefix}_${i}" = cap
+    addToHistory("${getTvName(i)}: Environment Snapshot Captured.")
+}
+
+def restoreState(i, prefix) {
+    def cap = state."captured_${prefix}_${i}"
+    if (!cap) return
+    
+    def allowedModes = settings["${prefix}RestoreModes_${i}"]
+    if (allowedModes && !allowedModes.contains(location.mode)) {
+        addToHistory("${getTvName(i)}: Snap-Back aborted (House Mode changed).")
+        return
+    }
+    
+    def startTime = settings["${prefix}RestoreTimeStart_${i}"]
+    def endTime = settings["${prefix}RestoreTimeEnd_${i}"]
+    if (startTime && endTime && !timeOfDayIsBetween(timeToday(startTime, location.timeZone), timeToday(endTime, location.timeZone), new Date(), location.timeZone)) {
+        addToHistory("${getTvName(i)}: Snap-Back aborted (Outside allowed time window).")
+        return
+    }
+    
+    def lightsOff = settings["${prefix}LightsOff_${i}"]
+    if (lightsOff && cap.lightsOff) {
+        lightsOff.each { if (cap.lightsOff[it.id] == "on") it.on() }
+    }
+    
+    def lightsOn = settings["${prefix}LightsOn_${i}"]
+    if (lightsOn && cap.lightsOn) {
+        lightsOn.each { 
+            def stored = cap.lightsOn[it.id]
+            if (stored?.switch == "off") it.off()
+            else if (stored?.level != null && it.hasCommand("setLevel")) it.setLevel(stored.level)
+        }
+    }
+    
+    def shades = settings["${prefix}Shades_${i}"]
+    if (shades && cap.shades) {
+        shades.each { if (cap.shades[it.id] == "open" || cap.shades[it.id] == "partially open") it.open() }
+    }
+    
+    def fans = settings["${prefix}Fans_${i}"]
+    if (fans && cap.fans) {
+        fans.each { if (cap.fans[it.id]) it.setSpeed(cap.fans[it.id]) }
+    }
+    
+    def thermo = settings["${prefix}Thermostat_${i}"]
+    if (thermo && cap.thermo) {
+        if (cap.thermo.heat) thermo.setHeatingSetpoint(cap.thermo.heat)
+        if (cap.thermo.cool) thermo.setCoolingSetpoint(cap.thermo.cool)
+    }
+    
+    addToHistory("${getTvName(i)}: Smart Restore Complete. Room snapped back to original state.")
+    state."captured_${prefix}_${i}" = null
+}
+
+def revertPreCool(data) {
+    def i = data.tvNum
+    def prefix = data.macro
+    def thermo = settings["${prefix}Thermostat_${i}"]
+    def cap = state."captured_${prefix}_${i}"
+    if (thermo && cap && cap.thermo?.cool) {
+        def target = settings["${prefix}CoolSetpoint_${i}"] ?: cap.thermo.cool
+        thermo.setCoolingSetpoint(target)
+        addToHistory("${getTvName(i)}: Thermodynamic Pre-Cool duration ended. Reverting offset.")
+    }
+}
+
+// --- Dedicated Macro Engines (Movie & Gaming) ---
+
+def macroModeHandler(evt) {
     if (isSystemPaused()) return
     def devId = evt.device.id
     def isOn = evt.value == "on"
     
     for (int i = 1; i <= (numTVs as Integer); i++) {
-        if (settings["enableMovieMode_${i}"] && settings["movieSwitch_${i}"]?.id == devId) {
+        def isMovie = settings["enableMovieMode_${i}"] && settings["movieSwitch_${i}"]?.id == devId
+        def isGaming = settings["enableGamingMode_${i}"] && settings["gamingSwitch_${i}"]?.id == devId
+        
+        if (isMovie || isGaming) {
+            def prefix = isMovie ? "movie" : "gaming"
             def tvName = getTvName(i)
+            
             if (isOn) {
-                addToHistory("${tvName}: Movie Mode Initiated!")
-                def target = settings["movieTarget_${i}"]
+                def allowedModes = settings["${prefix}Modes_${i}"]
+                if (allowedModes && !allowedModes.contains(location.mode)) {
+                    addToHistory("${tvName}: Macro aborted. Incorrect House Mode.")
+                    settings["${prefix}Switch_${i}"].off()
+                    return
+                }
+                def startTime = settings["${prefix}TimeStart_${i}"]
+                def endTime = settings["${prefix}TimeEnd_${i}"]
+                if (startTime && endTime && !timeOfDayIsBetween(timeToday(startTime, location.timeZone), timeToday(endTime, location.timeZone), new Date(), location.timeZone)) {
+                    addToHistory("${tvName}: Macro aborted. Outside allowed time window.")
+                    settings["${prefix}Switch_${i}"].off()
+                    return
+                }
                 
-                // Immediately apply environment (lights, locks, HVAC) without waiting for TV boot
-                executeMovieEnvironment(i)
+                addToHistory("${tvName}: ${prefix.capitalize()} Mode Initiated!")
+                state.activeMacro["${i}"] = prefix
+                if (settings["bmsPriorityLock"]) settings["bmsPriorityLock"].on()
                 
-                // Route the TV Boot & Input logic
-                triggerRoutine(i, target, "movie")
+                if (settings["${prefix}Restore_${i}"]) captureState(i, prefix)
+                executeMacroEnvironment(i, prefix)
+                triggerRoutine(i, settings["${prefix}Target_${i}"], "macro", prefix)
+                
             } else {
-                addToHistory("${tvName}: Movie Mode Deactivated. Powering off system.")
-                endRoutine(i, "movie")
+                addToHistory("${tvName}: ${prefix.capitalize()} Mode Deactivated. Powering off system.")
+                state.activeMacro["${i}"] = null
+                endRoutine(i, "macro", prefix)
+                
+                if (settings["${prefix}Restore_${i}"]) restoreState(i, prefix)
+                
+                // Unlock global priority if no other TVs are active
+                def anyActive = false
+                for (int j = 1; j <= (numTVs as Integer); j++) { if (state.activeMacro["${j}"]) anyActive = true }
+                if (!anyActive && settings["bmsPriorityLock"]) settings["bmsPriorityLock"].off()
             }
         }
     }
 }
 
-def executeMovieEnvironment(i) {
+def executeMacroEnvironment(i, prefix) {
     def tvName = getTvName(i)
     def actions = []
     
-    def lightsOff = settings["movieLightsOff_${i}"]
+    def lightsOff = settings["${prefix}LightsOff_${i}"]
     if (lightsOff) { lightsOff.each { it.off() }; actions << "Lights Off" }
     
-    def lightsOn = settings["movieLightsOn_${i}"]
+    def lightsOn = settings["${prefix}LightsOn_${i}"]
     if (lightsOn) {
-        def lvl = settings["movieLightsLevel_${i}"]
+        def lvl = settings["${prefix}LightsLevel_${i}"]
         lightsOn.each { 
             if (lvl != null && it.hasCommand("setLevel")) it.setLevel(lvl)
             else it.on()
@@ -556,30 +811,40 @@ def executeMovieEnvironment(i) {
         actions << "Ambiance Lights Set"
     }
     
-    def locks = settings["movieLocks_${i}"]
+    def shades = settings["${prefix}Shades_${i}"]
+    if (shades) { shades.each { it.close() }; actions << "Shades Closed" }
+    
+    def locks = settings["${prefix}Locks_${i}"]
     if (locks) { locks.each { it.lock() }; actions << "Doors Locked" }
     
-    def fans = settings["movieFans_${i}"]
-    def fanSpeed = settings["movieFanSpeed_${i}"]
+    def fans = settings["${prefix}Fans_${i}"]
+    def fanSpeed = settings["${prefix}FanSpeed_${i}"]
     if (fans && fanSpeed) { fans.each { it.setSpeed(fanSpeed) }; actions << "Fans Set" }
     
-    def thermo = settings["movieThermostat_${i}"]
+    def thermo = settings["${prefix}Thermostat_${i}"]
     if (thermo) {
-        def cool = settings["movieCoolSetpoint_${i}"]
-        def heat = settings["movieHeatSetpoint_${i}"]
-        if (cool) thermo.setCoolingSetpoint(cool)
+        def cool = settings["${prefix}CoolSetpoint_${i}"]
+        def heat = settings["${prefix}HeatSetpoint_${i}"]
+        def preCool = settings["${prefix}PreCool_${i}"]
+        
+        if (cool) {
+            def targetCool = preCool ? (cool - preCool) : cool
+            thermo.setCoolingSetpoint(targetCool)
+            if (preCool) runIn(45 * 60, "revertPreCool", [data: [tvNum: i, macro: prefix], overwrite: false])
+        }
         if (heat) thermo.setHeatingSetpoint(heat)
         actions << "HVAC Adjusted"
     }
     
+    state.macroControlledList["${i}"] = actions.join(", ")
     if (actions.size() > 0) {
-        addToHistory("${tvName}: Movie Environment Applied (${actions.join(', ')}).")
+        addToHistory("${tvName}: Environment Applied (${actions.join(', ')}).")
     }
 }
 
 // --- Central Routine Handlers (Plug + TV Sequencing) ---
 
-def triggerRoutine(i, targetString, source, showNum = null) {
+def triggerRoutine(i, targetString, source, macroPrefix = null) {
     def plug = settings["tvPlug_${i}"]
     def tv = getPrimaryDevice(i)
     def isPlugOff = plug && plug.currentValue("switch") == "off"
@@ -587,34 +852,32 @@ def triggerRoutine(i, targetString, source, showNum = null) {
     if (isPlugOff) {
         if (source == "weather") state.plugWasOffBeforeWeather["${i}"] = true
         else if (source == "morning") state.plugWasOffBeforeMorning["${i}"] = true
-        else if (source == "show") state.plugWasOffBeforeShow["${i}_${showNum}"] = true
-        else if (source == "movie") state.plugWasOffBeforeMovie["${i}"] = true
+        else if (source == "show") state.plugWasOffBeforeShow["${i}_${macroPrefix}"] = true
+        else if (source == "macro") state.plugWasOffBeforeMacro["${i}"] = true
         
-        addToHistory("${getTvName(i)}: Powering on smart plug for ${source} routine.")
+        addToHistory("${getTvName(i)}: Powering on smart plug for routine.")
         plug.on()
         
-        runIn(20, "executeTvPowerOn", [data: [tvNum: i, channel: targetString, source: source], overwrite: false])
+        runIn(20, "executeTvPowerOn", [data: [tvNum: i, channel: targetString, source: source, macroPrefix: macroPrefix], overwrite: false])
     } else {
         if (source == "weather") state.plugWasOffBeforeWeather["${i}"] = false
         else if (source == "morning") state.plugWasOffBeforeMorning["${i}"] = false
-        else if (source == "show") state.plugWasOffBeforeShow["${i}_${showNum}"] = false
-        else if (source == "movie") state.plugWasOffBeforeMovie["${i}"] = false
+        else if (source == "show") state.plugWasOffBeforeShow["${i}_${macroPrefix}"] = false
+        else if (source == "macro") state.plugWasOffBeforeMacro["${i}"] = false
         
-        executeTvPowerOn([tvNum: i, channel: targetString, source: source])
+        executeTvPowerOn([tvNum: i, channel: targetString, source: source, macroPrefix: macroPrefix])
     }
 }
 
 def executeTvPowerOn(data) {
     def i = data.tvNum as Integer
     def tv = getPrimaryDevice(i)
-    def channel = data.channel
-    def source = data.source
     
     if (!isTvActuallyOn(tv, i)) {
-        tv.on()
-        runIn(18, "executeMediaAction", [data: [tvNum: i, channel: channel, source: source], overwrite: false])
+        issuePowerCommand(i, "on", 1)
+        runIn(18, "executeMediaAction", [data: data, overwrite: false])
     } else {
-        runIn(4, "executeMediaAction", [data: [tvNum: i, channel: channel, source: source], overwrite: false])
+        runIn(4, "executeMediaAction", [data: data, overwrite: false])
     }
 }
 
@@ -622,6 +885,7 @@ def executeMediaAction(data) {
     def i = data.tvNum
     def target = data.channel
     def source = data.source
+    def prefix = data.macroPrefix
     
     if (settings["isAvrOnly_${i}"]) {
         def avr = settings["avr_${i}"]
@@ -634,7 +898,7 @@ def executeMediaAction(data) {
         def appSwitch = null
         if (source == "weather") appSwitch = settings["weatherAppSwitch"]
         else if (source == "morning") appSwitch = settings["morningAppSwitch_${i}"]
-        else if (source == "movie") appSwitch = settings["movieAppSwitch_${i}"]
+        else if (source == "macro") appSwitch = settings["${prefix}AppSwitch_${i}"]
         
         if (appSwitch) {
             addToHistory("${getTvName(i)}: Launching application via switch [${appSwitch.displayName}].")
@@ -644,9 +908,8 @@ def executeMediaAction(data) {
         }
     }
     
-    // Process Movie Volume Sequence after input commands have fired
-    if (source == "movie") {
-        def targetVol = settings["movieVol_${i}"]
+    if (source == "macro" && prefix) {
+        def targetVol = settings["${prefix}Vol_${i}"]
         if (targetVol != null) {
             def audioDev = getAudioDevice(i)
             def audioProtocol = settings["isAvrOnly_${i}"] ? settings["avrType_${i}"] : settings["audioType_${i}"]
@@ -657,31 +920,31 @@ def executeMediaAction(data) {
             } else {
                 adjustVolumeRelative(audioDev, targetVol, "up", audioProtocol)
             }
-            addToHistory("${getTvName(i)}: Movie Mode volume command processed.")
+            addToHistory("${getTvName(i)}: Macro volume command processed.")
         }
     }
 }
 
-def endRoutine(i, source, showNum = null) {
+def endRoutine(i, source, macroPrefix = null) {
     def tv = getPrimaryDevice(i)
     if (tv && isTvActuallyOn(tv, i)) {
         addToHistory("${getTvName(i)}: Routine (${source}) ended. Powering OFF.")
-        tv.off()
+        issuePowerCommand(i, "off", 1)
     }
-    runIn(8, "evaluatePlugShutdown", [data: [tvNum: i, source: source, showNum: showNum], overwrite: false])
+    runIn(8, "evaluatePlugShutdown", [data: [tvNum: i, source: source, macroPrefix: macroPrefix], overwrite: false])
 }
 
 def evaluatePlugShutdown(data) {
     def i = data.tvNum as Integer
     def source = data.source
-    def showNum = data.showNum
+    def macroPrefix = data.macroPrefix
     def plug = settings["tvPlug_${i}"]
     
     def cutPower = false
     if (source == "weather" && state.plugWasOffBeforeWeather["${i}"]) cutPower = true
     else if (source == "morning" && state.plugWasOffBeforeMorning["${i}"]) cutPower = true
-    else if (source == "show" && state.plugWasOffBeforeShow["${i}_${showNum}"]) cutPower = true
-    else if (source == "movie" && state.plugWasOffBeforeMovie["${i}"]) cutPower = true
+    else if (source == "show" && state.plugWasOffBeforeShow["${i}_${macroPrefix}"]) cutPower = true
+    else if (source == "macro" && state.plugWasOffBeforeMacro["${i}"]) cutPower = true
     
     if (cutPower && plug) {
         addToHistory("${getTvName(i)}: Cutting power to smart plug (was off before routine).")
@@ -689,8 +952,8 @@ def evaluatePlugShutdown(data) {
         
         if (source == "weather") state.plugWasOffBeforeWeather["${i}"] = false
         else if (source == "morning") state.plugWasOffBeforeMorning["${i}"] = false
-        else if (source == "show") state.plugWasOffBeforeShow["${i}_${showNum}"] = false
-        else if (source == "movie") state.plugWasOffBeforeMovie["${i}"] = false
+        else if (source == "show") state.plugWasOffBeforeShow["${i}_${macroPrefix}"] = false
+        else if (source == "macro") state.plugWasOffBeforeMacro["${i}"] = false
     }
 }
 
@@ -769,19 +1032,13 @@ def isTvActuallyOn(tv, i) {
     def app = tv.currentValue("application")
     if (app != null) {
         def tvType = settings["tvType_${i}"] ?: "Generic / Other"
-        def idleApps = ["none", "Home", "Ambient", "Screen Saver"] // Generic Fallback
+        def idleApps = ["none", "Home", "Ambient", "Screen Saver"] 
         
-        if (tvType == "Roku TV") {
-            idleApps = ["Roku Dynamic Menu", "Backdrops", "Roku Media Player", "Home", "none"]
-        } else if (tvType == "LG WebOS") {
-            idleApps = ["none", "Home", "Screen Saver", "Art Gallery"]
-        } else if (tvType == "Apple TV") {
-            idleApps = ["com.apple.TVIdleScreen", "Home"]
-        } else if (tvType == "Android TV / Google TV") {
-            idleApps = ["Backdrop", "Home", "none"]
-        } else if (tvType == "Samsung Smart TV") {
-            idleApps = ["none", "Home", "Ambient"]
-        }
+        if (tvType == "Roku TV") idleApps = ["Roku Dynamic Menu", "Backdrops", "Roku Media Player", "Home", "none"]
+        else if (tvType == "LG WebOS") idleApps = ["none", "Home", "Screen Saver", "Art Gallery"]
+        else if (tvType == "Apple TV") idleApps = ["com.apple.TVIdleScreen", "Home"]
+        else if (tvType == "Android TV / Google TV") idleApps = ["Backdrop", "Home", "none"]
+        else if (tvType == "Samsung Smart TV") idleApps = ["none", "Home", "Ambient"]
         
         if (idleApps.contains(app)) return false
     }
@@ -869,11 +1126,7 @@ def tvPowerEvaluator(evt) {
 
                             if (ctVarName) {
                                 def hubVar = getGlobalVar(ctVarName)
-                                if (hubVar != null && hubVar.value != null) {
-                                    targetCT = hubVar.value.toInteger()
-                                } else {
-                                    log.warn "${tvName}: Hub Variable '${ctVarName}' not found or invalid."
-                                }
+                                if (hubVar != null && hubVar.value != null) targetCT = hubVar.value.toInteger()
                             }
 
                             if (targetCT != null) {
@@ -1274,7 +1527,7 @@ def executeTvTimeout(data) {
     def now = new Date().time
     if ((now - lastMotion) >= (timeout * 60000) - 2000) {
         addToHistory("${getTvName(i)}: No motion detected. Powering OFF.")
-        tv.off()
+        issuePowerCommand(i, "off", 1)
     }
 }
 
@@ -1317,6 +1570,7 @@ def weatherSwitchHandler(evt) {
     if (isOn) {
         state.weatherAlertActive = true
         state.tvWasOffBeforeWeather = [:]
+        if (settings["bmsPriorityLock"]) settings["bmsPriorityLock"].on()
         
         for (int i = 1; i <= (numTVs as Integer); i++) {
             def tv = getPrimaryDevice(i)
@@ -1351,6 +1605,10 @@ def endWeatherAlert() {
         }
     }
     state.tvWasOffBeforeWeather = [:]
+    
+    def anyActive = false
+    for (int j = 1; j <= (numTVs as Integer); j++) { if (state.activeMacro["${j}"]) anyActive = true }
+    if (!anyActive && settings["bmsPriorityLock"]) settings["bmsPriorityLock"].off()
 }
 
 def executeSetChannel(data) {
@@ -1452,14 +1710,6 @@ def appButtonHandler(btn) {
         def tNum = btn.split("_")[1] as Integer
         log.info "Test Morning Routine OFF triggered for TV ${tNum}"
         stopMorningRoutineTest(tNum)
-    } else if (btn?.startsWith("testHvacOnBtn_")) {
-        def tNum = btn.split("_")[1] as Integer
-        log.info "Test HVAC ON triggered for TV ${tNum}"
-        testHvacBoost(tNum, true)
-    } else if (btn?.startsWith("testHvacOffBtn_")) {
-        def tNum = btn.split("_")[1] as Integer
-        log.info "Test HVAC OFF triggered for TV ${tNum}"
-        testHvacBoost(tNum, false)
     } else if (btn?.startsWith("testShowBtn_")) {
         def parts = btn.split("_")
         def tNum = parts[1] as Integer
@@ -1488,29 +1738,4 @@ def testMorningRoutine(i) {
 def stopMorningRoutineTest(i) {
     addToHistory("${getTvName(i)}: Morning routine TEST stopped via button.")
     endRoutine(i, "morning")
-}
-
-def testHvacBoost(i, isRunning) {
-    def tv = getPrimaryDevice(i)
-    if (isTvActuallyOn(tv, i)) {
-        def audioDevice = getAudioDevice(i)
-        def boostAmount = settings["hvacVolumeBoost_${i}"] ?: 3
-        def tvName = getTvName(i)
-       
-        if (isRunning && !state.hvacVolumeBoosted["${i}"]) {
-            addToHistory("${tvName}: TEST HVAC started. Boosting volume by ${boostAmount} ticks.")
-            state.hvacVolumeBoosted["${i}"] = true
-            def audioProtocol = settings["isAvrOnly_${i}"] ? settings["avrType_${i}"] : settings["audioType_${i}"]
-            adjustVolumeRelative(audioDevice, boostAmount, "up", audioProtocol)
-        } else if (!isRunning && state.hvacVolumeBoosted["${i}"]) {
-            addToHistory("${tvName}: TEST HVAC stopped. Reducing volume by ${boostAmount} ticks.")
-            state.hvacVolumeBoosted["${i}"] = false
-            def audioProtocol = settings["isAvrOnly_${i}"] ? settings["avrType_${i}"] : settings["audioType_${i}"]
-            adjustVolumeRelative(audioDevice, boostAmount, "down", audioProtocol)
-        } else {
-            addToHistory("${tvName}: TEST HVAC ignored (already in requested state).")
-        }
-    } else {
-        addToHistory("${getTvName(i)}: TEST HVAC ignored (TV is not ON).")
-    }
 }
