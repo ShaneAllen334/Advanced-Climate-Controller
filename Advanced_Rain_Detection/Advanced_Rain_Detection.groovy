@@ -118,9 +118,10 @@ def mainPage() {
                 // Switch Status
                 def rainSw = switchRaining?.currentValue("switch") == "on" ? "<span style='color:blue; font-weight:bold;'>ON</span>" : "<span style='color:gray;'>OFF</span>"
                 def sprinkSw = switchSprinkling?.currentValue("switch") == "on" ? "<span style='color:blue; font-weight:bold;'>ON</span>" : "<span style='color:gray;'>OFF</span>"
+                def probSw = switchProbable?.currentValue("switch") == "on" ? "<span style='color:orange; font-weight:bold;'>ON</span>" : "<span style='color:gray;'>OFF</span>"
                 
                 statusText += "<div style='margin-top: 10px; padding: 10px; background: #e9e9e9; border-radius: 4px; font-size: 13px; display: flex; flex-wrap: wrap; gap: 15px; border: 1px solid #ccc;'>"
-                statusText += "<div><b>Virtual Switches:</b> Heavy Rain: [${rainSw}] | Sprinkling: [${sprinkSw}]</div>"
+                statusText += "<div><b>Virtual Switches:</b> Probable Threat: [${probSw}] | Sprinkling: [${sprinkSw}] | Heavy Rain: [${rainSw}]</div>"
                 statusText += "</div>"
 
                 paragraph statusText
@@ -170,16 +171,18 @@ def configPage() {
             input "sensorRainWeekly", "capability.sensor", title: "Weekly Rain Accumulation Sensor", required: false
         }
         
-        section("<b>Virtual Output Switches (Mutually Exclusive)</b>") {
-            input "switchSprinkling", "capability.switch", title: "Sprinkling / Light Rain Switch", required: true
-            input "switchRaining", "capability.switch", title: "Heavy Rain Switch", required: true
+        section("<b>Virtual Output Switches</b>") {
+            input "switchProbable", "capability.switch", title: "Rain Probable Switch (Turns ON when probability reaches setpoint)", required: false
+            input "switchSprinkling", "capability.switch", title: "Sprinkling / Light Rain Switch (Mutually Exclusive)", required: true
+            input "switchRaining", "capability.switch", title: "Heavy Rain Switch (Mutually Exclusive)", required: true
+            
             input "debounceMins", "number", title: "State Debounce Time (Minutes)", required: true, defaultValue: 5, description: "Prevents rapidly flipping back and forth between states. Upgrading to worse weather is instant; downgrading or clearing will wait this long."
             input "heavyRainThreshold", "decimal", title: "Heavy Rain Rate Threshold (in/hr or mm/hr)", required: true, defaultValue: 0.1
         }
         
-        section("<b>Notifications</b>") {
+        section("<b>Notifications & Setpoints</b>") {
             input "notifyDevices", "capability.notification", title: "Notification Devices", multiple: true, required: false
-            input "notifyProbThreshold", "number", title: "Rain Probability Setpoint (%)", required: true, defaultValue: 75, description: "Send notification when calculated rain probability hits this threshold."
+            input "notifyProbThreshold", "number", title: "Rain Probability Setpoint (%)", required: true, defaultValue: 75, description: "Turns on the 'Rain Probable' switch and sends a notification when calculated probability hits this threshold."
             input "notifyOnSprinkle", "bool", title: "Notify when Sprinkling starts", defaultValue: true
             input "notifyOnRain", "bool", title: "Notify when Heavy Rain starts", defaultValue: true
             input "notifyOnClear", "bool", title: "Notify when weather clears", defaultValue: false
@@ -257,6 +260,7 @@ def appButtonHandler(btn) {
         state.notifiedProb = false
         safeOff(switchSprinkling)
         safeOff(switchRaining)
+        safeOff(switchProbable)
         evaluateWeather()
     }
 }
@@ -465,6 +469,22 @@ def evaluateWeather() {
     
     state.rainProbability = probability
     
+    // --- Probability Setpoint Switch & Notification ---
+    def probThreshold = notifyProbThreshold ?: 75
+    if (probability >= probThreshold) {
+        safeOn(switchProbable)
+        if (!state.notifiedProb) {
+            logAction("Probability threshold (${probThreshold}%) reached.")
+            if (notifyDevices) sendNotification("Weather Alert: Rain probability has reached ${probability}%.")
+            state.notifiedProb = true
+        }
+    } else if (probability < (probThreshold - 15)) {
+        safeOff(switchProbable)
+        if (state.notifiedProb) {
+            state.notifiedProb = false
+        }
+    }
+    
     // --- Determine Active Weather State ---
     def targetState = "Clear"
     def threshold = heavyRainThreshold ?: 0.1
@@ -533,16 +553,6 @@ def evaluateWeather() {
             safeOff(switchSprinkling)
             if (notifyOnClear) sendNotification("Weather Update: Conditions have cleared.")
         }
-    }
-    
-    // --- Probability Setpoint Notification ---
-    def probThreshold = notifyProbThreshold ?: 75
-    if (probability >= probThreshold && !state.notifiedProb) {
-        logAction("Probability threshold (${probThreshold}%) reached.")
-        sendNotification("Weather Alert: Rain probability has reached ${probability}%.")
-        state.notifiedProb = true
-    } else if (probability < (probThreshold - 15) && state.notifiedProb) {
-        state.notifiedProb = false
     }
 }
 
