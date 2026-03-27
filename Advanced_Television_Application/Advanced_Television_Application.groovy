@@ -696,26 +696,45 @@ def restoreState(i, prefix) {
     
     def lightsOff = settings["${prefix}LightsOff_${i}"]
     if (lightsOff && cap.lightsOff) {
-        lightsOff.each { if (cap.lightsOff[it.id] == "on") it.on() }
+        lightsOff.each { 
+            if (cap.lightsOff[it.id] == "on") {
+                it.on()
+                pauseExecution(300)
+            }
+        }
     }
     
     def lightsOn = settings["${prefix}LightsOn_${i}"]
     if (lightsOn && cap.lightsOn) {
         lightsOn.each { 
             def stored = cap.lightsOn[it.id]
-            if (stored?.switch == "off") it.off()
-            else if (stored?.level != null && it.hasCommand("setLevel")) it.setLevel(stored.level)
+            if (stored?.switch == "off") {
+                it.off()
+            } else if (stored?.level != null && it.hasCommand("setLevel")) {
+                it.setLevel(stored.level)
+            }
+            pauseExecution(300)
         }
     }
     
     def shades = settings["${prefix}Shades_${i}"]
     if (shades && cap.shades) {
-        shades.each { if (cap.shades[it.id] == "open" || cap.shades[it.id] == "partially open") it.open() }
+        shades.each { 
+            if (cap.shades[it.id] == "open" || cap.shades[it.id] == "partially open") {
+                it.open()
+                pauseExecution(300)
+            }
+        }
     }
     
     def fans = settings["${prefix}Fans_${i}"]
     if (fans && cap.fans) {
-        fans.each { if (cap.fans[it.id]) it.setSpeed(cap.fans[it.id]) }
+        fans.each { 
+            if (cap.fans[it.id]) {
+                it.setSpeed(cap.fans[it.id])
+                pauseExecution(300)
+            }
+        }
     }
     
     def thermo = settings["${prefix}Thermostat_${i}"]
@@ -799,7 +818,13 @@ def executeMacroEnvironment(i, prefix) {
     def actions = []
     
     def lightsOff = settings["${prefix}LightsOff_${i}"]
-    if (lightsOff) { lightsOff.each { it.off() }; actions << "Lights Off" }
+    if (lightsOff) { 
+        lightsOff.each { 
+            it.off()
+            pauseExecution(300)
+        }
+        actions << "Lights Off" 
+    }
     
     def lightsOn = settings["${prefix}LightsOn_${i}"]
     if (lightsOn) {
@@ -807,19 +832,38 @@ def executeMacroEnvironment(i, prefix) {
         lightsOn.each { 
             if (lvl != null && it.hasCommand("setLevel")) it.setLevel(lvl)
             else it.on()
+            pauseExecution(300)
         }
         actions << "Ambiance Lights Set"
     }
     
     def shades = settings["${prefix}Shades_${i}"]
-    if (shades) { shades.each { it.close() }; actions << "Shades Closed" }
+    if (shades) { 
+        shades.each { 
+            it.close()
+            pauseExecution(300)
+        }
+        actions << "Shades Closed" 
+    }
     
     def locks = settings["${prefix}Locks_${i}"]
-    if (locks) { locks.each { it.lock() }; actions << "Doors Locked" }
+    if (locks) { 
+        locks.each { 
+            it.lock()
+            pauseExecution(300)
+        }
+        actions << "Doors Locked" 
+    }
     
     def fans = settings["${prefix}Fans_${i}"]
     def fanSpeed = settings["${prefix}FanSpeed_${i}"]
-    if (fans && fanSpeed) { fans.each { it.setSpeed(fanSpeed) }; actions << "Fans Set" }
+    if (fans && fanSpeed) { 
+        fans.each { 
+            it.setSpeed(fanSpeed)
+            pauseExecution(300)
+        }
+        actions << "Fans Set" 
+    }
     
     def thermo = settings["${prefix}Thermostat_${i}"]
     if (thermo) {
@@ -1088,7 +1132,10 @@ def tvPowerEvaluator(evt) {
                         def activeNoise = noiseSwitches.findAll { it.currentValue("switch") == "on" }
                         if (activeNoise) {
                             addToHistory("${tvName}: Background noise detected. Turning OFF: ${activeNoise.join(', ')}")
-                            activeNoise.each { it.off() } 
+                            activeNoise.each { 
+                                it.off()
+                                pauseExecution(300)
+                            } 
                             state.noiseSwitchesPaused["${i}"] = activeNoise.collect { it.id }
                         } else {
                             state.noiseSwitchesPaused["${i}"] = []
@@ -1134,10 +1181,14 @@ def tvPowerEvaluator(evt) {
                                 cozyLights.each { bulb ->
                                     if (bulb.hasCommand("setColorTemperature")) bulb.setColorTemperature(targetCT, targetLevel)
                                     else bulb.setLevel(targetLevel)
+                                    pauseExecution(300)
                                 }
                             } else {
                                 addToHistory("${tvName}: Cozy Mode conditions met. Setting accent lights to ${targetLevel}%.")
-                                cozyLights.each { it.setLevel(targetLevel) }
+                                cozyLights.each { 
+                                    it.setLevel(targetLevel)
+                                    pauseExecution(300)
+                                }
                             }
                             
                             state.cozyLightsActivatedByTv["${i}"] = true
@@ -1187,7 +1238,10 @@ def tvPowerEvaluator(evt) {
                         def toRestore = noiseSwitches.findAll { pausedIds.contains(it.id) }
                         if (toRestore) {
                              addToHistory("${tvName}: Restoring background appliances: ${toRestore.join(', ')}")
-                            toRestore.each { it.on() } 
+                            toRestore.each { 
+                                it.on()
+                                pauseExecution(300)
+                            } 
                         }
                          state.noiseSwitchesPaused["${i}"] = []
                     }
@@ -1207,7 +1261,10 @@ def tvPowerEvaluator(evt) {
                         
                         if (isBlindClosed && timeOk) {
                              addToHistory("${tvName}: Conditions met. Restoring lights.")
-                             lights.each { it.on() } 
+                             lights.each { 
+                                 it.on()
+                                 pauseExecution(300)
+                             } 
                         }
                     }
                 }
@@ -1216,7 +1273,10 @@ def tvPowerEvaluator(evt) {
                     def cozyLights = settings["cozyLights_${i}"]
                     if (cozyLights) {
                         addToHistory("${tvName}: TV shutting down. Turning OFF Cozy Mode lights.")
-                        cozyLights.each { it.off() }
+                        cozyLights.each { 
+                            it.off()
+                            pauseExecution(300)
+                        }
                     }
                     state.cozyLightsActivatedByTv["${i}"] = false
                 }
@@ -1349,7 +1409,10 @@ def delayedLightTurnOff(data) {
     if (lights) {
         def activeLights = lights.findAll { it.currentValue("switch") == "on" }
         if (activeLights) {
-            activeLights.each { it.off() }
+            activeLights.each { 
+                it.off()
+                pauseExecution(300)
+            }
         }
     }
 }
@@ -1375,6 +1438,7 @@ def executeSweeper(i, isPeriodic) {
             
             if (!hasMotion) {
                 light.off()
+                pauseExecution(300)
                 sweptDevices << light.displayName
             } else {
                 bypassedDevices << light.displayName
@@ -1402,7 +1466,10 @@ def evaluateRoomLights(i) {
                 def activeLights = lights.findAll { it.currentValue("switch") == "on" }
                 if (activeLights) {
                     addToHistory("${getTvName(i)}: Room Evaluation - Forcing lights OFF.")
-                    activeLights.each { it.off() }
+                    activeLights.each { 
+                        it.off()
+                        pauseExecution(300)
+                    }
                     state.lightsPausedByTv["${i}"] = true
                     actionTaken = true
                 }
@@ -1415,7 +1482,10 @@ def evaluateRoomLights(i) {
                 def activeNoise = noiseSwitches.findAll { it.currentValue("switch") == "on" }
                 if (activeNoise) {
                     addToHistory("${getTvName(i)}: Room Evaluation - Forcing background appliances OFF.")
-                    activeNoise.each { it.off() }
+                    activeNoise.each { 
+                        it.off()
+                        pauseExecution(300)
+                    }
                     
                     def existingPaused = state.noiseSwitchesPaused["${i}"] ?: []
                     def newPaused = activeNoise.collect { it.id }
@@ -1660,7 +1730,10 @@ def muteActiveTVs() {
         def tv = getPrimaryDevice(i)
         if (isTvActuallyOn(tv, i)) {
             def audioDevice = getAudioDevice(i)
-            if (audioDevice.hasCommand("mute")) audioDevice.mute()
+            if (audioDevice.hasCommand("mute")) {
+                audioDevice.mute()
+                pauseExecution(300)
+            }
         }
     }
 }
@@ -1670,7 +1743,10 @@ def unmuteActiveTVs() {
         def tv = getPrimaryDevice(i)
         if (isTvActuallyOn(tv, i)) {
             def audioDevice = getAudioDevice(i)
-            if (audioDevice.hasCommand("unmute")) audioDevice.unmute()
+            if (audioDevice.hasCommand("unmute")) {
+                audioDevice.unmute()
+                pauseExecution(300)
+            }
         }
     }
 }
@@ -1710,6 +1786,14 @@ def appButtonHandler(btn) {
         def tNum = btn.split("_")[1] as Integer
         log.info "Test Morning Routine OFF triggered for TV ${tNum}"
         stopMorningRoutineTest(tNum)
+    } else if (btn?.startsWith("testHvacOnBtn_")) {
+        def tNum = btn.split("_")[1] as Integer
+        log.info "Test HVAC ON triggered for TV ${tNum}"
+        testHvacBoost(tNum, true)
+    } else if (btn?.startsWith("testHvacOffBtn_")) {
+        def tNum = btn.split("_")[1] as Integer
+        log.info "Test HVAC OFF triggered for TV ${tNum}"
+        testHvacBoost(tNum, false)
     } else if (btn?.startsWith("testShowBtn_")) {
         def parts = btn.split("_")
         def tNum = parts[1] as Integer
@@ -1738,4 +1822,29 @@ def testMorningRoutine(i) {
 def stopMorningRoutineTest(i) {
     addToHistory("${getTvName(i)}: Morning routine TEST stopped via button.")
     endRoutine(i, "morning")
+}
+
+def testHvacBoost(i, isRunning) {
+    def tv = getPrimaryDevice(i)
+    if (isTvActuallyOn(tv, i)) {
+        def audioDevice = getAudioDevice(i)
+        def boostAmount = settings["hvacVolumeBoost_${i}"] ?: 3
+        def tvName = getTvName(i)
+       
+        if (isRunning && !state.hvacVolumeBoosted["${i}"]) {
+            addToHistory("${tvName}: TEST HVAC started. Boosting volume by ${boostAmount} ticks.")
+            state.hvacVolumeBoosted["${i}"] = true
+            def audioProtocol = settings["isAvrOnly_${i}"] ? settings["avrType_${i}"] : settings["audioType_${i}"]
+            adjustVolumeRelative(audioDevice, boostAmount, "up", audioProtocol)
+        } else if (!isRunning && state.hvacVolumeBoosted["${i}"]) {
+            addToHistory("${tvName}: TEST HVAC stopped. Reducing volume by ${boostAmount} ticks.")
+            state.hvacVolumeBoosted["${i}"] = false
+            def audioProtocol = settings["isAvrOnly_${i}"] ? settings["avrType_${i}"] : settings["audioType_${i}"]
+            adjustVolumeRelative(audioDevice, boostAmount, "down", audioProtocol)
+        } else {
+            addToHistory("${tvName}: TEST HVAC ignored (already in requested state).")
+        }
+    } else {
+        addToHistory("${getTvName(i)}: TEST HVAC ignored (TV is not ON).")
+    }
 }
