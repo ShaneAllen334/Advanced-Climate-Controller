@@ -22,12 +22,14 @@ def mainPage() {
     dynamicPage(name: "mainPage", title: "<b>Advanced Motion Lighting Rule</b>", install: true, uninstall: true) {
         
         section("Live System Dashboard") {
+            input "btnRefresh", "button", title: "Refresh Data"
+            
             if (motionSensors || triggerSwitches) {
                 def mState = isPrimaryActive() ? "<span style='color: blue; font-weight: bold;'>ACTIVE</span>" : "<span style='color: grey;'>INACTIVE</span>"
                 def lState = (switches?.any { it.currentValue("switch") == "on" } || dimmers?.any { it.currentValue("switch") == "on" } || colorBulbs?.any { it.currentValue("switch") == "on" }) ? "<span style='color: green; font-weight: bold;'>ON</span>" : "OFF"
                 
                 def wState = state.warningPhase ? "<span style='color: orange; font-weight: bold;'> (WARNING PHASE)</span>" : ""
-                def manualLock = state.manuallyTurnedOn ? "<span style='color: #0055aa; font-weight: bold;'> (MANUAL TIMEOUT)</span>" : ""
+                def manualLock = state.manuallyTurnedOn ? "<span style='color: #0055aa; font-weight: bold;'> (MANUAL OVERRIDE)</span>" : ""
                 def arrivalLock = state.arrivalActive ? "<span style='color: #800080; font-weight: bold;'> (ARRIVAL OVERRIDE)</span>" : ""
                 def modeInfo = location.mode
                 
@@ -36,14 +38,37 @@ def mainPage() {
                 if (disableOnSwitches?.any { it.currentValue("switch") == "on" }) overrides << "<span style='color: red;'>ON Disabled</span>"
                 if (disableOffSwitches?.any { it.currentValue("switch") == "on" }) overrides << "<span style='color: darkred;'>OFF Disabled</span>"
                 if (goodNightSwitch && goodNightSwitch.currentValue("switch") == "on") overrides << "<span style='color: darkblue; font-weight: bold;'>Nap Lock Active</span>"
+                if (enableOccupancyLock && occupancyLockContact?.currentValue("contact") == "closed") overrides << "<span style='color: #a52a2a; font-weight: bold;'>Occupancy Locked ON</span>"
                 
                 if (isKeepAliveActive()) {
                     overrides << "<span style='color: #00aadd; font-weight: bold;'>Keep-Alive Active</span>"
                 }
                 
+                def timeBlocked = false
+                if (restrictByTime && startTimeType && endTimeType) {
+                    def sTime = resolveTime(startTimeType, startTime, startOffset)
+                    def eTime = resolveTime(endTimeType, endTime, endOffset)
+                    if (sTime && eTime) {
+                        def isInside = isTimeInWindow(sTime, eTime)
+                        timeBlocked = (timeLogic == "Block execution DURING this window") ? isInside : !isInside
+                    }
+                }
+                if (timeBlocked) overrides << "<span style='color: orange;'>Blocked by Time Window</span>"
+                
                 if (contactSensors?.any { it.currentValue("contact") == "open" }) {
-                    if (overcastSwitch && overcastSwitch.currentValue("switch") == "on") {
-                        overrides << "<span style='color: purple;'>Overcast Override Active</span>"
+                    def luxOverrideActive = false
+                    if (useLuxContactOverride && luxSensor) {
+                        def curLux = luxSensor.currentValue("illuminance") ?: 0
+                        def targetLux = luxContactThreshold ?: 0
+                        if (luxContactVar) {
+                            def hVar = getGlobalVar(luxContactVar)
+                            if (hVar != null) targetLux = hVar.value.toInteger()
+                        }
+                        if (curLux < targetLux) luxOverrideActive = true
+                    }
+                    
+                    if ((overcastSwitch && overcastSwitch.currentValue("switch") == "on") || luxOverrideActive) {
+                        overrides << "<span style='color: purple;'>Contact Override Active (Overcast/Lux)</span>"
                     } else {
                         overrides << "<span style='color: orange;'>Blocked by Open Window/Door</span>"
                     }
@@ -54,6 +79,10 @@ def mainPage() {
                 statusText += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Primary Trigger</th><th style='padding: 8px;'>Light State</th><th style='padding: 8px;'>Current Mode</th><th style='padding: 8px;'>Active Blocks/Overrides</th></tr>"
                 statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'>${mState}</td><td style='padding: 8px;'>${lState}${wState}${manualLock}${arrivalLock}</td><td style='padding: 8px;'>${modeInfo}</td><td style='padding: 8px;'>${oText}</td></tr>"
                 statusText += "</table>"
+                
+                if (enableTriggerTracking && state.lastTriggerSource) {
+                    statusText += "<div style='margin-top: 5px; padding: 5px; background: #e3f2fd; border: 1px solid #bbdefb; font-size: 12px;'><b>Last Activated By:</b> ${state.lastTriggerSource}</div>"
+                }
                 
                 // --- TIMER DASHBOARD ---
                 def timerText = ""
@@ -107,15 +136,21 @@ def mainPage() {
             }
         }
         
-        section("<div style='background-color:#333; color:white; padding:5px; font-size:16px;'>2. Triggers & Debounce</div>", hideable: true, hidden: false) {
+        section("<div style='background-color:#333; color:white; padding:5px; font-size:16px;'>2. Triggers & Intelligence</div>", hideable: true, hidden: false) {
             input "motionSensors", "capability.motionSensor", title: "Primary Motion Sensors", multiple: true, required: false
             input "triggerSwitches", "capability.switch", title: "Primary Trigger Switches (Virtual Occupancy)", multiple: true, required: false, description: "<b>WARNING:</b> DO NOT select the lights you are controlling here!"
+            input "enableTriggerTracking", "bool", title: "Enable 'Last Triggered By' Intelligence?", defaultValue: false
             input "motionDebounceSeconds", "number", title: "Debounce (Seconds of continuous motion required)", defaultValue: 0
             input "luxSensor", "capability.illuminanceMeasurement", title: "Illuminance (Lux) Sensor", required: false
+            input "enableActiveLuxPolling", "bool", title: "Enable Active Lux Polling (Sunset Fade-In)?", defaultValue: false, description: "If the room is occupied but lights are off due to Lux, this will continually check and turn them on when the sun goes down."
         }
         
-        section("<div style='background-color:#333; color:white; padding:5px; font-size:16px;'>3. Turn ON Settings</div>", hideable: true, hidden: true) {
+        section("<div style='background-color:#333; color:white; padding:5px; font-size:16px;'>3. Turn ON & Transitions</div>", hideable: true, hidden: true) {
             input "useModeSettings", "bool", title: "Use specific settings per mode?", defaultValue: false, submitOnChange: true
+            input "enableSoftStart", "bool", title: "Enable Soft-Start (Transition Ramping)?", defaultValue: false, submitOnChange: true
+            if (enableSoftStart) {
+                input "softStartTime", "number", title: "Ramp Duration (Seconds)", defaultValue: 3
+            }
             
             if (useModeSettings) {
                 location.modes.each { m ->
@@ -165,11 +200,15 @@ def mainPage() {
         
         section("<div style='background-color:#333; color:white; padding:5px; font-size:16px;'>4. Turn OFF Behaviors</div>", hideable: true, hidden: true) {
             input "gracePeriod", "number", title: "Grace Period after Manual Off (Seconds)", defaultValue: 15
-            
             input "manualTimeoutMinutes", "number", title: "Manual Override Motion Shutoff Timer (Minutes)", defaultValue: 30, description: "If a light is manually turned on, wait this long after motion stops before turning off."
             
-            input "dimBeforeOff", "bool", title: "Dim to 1% before turning off?", defaultValue: true, description: "Disable this for bulbs that don't need a forced soft-fade."
+            input "enableWarningDim", "bool", title: "Enable Warning Dim Phase?", defaultValue: false, submitOnChange: true
+            if (enableWarningDim && lightType != "Simple On/Off") {
+                input "warningDimLevel", "number", title: "Warning Dim Level (%)", defaultValue: 10
+                input "warningDimSeconds", "number", title: "Warning Duration (Seconds)", defaultValue: 30
+            }
             
+            input "dimBeforeOff", "bool", title: "Dim to 1% before turning off?", defaultValue: true, description: "Disable this for bulbs that don't need a forced soft-fade."
             input "turnOffOnModes", "mode", title: "Force OFF when Hub enters these Modes", multiple: true
             
             if (isSmartBulbOnRelay) {
@@ -181,17 +220,45 @@ def mainPage() {
             if (enableForceOff) input "forceOffMinutes", "number", title: "Sweep Delay (Minutes)", defaultValue: 60
         }
         
-        section("<div style='background-color:#333; color:white; padding:5px; font-size:16px;'>5. Advanced Restrictions</div>", hideable: true, hidden: true) {
-            input "disableOnSwitches", "capability.switch", title: "Switches to Disable Turning ON", multiple: true, required: false, description: "If ANY of these are ON, the light will not turn on automatically."
-            input "disableOffSwitches", "capability.switch", title: "Switches to Disable Turning OFF", multiple: true, required: false, description: "If ANY of these are ON, the automation will not turn the light off."
-            
+        section("<div style='background-color:#333; color:white; padding:5px; font-size:16px;'>5. Advanced Restrictions & True Occupancy</div>", hideable: true, hidden: true) {
+            input "disableOnSwitches", "capability.switch", title: "Switches to Disable Turning ON", multiple: true, required: false
+            input "disableOffSwitches", "capability.switch", title: "Switches to Disable Turning OFF", multiple: true, required: false
             input "goodNightSwitch", "capability.switch", title: "Nap Time / Hard-Lock Switch", required: false
-            input "startTime", "time", title: "Only active AFTER", required: false
-            input "endTime", "time", title: "Only active BEFORE", required: false
             
-            paragraph "<b>Custom Contact Logic</b>"
+            input "enableOccupancyLock", "bool", title: "Enable True Occupancy (Door Lock)?", defaultValue: false, submitOnChange: true
+            if (enableOccupancyLock) {
+                input "occupancyLockContact", "capability.contactSensor", title: "Lock Lights ON when this Contact is CLOSED"
+            }
+            
+            paragraph "<b>Operational Time Window</b>"
+            input "restrictByTime", "bool", title: "Enable Time-Based Gate?", defaultValue: false, submitOnChange: true
+            if (restrictByTime) {
+                input "timeLogic", "enum", title: "Window Logic", options: ["Only run DURING this window", "Block execution DURING this window"], defaultValue: "Only run DURING this window", submitOnChange: true
+                
+                input "startTimeType", "enum", title: "Start Time", options: ["Specific Time", "Sunrise", "Sunset"], required: true, submitOnChange: true
+                if (startTimeType == "Specific Time") {
+                    input "startTime", "time", title: "Select Start Time", required: true
+                } else {
+                    input "startOffset", "number", title: "Offset (Minutes)", defaultValue: 0
+                }
+                
+                input "endTimeType", "enum", title: "End Time", options: ["Specific Time", "Sunrise", "Sunset"], required: true, submitOnChange: true
+                if (endTimeType == "Specific Time") {
+                    input "endTime", "time", title: "Select End Time", required: true
+                } else {
+                    input "endOffset", "number", title: "Offset (Minutes)", defaultValue: 0
+                }
+            }
+            
+            paragraph "<b>Custom Contact & Lux Logic</b>"
             input "contactSensors", "capability.contactSensor", title: "Do NOT turn on if these contacts are OPEN", multiple: true, required: false
             input "overcastSwitch", "capability.switch", title: "Virtual Overcast Switch (Ignores open contacts)", required: false
+            
+            input "useLuxContactOverride", "bool", title: "Enable Lux Override for Open Contacts?", defaultValue: false, submitOnChange: true
+            if (useLuxContactOverride) {
+                input "luxContactVar", "string", title: "Hub Variable for Lux Threshold (Optional)", required: false
+                input "luxContactThreshold", "number", title: "Static Lux Threshold", required: false
+            }
             
             paragraph "<b>Keep-Alive / Overrides (Keeps lights ON, won't trigger ON)</b>"
             input "keepAliveMotionSensors", "capability.motionSensor", title: "Secondary Motion Sensors", multiple: true, required: false
@@ -200,7 +267,8 @@ def mainPage() {
             input "keepAlivePowerThreshold", "number", title: "Power Threshold for Keep-Alive (Watts)", defaultValue: 10
         }
 
-        section("<div style='background-color:#333; color:white; padding:5px; font-size:16px;'>6. Telemetry & ROI</div>", hideable: true, hidden: true) {
+        section("<div style='background-color:#333; color:white; padding:5px; font-size:16px;'>6. Telemetry & Health</div>", hideable: true, hidden: true) {
+            input "enableHealthWatchdog", "bool", title: "Report Battery & Health to Parent?", defaultValue: false
             input "enableTelemetry", "bool", title: "Enable Energy Tracking?", defaultValue: false, submitOnChange: true
             if (enableTelemetry) {
                 input "totalWattage", "decimal", title: 'Total Wattage (e.g. 60.5)', required: true
@@ -232,6 +300,7 @@ def initialize() {
     state.manuallyTurnedOn = state.manuallyTurnedOn ?: false
     state.arrivalActive = state.arrivalActive ?: false
     state.offRetryCount = 0
+    state.warningPhase = false
     
     // Primary Triggers
     subscribe(motionSensors, "motion", triggerHandler)
@@ -248,6 +317,11 @@ def initialize() {
     subscribe(contactSensors, "contact", restrictionHandler)
     subscribe(overcastSwitch, "switch", restrictionHandler)
     subscribe(goodNightSwitch, "switch", restrictionHandler)
+    
+    if (enableOccupancyLock && occupancyLockContact) {
+        subscribe(occupancyLockContact, "contact", restrictionHandler)
+    }
+    
     subscribe(location, "mode", modeChangeHandler)
     subscribe(location, "systemStart", bootHandler)
     
@@ -276,7 +350,6 @@ def bootHandler(evt) { runIn(30, "bootSync", [overwrite: true]) }
 def bootSync() {
     def anyOn = (switches?.any { it.currentValue("switch") == "on" } || dimmers?.any { it.currentValue("switch") == "on" } || colorBulbs?.any { it.currentValue("switch") == "on" })
     if (anyOn && !isPrimaryActive() && !isKeepAliveActive() && !state.arrivalActive) {
-        // Apply random stagger to boot sequences to prevent startup network storms
         def randomStagger = new Random().nextInt(5000) + 500
         runInMillis(randomStagger, "startTurnOffTimer")
     }
@@ -285,6 +358,7 @@ def bootSync() {
 def recordTurnOnTime() { if (!state.onTimeStart) state.onTimeStart = now() }
 def recordTurnOffTime() { if (state.onTimeStart) { state.todayOnMillis = (state.todayOnMillis ?: 0) + (now() - state.onTimeStart); state.onTimeStart = null } }
 
+// RESTORED: Calculating ROI Savings
 def calculateLiveSavings() {
     def currentMillis = (state.todayOnMillis ?: 0) + (state.onTimeStart ? (now() - state.onTimeStart) : 0)
     def hoursOn = currentMillis / 3600000.0
@@ -293,11 +367,10 @@ def calculateLiveSavings() {
     return [today: todaySaved.toBigDecimal().setScale(2, BigDecimal.ROUND_HALF_UP), lifetime: (state.lifetimeSavings ?: 0.0).toBigDecimal().setScale(2, BigDecimal.ROUND_HALF_UP)]
 }
 
+// RESTORED: Midnight Reset for Analytics
 def midnightReset() {
     state.lifetimeSavings = (state.lifetimeSavings ?: 0.0) + calculateLiveSavings().today.toBigDecimal()
     state.todayOnMillis = 0
-    
-    // If the light is currently ON across midnight, restart the clock for the new day
     if (state.onTimeStart) {
         state.onTimeStart = now()
     }
@@ -306,23 +379,55 @@ def midnightReset() {
 def triggerHandler(evt) {
     if (evt.value == "active" || evt.value == "on") {
         if (state.gracePeriodEnd && now() < state.gracePeriodEnd) return
-        cancelAllTurnOffTimers()
-        if (motionDebounceSeconds && !state.appTurnedOn) runIn(motionDebounceSeconds, "evaluateTurnOn")
-        else evaluateTurnOn()
-    } else {
-        if (!isPrimaryActive() && !isKeepAliveActive()) {
-            startTurnOffTimer()
+        
+        if (enableTriggerTracking) {
+            state.lastTriggerSource = evt.displayName
         }
+        
+        // Interrupt the Warning Dim Phase if motion is detected
+        if (state.warningPhase) {
+            state.warningPhase = false
+            cancelAllTurnOffTimers()
+            applyLightingSettings() 
+            startTurnOffTimer() 
+            return
+        }
+        
+        if (state.manuallyTurnedOn) {
+            startTurnOffTimer() 
+        } else {
+            cancelAllTurnOffTimers()
+            if (motionDebounceSeconds && !state.appTurnedOn) runIn(motionDebounceSeconds, "evaluateTurnOn")
+            else evaluateTurnOn()
+        }
+    } else {
+        runIn(1, "evaluatePrimaryOff")
+    }
+}
+
+def evaluatePrimaryOff() {
+    if (!isPrimaryActive() && !isKeepAliveActive()) {
+        startTurnOffTimer()
     }
 }
 
 def keepAliveHandler(evt) {
-    if (isKeepAliveActive()) {
-        if (state.appTurnedOn) cancelAllTurnOffTimers()
-    } else {
-        if (state.appTurnedOn && !isPrimaryActive()) {
+    def isActiveEvent = (evt.value == "active" || evt.value == "on" || (evt.name == "power" && evt.value.toFloat() >= (keepAlivePowerThreshold ?: 10)))
+    
+    if (isActiveEvent) {
+        if (state.manuallyTurnedOn) {
             startTurnOffTimer()
+        } else if (state.appTurnedOn) {
+            cancelAllTurnOffTimers()
         }
+    } else {
+        runIn(1, "evaluateKeepAliveOff")
+    }
+}
+
+def evaluateKeepAliveOff() {
+    if (state.appTurnedOn && !isPrimaryActive() && !isKeepAliveActive()) {
+        startTurnOffTimer()
     }
 }
 
@@ -331,7 +436,7 @@ def restrictionHandler(evt) {
 }
 
 def startTurnOffTimer() {
-    if (state.arrivalActive) return // Block auto-off if the parent app is managing the arrival timer
+    if (state.arrivalActive) return 
     def delay = state.manuallyTurnedOn ? (manualTimeoutMinutes ?: 30) : (getModeSetting("delay") ?: (defaultDelay ?: 5))
     state.stdTaskTime = now() + (delay * 60000)
     runIn(delay * 60, "processTurnOff")
@@ -339,30 +444,111 @@ def startTurnOffTimer() {
 
 def cancelAllTurnOffTimers() { unschedule("processTurnOff"); state.stdTaskTime = null }
 
+// Background poller for when room is active but lights are off due to Lux
+def pollLuxWhileActive() {
+    if (!isPrimaryActive() && !isKeepAliveActive()) return 
+    if (state.appTurnedOn) return 
+    
+    def shouldTurnOn = false
+    if (luxSensor) {
+        def curLux = luxSensor.currentValue("illuminance") ?: 0
+        def targetLux = getModeSetting("lux")
+        if (targetLux != null && curLux < targetLux) shouldTurnOn = true
+        
+        if (useLuxContactOverride && contactSensors?.any { it.currentValue("contact") == "open" }) {
+            def overrideLux = luxContactVar ? getGlobalVar(luxContactVar)?.value?.toInteger() : (luxContactThreshold ?: 0)
+            if (curLux < overrideLux) shouldTurnOn = true
+        }
+    }
+    
+    if (shouldTurnOn) evaluateTurnOn()
+    else runIn(60, "pollLuxWhileActive")
+}
+
+// --- TIME RESOLUTION HELPER ---
+def resolveTime(type, timeVal, offset) {
+    if (type == "Specific Time" && timeVal) return toDateTime(timeVal)
+    
+    def astro = getSunriseAndSunset()
+    if (type == "Sunrise") {
+        def t = astro.sunrise
+        if (offset) t = new Date(t.time + (offset.toInteger() * 60000))
+        return t
+    }
+    if (type == "Sunset") {
+        def t = astro.sunset
+        if (offset) t = new Date(t.time + (offset.toInteger() * 60000))
+        return t
+    }
+    return null
+}
+
+// --- MIDNIGHT WRAP HELPER ---
+def isTimeInWindow(sTime, eTime) {
+    def n = new Date()
+    if (sTime < eTime) {
+        return timeOfDayIsBetween(sTime, eTime, n, location.timeZone)
+    } else {
+        return (n.after(sTime) || n.before(eTime))
+    }
+}
+
 def evaluateTurnOn() {
-    state.offRetryCount = 0 // Reset retry logic to ensure a clean slate upon fresh motion
+    state.offRetryCount = 0 
     
     if (activeModes && !activeModes.contains(location.mode)) return
     
     if (luxSensor) {
         def currentLux = luxSensor.currentValue("illuminance") ?: 0
         def targetLux = getModeSetting("lux")
-        if (targetLux != null && currentLux >= targetLux) return
+        if (targetLux != null && currentLux >= targetLux) {
+            if (enableActiveLuxPolling) runIn(60, "pollLuxWhileActive")
+            return
+        }
     }
     
+    // RESTORED: Disable ON Switches & Goodnight switch
     if (disableOnSwitches?.any { it.currentValue("switch") == "on" }) return
     if (goodNightSwitch && goodNightSwitch.currentValue("switch") == "on") return
-    if (startTime && endTime && !timeOfDayIsBetween(startTime, endTime, new Date(), location.timeZone)) return
     
-    if (contactSensors?.any { it.currentValue("contact") == "open" } && overcastSwitch?.currentValue("switch") != "on") return
+    // RESTORED: Midnight Wrap Time Evaluation
+    if (restrictByTime && startTimeType && endTimeType) {
+        def sTime = resolveTime(startTimeType, startTime, startOffset)
+        def eTime = resolveTime(endTimeType, endTime, endOffset)
+        if (sTime && eTime) {
+            def isInside = isTimeInWindow(sTime, eTime)
+            def shouldBlock = (timeLogic == "Block execution DURING this window") ? isInside : !isInside
+            if (shouldBlock) return
+        }
+    }
+    
+    // RESTORED: True Overcast and Lux Override Contact Sensor Logic
+    def luxOverrideActive = false
+    if (useLuxContactOverride && luxSensor) {
+        def curLux = luxSensor.currentValue("illuminance") ?: 0
+        def targetLux = luxContactThreshold ?: 0
+        if (luxContactVar) {
+            def hVar = getGlobalVar(luxContactVar)
+            if (hVar != null) targetLux = hVar.value.toInteger()
+        }
+        if (curLux < targetLux) {
+            luxOverrideActive = true
+        }
+    }
+    
+    if (contactSensors?.any { it.currentValue("contact") == "open" } && overcastSwitch?.currentValue("switch") != "on" && !luxOverrideActive) {
+        if (enableActiveLuxPolling && luxSensor) runIn(60, "pollLuxWhileActive")
+        return
+    }
 
     state.appTurnedOn = true
+    state.warningPhase = false
     state.lastAutoCommand = now()
     recordTurnOnTime()
     applyLightingSettings()
 }
 
-// Helper to grab Dynamic Level vs Static Level
+// RESTORED: Original Level Variable & Virtual Dimmer Grabber
 def getTargetLevel() {
     def isMode = useModeSettings
     def m = location.modes.find { it.name == location.mode }
@@ -378,6 +564,7 @@ def getTargetLevel() {
     return staticLvl != null ? staticLvl : 100
 }
 
+// RESTORED: Original Color Temp Variable Grabber
 def getTargetColorTemp() {
     def isMode = useModeSettings
     def m = location.modes.find { it.name == location.mode }
@@ -393,10 +580,11 @@ def getTargetColorTemp() {
     return staticCT ?: 2700
 }
 
-// The transition parameter is optional. If passed, the color bulbs will fade over that duration.
+// The transition parameter is optional. If passed, the bulbs will fade over that duration.
 def applyLightingSettings(transition = null) {
     state.lastAutoCommand = now() 
     def refreshNeeded = false
+    def t = (transition != null) ? transition : (enableSoftStart ? (softStartTime ?: 3) : null)
 
     if (lightType == "Simple On/Off") {
         switches?.each { 
@@ -413,7 +601,11 @@ def applyLightingSettings(transition = null) {
         def lvl = getTargetLevel()
         dimmers?.each { 
             if (it.currentValue("switch") != "on" || it.currentValue("level") != lvl) {
-                it.setLevel(lvl)
+                if (t != null) {
+                    it.setLevel(lvl, t)
+                } else {
+                    it.setLevel(lvl)
+                }
                 refreshNeeded = true
             }
         }
@@ -427,8 +619,8 @@ def applyLightingSettings(transition = null) {
         
         colorBulbs?.each { 
             if (it.currentValue("switch") != "on" || it.currentValue("level") != lvl || it.currentValue("colorTemperature") != ct) {
-                if (transition != null) {
-                    it.setColorTemperature(ct, lvl, transition)
+                if (t != null) {
+                    it.setColorTemperature(ct, lvl, t)
                 } else {
                     it.setColorTemperature(ct, lvl)
                 }
@@ -443,14 +635,34 @@ def applyLightingSettings(transition = null) {
 }
 
 def processTurnOff() {
+    // RESTORED: Disable OFF Switches
     if (disableOffSwitches?.any { it.currentValue("switch") == "on" }) return
     
-    // Final safety check in case a timer survived somehow
-    if (isPrimaryActive() || isKeepAliveActive()) return 
+    // OCCUPANCY LOCK logic
+    if (enableOccupancyLock && occupancyLockContact?.currentValue("contact") == "closed") {
+        startTurnOffTimer() 
+        return
+    }
+    
+    if (isPrimaryActive() || isKeepAliveActive()) {
+        if (state.manuallyTurnedOn) startTurnOffTimer() 
+        return 
+    }
+    
+    // Process Warning Dim Phase
+    if (enableWarningDim && !state.warningPhase && lightType != "Simple On/Off") {
+        state.warningPhase = true
+        def wLvl = warningDimLevel ?: 10
+        dimmers?.each { it.setLevel(wLvl) }
+        colorBulbs?.each { it.setLevel(wLvl) }
+        runIn(warningDimSeconds ?: 30, "processTurnOff")
+        return
+    }
     
     state.appTurnedOn = false
     state.manuallyTurnedOn = false
     state.arrivalActive = false
+    state.warningPhase = false
     recordTurnOffTime()
     
     sendOffCommands()
@@ -458,7 +670,7 @@ def processTurnOff() {
 }
 
 def sendOffCommands() {
-    state.lastAutoOffCommand = now() // ADDED: timestamp for OFF commands
+    state.lastAutoOffCommand = now() 
     def refreshNeeded = false
 
     switches?.each { 
@@ -469,8 +681,7 @@ def sendOffCommands() {
     }
     dimmers?.each { 
         if (it.currentValue("switch") != "off") { 
-            // Check if the user wants the 1% fade
-            if (dimBeforeOff != false) {
+            if (dimBeforeOff != false && !state.warningPhase) {
                 it.setLevel(1)
                 pauseExecution(400)
             }
@@ -480,8 +691,7 @@ def sendOffCommands() {
     }
     colorBulbs?.each { 
         if (it.currentValue("switch") != "off") { 
-            // Check if the user wants the 1% fade
-            if (dimBeforeOff != false) {
+            if (dimBeforeOff != false && !state.warningPhase) {
                 it.setLevel(1)
                 pauseExecution(400)
             }
@@ -499,9 +709,10 @@ def sendOffCommands() {
     }
 }
 
+// RESTORED: Execute Refresh method
 def executeRefresh() {
     state.lastAutoCommand = now() 
-    state.lastAutoOffCommand = now() // ADDED: Reset the off debounce timer as well
+    state.lastAutoOffCommand = now() 
 
     if (lightType == "Simple On/Off") {
         switches?.each { if (it.hasCommand("refresh")) it.refresh() }
@@ -514,9 +725,6 @@ def executeRefresh() {
 
 def verifyTurnOff() {
     def anyOn = false
-    
-    // If we killed a physical relay that powers smart bulbs, the smart bulbs will drop offline 
-    // and might freeze in the "ON" state in the hub. We should only verify the relay in this scenario.
     if (isSmartBulbOnRelay && turnOffRelay) {
         anyOn = (relaySwitch?.currentValue("switch") == "on")
     } else {
@@ -525,7 +733,6 @@ def verifyTurnOff() {
                  colorBulbs?.any { it.currentValue("switch") == "on" })
     }
     
-    // Abort verification completely if the room became active again during the 10-second wait
     if (isPrimaryActive() || isKeepAliveActive()) {
         state.offRetryCount = 0
         return 
@@ -541,41 +748,51 @@ def verifyTurnOff() {
 }
 
 def physicalOffHandler(evt) {
-    if (now() - (state.lastAutoOffCommand ?: 0) > 3000) { // ADDED: Debounce check for OFF events
+    def isExplicitlyPhysical = (evt.type == "physical" || evt.isPhysical())
+    def isOutsideAppDebounce = (now() - (state.lastAutoOffCommand ?: 0) > 5000) 
+    
+    if (isExplicitlyPhysical || isOutsideAppDebounce) { 
         def gp = (gracePeriod ?: 15)
         state.gracePeriodEnd = now() + (gp * 1000)
         state.appTurnedOn = false
         state.manuallyTurnedOn = false
-        state.arrivalActive = false // Break arrival lock on physical interaction
+        state.arrivalActive = false
+        state.warningPhase = false
         cancelAllTurnOffTimers()
         recordTurnOffTime() 
     }
 }
 
 def physicalOnHandler(evt) {
-    if (now() - (state.lastAutoCommand ?: 0) > 3000) {
+    def isExplicitlyPhysical = (evt.type == "physical" || evt.isPhysical())
+    def isOutsideAppDebounce = (now() - (state.lastAutoCommand ?: 0) > 5000) 
+    
+    if (isExplicitlyPhysical || isOutsideAppDebounce) {
         state.manuallyTurnedOn = true
         state.appTurnedOn = true
-        cancelAllTurnOffTimers()
+        state.warningPhase = false
         recordTurnOnTime() 
+        startTurnOffTimer() 
     }
 }
 
 def modeChangeHandler(evt) {
-    // Explicitly cast to a flattened list to ensure reliable matching
     def forceOffList = [turnOffOnModes].flatten().findAll { it }
     
     if (forceOffList.contains(evt.value)) {
         cancelAllTurnOffTimers() 
-        
-        // Generate a random stagger between 100ms and 4000ms to protect the mesh
         def randomStagger = new Random().nextInt(4000) + 100
         runInMillis(randomStagger, "processTurnOff")
         
     } else if (adjustOnModeChange && state.appTurnedOn) {
-        // Apply the same mesh-protection stagger for lights adjusting to a new mode
         def randomStagger = new Random().nextInt(4000) + 100
         runInMillis(randomStagger, "applyLightingSettings")
+    }
+}
+
+def appButtonHandler(btn) {
+    if (btn == "btnRefresh") {
+        log.debug "Live Dashboard Refreshed"
     }
 }
 
@@ -599,7 +816,6 @@ def turnOnArrival() {
     
     if (lightType == "Color / CT Bulb" && arrivalColorOverride) {
         def lvl = getTargetLevel()
-        // Force 6500k DayLight for arrival immediately (0 second transition)
         colorBulbs?.each { it.setColorTemperature(6500, lvl, 0) }
     } else {
         applyLightingSettings()
@@ -609,20 +825,15 @@ def turnOnArrival() {
 def revertFromArrival() {
     state.arrivalActive = false
     if (isPrimaryActive() || isKeepAliveActive()) {
-        // Room is currently occupied. Kick off standard timeout rather than sweeping it instantly.
         startTurnOffTimer()
-        
-        // Revert lights back to their respected Hub Variable/Static color using the Transition Time
         if (lightType == "Color / CT Bulb" && arrivalColorOverride) {
             applyLightingSettings(arrivalTransitionTime != null ? arrivalTransitionTime : 3)
         }
     } else {
-        // Room is empty. Execute off.
         processTurnOff()
     }
 }
 
-// Accepts the stagger delay from the parent, defaults to 0 if called locally
 def executeParentSweep(delayMs = 0) {
     if (!isPrimaryActive() && !isKeepAliveActive()) {
         if (delayMs > 0) {
@@ -633,12 +844,13 @@ def executeParentSweep(delayMs = 0) {
     }
 }
 
-// ADDED: Clears manual override if it exists, and resumes normal auto-off countdown if room is empty
 def clearManualOverride() {
     if (state.manuallyTurnedOn) {
         state.manuallyTurnedOn = false
         if (!isPrimaryActive() && !isKeepAliveActive()) {
             startTurnOffTimer()
+        } else {
+            cancelAllTurnOffTimers()
         }
         return true
     }
@@ -655,24 +867,68 @@ def getZoneStatus() {
     def primaryActive = isPrimaryActive()
     def keepAliveActive = isKeepAliveActive()
     
+    def healthData = []
+    if (enableHealthWatchdog) {
+        def checkList = []
+        if (motionSensors) checkList.addAll(motionSensors)
+        if (keepAliveMotionSensors) checkList.addAll(keepAliveMotionSensors)
+        if (contactSensors) checkList.addAll(contactSensors)
+        if (occupancyLockContact) checkList.add(occupancyLockContact)
+        
+        checkList.unique().findAll { it }.each { d ->
+            healthData << [name: d.displayName, battery: d.currentValue("battery"), lastActivity: d.getLastActivity()?.format("MM-dd HH:mm")]
+        }
+    }
+    
+    def timeBlocked = false
+    if (restrictByTime && startTimeType && endTimeType) {
+        def sTime = resolveTime(startTimeType, startTime, startOffset)
+        def eTime = resolveTime(endTimeType, endTime, endOffset)
+        if (sTime && eTime) {
+            def isInside = isTimeInWindow(sTime, eTime)
+            timeBlocked = (timeLogic == "Block execution DURING this window") ? isInside : !isInside
+        }
+    }
+
     def statusText = "Standby"
     if (state.arrivalActive) statusText = "<span style='color: #800080;'>Arrival Override</span>"
-    else if (state.manuallyTurnedOn) statusText = "<span style='color: #0055aa;'>Manual Override</span>"
+    else if (enableOccupancyLock && occupancyLockContact?.currentValue("contact") == "closed") statusText = "<span style='color: #a52a2a;'>Locked (Occupied)</span>"
+    else if (isLightOn && state.manuallyTurnedOn) statusText = "<span style='color: #0055aa;'>Manual Override</span>"
+    else if (activeModes && !activeModes.contains(location.mode)) statusText = "<span style='color: orange;'>Blocked (Mode: ${location.mode})</span>"
+    else if (timeBlocked) statusText = "<span style='color: orange;'>Blocked (Time Window)</span>"
     else if (disableOnSwitches?.any { it.currentValue("switch") == "on" }) statusText = "<span style='color: red;'>Disabled (ON Block)</span>"
     else if (disableOffSwitches?.any { it.currentValue("switch") == "on" }) statusText = "<span style='color: darkred;'>Disabled (OFF Block)</span>"
     else if (goodNightSwitch && goodNightSwitch.currentValue("switch") == "on") statusText = "<span style='color: darkblue;'>Nap Lock Active</span>"
-    else if (contactSensors?.any { it.currentValue("contact") == "open" } && overcastSwitch?.currentValue("switch") != "on") statusText = "<span style='color: orange;'>Blocked (Open Contact)</span>"
+    else if (contactSensors?.any { it.currentValue("contact") == "open" }) {
+        def overcastActive = (overcastSwitch?.currentValue("switch") == "on")
+        def luxOverrideActive = false
+        if (useLuxContactOverride && luxSensor) {
+            def curLux = luxSensor.currentValue("illuminance") ?: 0
+            def targetLux = luxContactThreshold ?: 0
+            if (luxContactVar) {
+                def hVar = getGlobalVar(luxContactVar)
+                if (hVar != null) targetLux = hVar.value.toInteger()
+            }
+            if (curLux < targetLux) luxOverrideActive = true
+        }
+        
+        if (overcastActive || luxOverrideActive) {
+            statusText = "Occupied (Contact Bypass Active)"
+        } else {
+            statusText = "<span style='color: orange;'>Blocked (Open Contact)</span>"
+        }
+    }
+    else if (state.warningPhase) statusText = "<span style='color: orange;'>Warning Dim Phase</span>"
     else if (isLightOn && (primaryActive || keepAliveActive)) statusText = "Occupied"
     else if (isLightOn && !primaryActive && !keepAliveActive) statusText = "Counting Down"
     else if (!isLightOn && primaryActive) statusText = "Motion Ignored"
     
     def timerText = "--"
-    if (isLightOn && !primaryActive && !keepAliveActive && state.stdTaskTime && state.stdTaskTime > now()) {
+    if (isLightOn && state.stdTaskTime && state.stdTaskTime > now()) {
         def diff = state.stdTaskTime - now()
         timerText = "${(diff / 60000).toInteger()}m ${((diff % 60000) / 1000).toInteger()}s"
     }
     
-    // Add Brightness and Color Temperature details if applicable
     def lightDetails = isLightOn ? "ON" : "OFF"
     
     if (isLightOn) {
@@ -700,26 +956,24 @@ def getZoneStatus() {
         light: lightDetails,
         motion: primaryActive ? "ACTIVE" : (keepAliveActive ? "KEEP-ALIVE" : "INACTIVE"),
         status: statusText,
-        timer: timerText
+        lastTrigger: enableTriggerTracking ? state.lastTriggerSource : null,
+        timer: timerText,
+        health: healthData
     ]
 }
 
-// --- NEW: DYNAMIC CT UPDATE (Triggered by Parent) ---
 def dynamicCTUpdate(newCT) {
-    // Only proceed if this specific rule controls Color/CT bulbs
     if (lightType == "Color / CT Bulb") {
         def lvl = getTargetLevel()
         def refreshNeeded = false
         
         colorBulbs?.each { bulb ->
-            // Only interrupt and change the color of bulbs that are currently ON
             if (bulb.currentValue("switch") == "on") {
                 bulb.setColorTemperature(newCT, lvl)
                 refreshNeeded = true
             }
         }
         
-        // Refresh the devices so the dashboard stays accurate
         if (refreshNeeded) {
             runIn(2, "executeRefresh")
         }
