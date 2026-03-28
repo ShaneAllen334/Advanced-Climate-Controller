@@ -86,6 +86,12 @@ def mainPage() {
         section("<b>2. Smart Room Configuration</b>", hideable: true, hidden: true) {
             paragraph "<i>Configure up to 12 rooms. Define parameters, sequencing, and environmental awareness.</i>"
             
+            if (vacuum1) {
+                input name: "btnSyncRooms", type: "button", title: "🔄 Auto-Sync Rooms from Vacuum 1"
+                paragraph "<i><span style='color: #666;'>Clicking Auto-Sync will pull the room map directly from Vacuum 1. It will automatically enable the slots, name the rooms, and insert the IDs below. You can still manually edit them afterwards.</span></i>"
+                paragraph "<hr style='border: 1px solid #ccc;'>"
+            }
+            
             for (int i = 1; i <= 12; i++) {
                 def rName = settings["roomName_${i}"] ?: "Room ${i}"
                 def isHidden = settings["enableRoom_${i}"] ? false : true
@@ -111,8 +117,10 @@ def mainPage() {
                     input "roomMedia_${i}", "capability.musicPlayer", title: "  ↳ Acoustic Adjust (Media Player)", required: false
                     input "roomContact_${i}", "capability.contactSensor", title: "  ↳ Perimeter Halt (Skip if Door Open)", required: false
                     
-                    input "roomMotion_${i}", "capability.motionSensor", title: "  ↳ Pre-Check Motion Sensor", required: false
-                    input "roomLight_${i}", "capability.switch", title: "  ↳ Pre-Check Lighting (ON = Occupied)", required: false
+                    paragraph "<b>Occupancy Arrays (Deduplicated Tracking):</b>"
+                    input "roomMotion_${i}", "capability.motionSensor", title: "  ↳ Pre-Check Motion Sensors", required: false, multiple: true
+                    input "roomLight_${i}", "capability.switch", title: "  ↳ Pre-Check Lighting (ON = Occupied)", required: false, multiple: true
+                    input "roomTV_${i}", "capability.switch", title: "  ↳ Pre-Check TVs/Displays (ON = Occupied)", required: false, multiple: true
                     input "roomSwitch_${i}", "capability.switch", title: "  ↳ Individual Room Trigger Switch", required: false
                     paragraph "<hr style='border: 1px solid #eee;'>"
                 }
@@ -120,15 +128,19 @@ def mainPage() {
         }
 
         section("<b>3. Automated Triggers & Modes</b>", hideable: true, hidden: true) {
-            input "goodNightMode", "mode", title: "Trigger Sweep on 'Good Night' Mode", required: false, multiple: true
+            paragraph "<b>Good Night Logic & Tracking Suspension:</b>"
+            input "goodNightSwitch", "capability.switch", title: "Good Night Toggle Switch (Suspends Motion Tracking)", required: false
+            input "goodNightMode", "mode", title: "Trigger Sweep & Suspend Tracking on 'Good Night' Mode", required: false, multiple: true
             input "goodNightRooms", "enum", title: "Rooms to clean during Good Night routine", options: availableRooms, required: false, multiple: true
             input "goodNightConflicts", "capability.switch", title: "Device Conflict Block", required: false, multiple: true, description: "Do not start Good Night sweep if these devices are actively ON."
             
+            paragraph "<b>Configurable Full House Clean Mode:</b>"
             input "fullCleanMode", "mode", title: "Trigger Configured Full Clean on Mode", required: false, multiple: true
             input "fullCleanIgnoreSkip", "bool", title: "Ignore Occupancy Skip Logic (Force Clean All)", defaultValue: false
             input "fullCleanSuction", "enum", title: "Override Base Suction Power", options: ["Quiet", "Balanced", "Turbo", "Max"], required: false
             input "fullCleanWater", "enum", title: "Override Base Mop Water", options: ["Off", "Low", "Medium", "High"], required: false
             
+            paragraph "<b>Other Triggers:</b>"
             input "schoolRunSwitch", "capability.switch", title: "School Drop-Off/Pickup Switch", required: false
             input "schoolRunRooms", "enum", title: "Rooms to clean during School Run", options: availableRooms, required: false, multiple: true
         }
@@ -181,6 +193,7 @@ def updated() {
     logInfo "Updated with settings: ${settings}"
     if (!state.history) state.history = []
     if (!state.lastCleanTime) state.lastCleanTime = now()
+    if (!state.lastDispatchLog) state.lastDispatchLog = [:]
     
     if (settings.clearHistory) {
         state.history = []
@@ -188,8 +201,14 @@ def updated() {
     }
     if (settings.clearOccupancy) {
         for (int i = 1; i <= 12; i++) {
-            if (settings["enableRoom_${i}"]) state["occMins_${settings["roomName_${i}"]}"] = 0
+            if (settings["enableRoom_${i}"]) {
+                String rName = settings["roomName_${i}"]
+                state["occSecs_${rName}"] = 0
+                state["motionEvents_${rName}"] = 0
+                state["activeMotionCount_${rName}"] = 0
+            }
         }
+        state.lastDispatchLog = [:]
         app.updateSetting("clearOccupancy", [value: "false", type: "bool"])
     }
     if (settings.clearROI) {
@@ -240,13 +259,18 @@ def initialize() {
     
     for (int i = 1; i <= 12; i++) {
         if (settings["enableRoom_${i}"]) {
+            String rName = settings["roomName_${i}"]
+            if (state["activeMotionCount_${rName}"] == null) state["activeMotionCount_${rName}"] = 0
+            if (state["occSecs_${rName}"] == null) state["occSecs_${rName}"] = 0
+            if (state["motionEvents_${rName}"] == null) state["motionEvents_${rName}"] = 0
+            
             if (settings["roomSwitch_${i}"]) subscribe(settings["roomSwitch_${i}"], "switch.on", roomSwitchHandler)
             if (settings["roomMotion_${i}"]) subscribe(settings["roomMotion_${i}"], "motion", occupancyHandler)
             if (settings["roomLight_${i}"]) subscribe(settings["roomLight_${i}"], "switch", occupancyHandler)
+            if (settings["roomTV_${i}"]) subscribe(settings["roomTV_${i}"], "switch", occupancyHandler)
         }
     }
     
-    // Subscribing to specific Roborock Telemetry
     if (vacuum1) {
         subscribe(vacuum1, "state", vacuumStateHandler)
         subscribe(vacuum1, "battery", batteryHandler)
@@ -314,16 +338,30 @@ void dispatchVacuum(vacDevice, String brand, String type, String target, String 
     try {
         switch(brand) {
             case "Roborock (Community)":
-                if (type == "room") vacDevice.appRoomClean(target, water, suction)
+                // The Bloodtick driver requires parameters to be set before dispatching
+                if (suction) {
+                    try { vacDevice.setFanSpeed(suction.toLowerCase()) } catch(e) { }
+                    try { vacDevice.setFanPower(suction.toLowerCase()) } catch(e) { }
+                }
+                if (water) {
+                    try { vacDevice.setWater(water.toLowerCase()) } catch(e) { }
+                    try { vacDevice.setWaterLevel(water.toLowerCase()) } catch(e) { }
+                }
+                
+                // Now dispatch using only the target ID
+                if (type == "room") vacDevice.appRoomClean(target)
                 else if (type == "zone") vacDevice.appZoneClean(target)
                 break
+                
             case "Dreame":
-                if (type == "room") vacDevice.appRoomClean(target, water, suction)
+                if (type == "room") vacDevice.appRoomClean(target)
                 break
+                
             case "iRobot Roomba (Native)":
             case "Ecovacs/Deebot":
                 if (type == "room") vacDevice.cleanRoom(target)
                 break
+                
             default:
                 vacDevice.on()
                 break
@@ -355,6 +393,18 @@ boolean canRunAutomated() {
     return true
 }
 
+boolean isRoomCurrentlyOccupied(int roomIndex) {
+    def motions = [settings["roomMotion_${roomIndex}"]].flatten().findAll { it }
+    def lights = [settings["roomLight_${roomIndex}"]].flatten().findAll { it }
+    def tvs = [settings["roomTV_${roomIndex}"]].flatten().findAll { it }
+    
+    if (motions.any { it.currentValue("motion") == "active" }) return true
+    if (lights.any { it.currentValue("switch") == "on" }) return true
+    if (tvs.any { it.currentValue("switch") == "on" }) return true
+    
+    return false
+}
+
 // ==========================================
 // NOTIFICATION ROUTER
 // ==========================================
@@ -375,6 +425,33 @@ def appButtonHandler(btn) {
         logInfo "Command Center ignored: Master Virtual Switch is OFF."
         return
     }
+    
+    if (btn == "btnSyncRooms") {
+        if (vacuum1) {
+            String roomsAttr = vacuum1.currentValue("rooms")?.toString() ?: vacuum1.currentValue("Rooms")?.toString()
+            if (roomsAttr) {
+                try {
+                    def roomMap = new groovy.json.JsonSlurper().parseText(roomsAttr)
+                    int i = 1
+                    roomMap.each { id, name ->
+                        if (i <= 12) {
+                            app.updateSetting("enableRoom_${i}", [type: "bool", value: true])
+                            app.updateSetting("roomName_${i}", [type: "text", value: name])
+                            app.updateSetting("roomId_${i}", [type: "text", value: id])
+                            i++
+                        }
+                    }
+                    addToHistory("<span style='color:purple;'><b>Room Sync: Successfully imported ${i-1} rooms from Vacuum 1.</b></span>")
+                } catch (e) {
+                    addToHistory("<span style='color:red;'><b>Room Sync Failed: Could not parse vacuum room data.</b></span>")
+                    log.error "Room Sync Error: ${e}"
+                }
+            } else {
+                addToHistory("<span style='color:red;'><b>Room Sync Failed: No room data found on Vacuum 1.</b></span>")
+            }
+        }
+    }
+    
     if (btn == "btnExecuteQuickClean") {
         if (settings.quickCleanRooms) {
             wakeDocks()
@@ -545,24 +622,45 @@ def occupancyHandler(evt) {
     if (masterSwitch && masterSwitch.currentValue("switch") == "off") return
     
     String triggeredRoom = ""
+    int triggeredIndex = 0
     for (int i = 1; i <= 12; i++) {
         if (settings["enableRoom_${i}"]) {
-            if (settings["roomMotion_${i}"]?.id == evt.deviceId || settings["roomLight_${i}"]?.id == evt.deviceId) {
+            def motions = [settings["roomMotion_${i}"]].flatten().findAll { it }
+            def lights = [settings["roomLight_${i}"]].flatten().findAll { it }
+            def tvs = [settings["roomTV_${i}"]].flatten().findAll { it }
+            
+            if (motions.any { it.id == evt.deviceId } || lights.any { it.id == evt.deviceId } || tvs.any { it.id == evt.deviceId }) {
                 triggeredRoom = settings["roomName_${i}"]
+                triggeredIndex = i
                 break
             }
         }
     }
     if (!triggeredRoom) return
 
+    boolean isGoodNight = false
+    if (goodNightMode && location.mode in goodNightMode) isGoodNight = true
+    if (goodNightSwitch && goodNightSwitch.currentValue("switch") == "on") isGoodNight = true
+
     if (evt.name == "motion") {
-        if (evt.value == "active") {
-            state["motionStart_${triggeredRoom}"] = now()
-        } else if (evt.value == "inactive") {
-            long start = state["motionStart_${triggeredRoom}"] ?: now()
-            int mins = ((now() - start) / 60000) as Integer
-            if (mins > 0) {
-                state["occMins_${triggeredRoom}"] = (state["occMins_${triggeredRoom}"] ?: 0) + mins
+        if (!isGoodNight) {
+            int currentCount = state["activeMotionCount_${triggeredRoom}"] ?: 0
+            if (evt.value == "active") {
+                if (currentCount == 0) {
+                    state["motionStart_${triggeredRoom}"] = now()
+                }
+                state["activeMotionCount_${triggeredRoom}"] = currentCount + 1
+                state["motionEvents_${triggeredRoom}"] = (state["motionEvents_${triggeredRoom}"] ?: 0) + 1
+            } else if (evt.value == "inactive") {
+                if (currentCount > 0) {
+                    state["activeMotionCount_${triggeredRoom}"] = currentCount - 1
+                    if (state["activeMotionCount_${triggeredRoom}"] == 0) {
+                        long start = state["motionStart_${triggeredRoom}"] ?: now()
+                        long deltaSecs = (now() - start) / 1000
+                        state["occSecs_${triggeredRoom}"] = (state["occSecs_${triggeredRoom}"] ?: 0) + deltaSecs
+                        addToHistory("Activity: ${triggeredRoom} recorded ${deltaSecs}s of motion.")
+                    }
+                }
             }
         }
     }
@@ -581,14 +679,16 @@ def occupancyHandler(evt) {
             unschedule("resumeVacuum2")
         }
     } else if (evt.value == "inactive" || evt.value == "off") {
-        int delaySeconds = (settings.pauseGracePeriod ?: 2) * 60
-        if (vacuum1 && vacuum1.currentValue("state")?.toLowerCase() == "paused") {
-            addToHistory("V1 Timer: ${triggeredRoom} clear. Resuming in ${settings.pauseGracePeriod}m.")
-            runIn(delaySeconds, "resumeVacuum1", [overwrite: true])
-        }
-        if (vacuum2 && vacuum2.currentValue("state")?.toLowerCase() == "paused") {
-            addToHistory("V2 Timer: ${triggeredRoom} clear. Resuming in ${settings.pauseGracePeriod}m.")
-            runIn(delaySeconds, "resumeVacuum2", [overwrite: true])
+        if (!isRoomCurrentlyOccupied(triggeredIndex)) {
+            int delaySeconds = (settings.pauseGracePeriod ?: 2) * 60
+            if (vacuum1 && vacuum1.currentValue("state")?.toLowerCase() == "paused") {
+                addToHistory("V1 Timer: ${triggeredRoom} clear. Resuming in ${settings.pauseGracePeriod}m.")
+                runIn(delaySeconds, "resumeVacuum1", [overwrite: true])
+            }
+            if (vacuum2 && vacuum2.currentValue("state")?.toLowerCase() == "paused") {
+                addToHistory("V2 Timer: ${triggeredRoom} clear. Resuming in ${settings.pauseGracePeriod}m.")
+                runIn(delaySeconds, "resumeVacuum2", [overwrite: true])
+            }
         }
     }
 }
@@ -713,15 +813,14 @@ void executeRoomClean(List selectedRoomNames, Map options = [:]) {
 
     def v1Queue = []
     def v2Queue = []
-    def skippedOccupied = []
-    def skippedClean = []
+    def dispatchLog = [:]
 
     for (String targetName : selectedRoomNames) {
         for (int i = 1; i <= 12; i++) {
             if (settings["enableRoom_${i}"] && settings["roomName_${i}"] == targetName) {
                 
                 if (settings["roomContact_${i}"] && settings["roomContact_${i}"].currentValue("contact") == "open") {
-                    skippedClean << "${targetName} (Perimeter Open)"
+                    dispatchLog[targetName] = "<span style='color:red;'>Skipped (Perimeter Open)</span>"
                     continue
                 }
 
@@ -729,26 +828,23 @@ void executeRoomClean(List selectedRoomNames, Map options = [:]) {
                     def currentHum = settings["roomHumidity_${i}"].currentValue("humidity") ?: 0
                     def limitHum = settings["roomHumidityThreshold_${i}"] ?: 75
                     if (currentHum > limitHum) {
-                        skippedClean << "${targetName} (High Humidity: ${currentHum}%)"
+                        dispatchLog[targetName] = "<span style='color:orange;'>Skipped (Humidity: ${currentHum}%)</span>"
                         continue
                     }
                 }
                 
-                int occMins = state["occMins_${targetName}"] ?: 0
+                int occSecs = state["occSecs_${targetName}"] ?: 0
+                int occMins = (occSecs / 60) as Integer
                 int minThreshold = settings["roomOccupancyThreshold_${i}"] ?: 15
                 int heavyThreshold = settings["roomHeavyTraffic_${i}"] ?: 120
                 
                 if (!ignoreSkip && occMins < minThreshold) {
-                    skippedClean << "${targetName} (${occMins}/${minThreshold}m)"
+                    dispatchLog[targetName] = "<span style='color:gray;'>Skipped (Clean: ${occMins}/${minThreshold}m)</span>"
                     continue 
                 }
 
-                boolean isOccupied = false
-                if (settings["roomMotion_${i}"] && settings["roomMotion_${i}"].currentValue("motion") == "active") isOccupied = true
-                if (settings["roomLight_${i}"] && settings["roomLight_${i}"].currentValue("switch") == "on") isOccupied = true
-                
-                if (isOccupied) {
-                    skippedOccupied << targetName
+                if (isRoomCurrentlyOccupied(i)) {
+                    dispatchLog[targetName] = "<span style='color:orange;'>Skipped (Currently Occupied)</span>"
                     continue
                 }
 
@@ -765,6 +861,8 @@ void executeRoomClean(List selectedRoomNames, Map options = [:]) {
                     addToHistory("Adaptive Suction: ${targetName} set to Turbo (${occMins}m traffic)")
                 }
 
+                dispatchLog[targetName] = "<span style='color:green;'>Cleaned (${finalSuction})</span>"
+
                 def roomData = [
                     name: targetName,
                     id: settings["roomId_${i}"],
@@ -780,8 +878,7 @@ void executeRoomClean(List selectedRoomNames, Map options = [:]) {
         }
     }
 
-    if (skippedOccupied.size() > 0) addToHistory("<span style='color:orange;'>Skipped (Occupied): ${skippedOccupied.join(', ')}</span>")
-    if (skippedClean.size() > 0) addToHistory("<span style='color:gray;'>Skipped (Condition/Clean): ${skippedClean.join(', ')}</span>")
+    state.lastDispatchLog = dispatchLog
 
     if (v1Queue.size() > 0 || v2Queue.size() > 0) {
         state.lastCleanTime = now()
@@ -801,7 +898,9 @@ void executeRoomClean(List selectedRoomNames, Map options = [:]) {
             if (room.zone) dispatchVacuum(vacuum1, settings.vac1Brand, "zone", room.zone, "", "")
             else if (room.id) dispatchVacuum(vacuum1, settings.vac1Brand, "room", room.id, room.water, room.suction)
             
-            state["occMins_${room.name}"] = 0 
+            state["occSecs_${room.name}"] = 0 
+            state["motionEvents_${room.name}"] = 0
+            state["activeMotionCount_${room.name}"] = 0
             pauseExecution(2500)
         }
     }
@@ -820,7 +919,9 @@ void executeRoomClean(List selectedRoomNames, Map options = [:]) {
             if (room.zone) dispatchVacuum(vacuum2, settings.vac2Brand, "zone", room.zone, "", "")
             else if (room.id) dispatchVacuum(vacuum2, settings.vac2Brand, "room", room.id, room.water, room.suction)
             
-            state["occMins_${room.name}"] = 0 
+            state["occSecs_${room.name}"] = 0 
+            state["motionEvents_${room.name}"] = 0
+            state["activeMotionCount_${room.name}"] = 0
             pauseExecution(2500)
         }
     }
@@ -877,7 +978,6 @@ String generateVacuumTable(vacDevice, String vacTitle, String intentAction, Stri
     if (vState.toLowerCase() in ["charging", "charged"]) stateColor = "blue"
     if (vState.toLowerCase() in ["paused", "returning to dock"]) stateColor = "orange"
 
-    // Map to specific Qrevo Curv attributes
     String filter = getConsumableVal(vacDevice, "remainingFilter") ?: getConsumableVal(vacDevice, "filter")
     String mBrush = getConsumableVal(vacDevice, "remainingMainBrush") ?: getConsumableVal(vacDevice, "mainBrush")
     String sBrush = getConsumableVal(vacDevice, "remainingSideBrush") ?: getConsumableVal(vacDevice, "sideBrush")
@@ -925,14 +1025,6 @@ String buildDashboardHTML() {
     if (vacuum1) html += generateVacuumTable(vacuum1, "Vacuum 1 (Primary)", state.v1_intentAction ?: "Idle", state.v1_intentRooms ?: "--")
     if (vacuum2) html += generateVacuumTable(vacuum2, "Vacuum 2 (Secondary)", state.v2_intentAction ?: "Idle", state.v2_intentRooms ?: "--")
     
-    List<String> utilList = []
-    for (int i = 1; i <= 12; i++) {
-        if (settings["enableRoom_${i}"] && settings["roomName_${i}"]) {
-            int mins = state["occMins_${settings["roomName_${i}"]}"] ?: 0
-            utilList << "<b>${settings["roomName_${i}"]}:</b> ${mins}m"
-        }
-    }
-    
     boolean isPaused = masterSwitch ? (masterSwitch.currentValue("switch") == "off") : false
     String globalStatus = isPaused ? "<span style='color: red; font-weight: bold;'>PAUSED (Physical Master Switch Off)</span>" : "<span style='color: green; font-weight: bold;'>ACTIVE</span>"
         
@@ -940,10 +1032,32 @@ String buildDashboardHTML() {
     
     long daysIdle = state.lastCleanTime ? ((now() - state.lastCleanTime) / 86400000) : 0
     html += "<div style='margin-top: 10px; padding: 8px; background: #fff3e0; border: 1px solid #ffe0b2; border-radius: 4px; font-size: 13px; color: #e65100;'><b>Time Since Last Dispatch:</b> ${daysIdle} Days</div>"
+
+    String roomHtml = "<div style='margin-top: 15px;'><table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc;'>"
+    roomHtml += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Room Name</th><th style='padding: 8px;'>Total Activity</th><th style='padding: 8px;'>Motion Events</th><th style='padding: 8px;'>Last Dispatch Status</th></tr>"
     
-    if (utilList.size() > 0) {
-        html += "<div style='margin-top: 10px; padding: 8px; background: #f4f4f4; border: 1px solid #ddd; border-radius: 4px; font-size: 12px; color: #555;'><b>Current Room Utilization:</b> ${utilList.join(' | ')}</div>"
+    boolean roomsExist = false
+    for (int i = 1; i <= 12; i++) {
+        if (settings["enableRoom_${i}"] && settings["roomName_${i}"]) {
+            roomsExist = true
+            String rName = settings["roomName_${i}"]
+            int occSecs = state["occSecs_${rName}"] ?: 0
+            int occMins = (occSecs / 60) as Integer
+            int remainderSecs = occSecs % 60
+            int mEvents = state["motionEvents_${rName}"] ?: 0
+            String dStatus = state.lastDispatchLog ? (state.lastDispatchLog[rName] ?: "--") : "--"
+            
+            roomHtml += "<tr style='border-bottom: 1px solid #ddd;'>"
+            roomHtml += "<td style='padding: 8px;'><b>${rName}</b></td>"
+            roomHtml += "<td style='padding: 8px;'>${occMins}m ${remainderSecs}s</td>"
+            roomHtml += "<td style='padding: 8px;'>${mEvents} Triggers</td>"
+            roomHtml += "<td style='padding: 8px;'>${dStatus}</td>"
+            roomHtml += "</tr>"
+        }
     }
+    roomHtml += "</table></div>"
+    
+    if (roomsExist) html += roomHtml
 
     double v1Watts = getVacWatts(settings.vac1Model, settings.vac1Watts)
     double v2Watts = getVacWatts(settings.vac2Model, settings.vac2Watts)
