@@ -88,7 +88,13 @@ def mainPage() {
             
             if (vacuum1) {
                 input name: "btnSyncRooms", type: "button", title: "🔄 Auto-Sync Rooms from Vacuum 1"
-                paragraph "<i><span style='color: #666;'>Clicking Auto-Sync will pull the room map directly from Vacuum 1. It will automatically enable the slots, name the rooms, and insert the IDs below. You can still manually edit them afterwards.</span></i>"
+                paragraph "<i><span style='color: #666;'>Clicking Auto-Sync will pull the room map directly from Vacuum 1. It will automatically enable the slots, name the rooms, and insert the IDs below.</span></i>"
+                paragraph "<hr style='border: 1px solid #ccc;'>"
+            }
+            
+            if (vacuum2) {
+                input name: "btnSyncRoomsV2", type: "button", title: "🔄 Auto-Sync Rooms from Vacuum 2"
+                paragraph "<i><span style='color: #666;'>Clicking this pulls the room map from Vacuum 2 into any available empty slots below, automatically assigning them to Vacuum 2.</span></i>"
                 paragraph "<hr style='border: 1px solid #ccc;'>"
             }
             
@@ -118,7 +124,8 @@ def mainPage() {
                     input "roomContact_${i}", "capability.contactSensor", title: "  ↳ Perimeter Halt (Skip if Door Open)", required: false
                     
                     paragraph "<b>Occupancy Arrays (Deduplicated Tracking):</b>"
-                    input "roomMotion_${i}", "capability.motionSensor", title: "  ↳ Pre-Check Motion Sensors", required: false, multiple: true
+                    input "roomMotion_${i}", "capability.motionSensor", title: "  ↳ Motion Sensors (Accumulates Usage Time)", required: false, multiple: true
+                    input "roomBypass_${i}", "capability.motionSensor", title: "  ↳ Real-Time Bypass Sensors (Skips Clean if Active)", required: false, multiple: true
                     input "roomLight_${i}", "capability.switch", title: "  ↳ Pre-Check Lighting (ON = Occupied)", required: false, multiple: true
                     input "roomTV_${i}", "capability.switch", title: "  ↳ Pre-Check TVs/Displays (ON = Occupied)", required: false, multiple: true
                     input "roomSwitch_${i}", "capability.switch", title: "  ↳ Individual Room Trigger Switch", required: false
@@ -205,7 +212,7 @@ def updated() {
                 String rName = settings["roomName_${i}"]
                 state["occSecs_${rName}"] = 0
                 state["motionEvents_${rName}"] = 0
-                state["activeMotionCount_${rName}"] = 0
+                state["isMotionActive_${rName}"] = false
             }
         }
         state.lastDispatchLog = [:]
@@ -260,12 +267,13 @@ def initialize() {
     for (int i = 1; i <= 12; i++) {
         if (settings["enableRoom_${i}"]) {
             String rName = settings["roomName_${i}"]
-            if (state["activeMotionCount_${rName}"] == null) state["activeMotionCount_${rName}"] = 0
             if (state["occSecs_${rName}"] == null) state["occSecs_${rName}"] = 0
             if (state["motionEvents_${rName}"] == null) state["motionEvents_${rName}"] = 0
+            if (state["isMotionActive_${rName}"] == null) state["isMotionActive_${rName}"] = false
             
             if (settings["roomSwitch_${i}"]) subscribe(settings["roomSwitch_${i}"], "switch.on", roomSwitchHandler)
             if (settings["roomMotion_${i}"]) subscribe(settings["roomMotion_${i}"], "motion", occupancyHandler)
+            if (settings["roomBypass_${i}"]) subscribe(settings["roomBypass_${i}"], "motion", occupancyHandler)
             if (settings["roomLight_${i}"]) subscribe(settings["roomLight_${i}"], "switch", occupancyHandler)
             if (settings["roomTV_${i}"]) subscribe(settings["roomTV_${i}"], "switch", occupancyHandler)
         }
@@ -338,7 +346,6 @@ void dispatchVacuum(vacDevice, String brand, String type, String target, String 
     try {
         switch(brand) {
             case "Roborock (Community)":
-                // The Bloodtick driver requires parameters to be set before dispatching
                 if (suction) {
                     try { vacDevice.setFanSpeed(suction.toLowerCase()) } catch(e) { }
                     try { vacDevice.setFanPower(suction.toLowerCase()) } catch(e) { }
@@ -348,20 +355,18 @@ void dispatchVacuum(vacDevice, String brand, String type, String target, String 
                     try { vacDevice.setWaterLevel(water.toLowerCase()) } catch(e) { }
                 }
                 
-                // Now dispatch using only the target ID
                 if (type == "room") vacDevice.appRoomClean(target)
                 else if (type == "zone") vacDevice.appZoneClean(target)
                 break
                 
             case "Dreame":
-                if (type == "room") vacDevice.appRoomClean(target)
+                if (type == "room") vacDevice.appRoomClean(target, water, suction)
                 break
                 
             case "iRobot Roomba (Native)":
             case "Ecovacs/Deebot":
                 if (type == "room") vacDevice.cleanRoom(target)
                 break
-                
             default:
                 vacDevice.on()
                 break
@@ -395,10 +400,12 @@ boolean canRunAutomated() {
 
 boolean isRoomCurrentlyOccupied(int roomIndex) {
     def motions = [settings["roomMotion_${roomIndex}"]].flatten().findAll { it }
+    def bypasses = [settings["roomBypass_${roomIndex}"]].flatten().findAll { it }
     def lights = [settings["roomLight_${roomIndex}"]].flatten().findAll { it }
     def tvs = [settings["roomTV_${roomIndex}"]].flatten().findAll { it }
     
     if (motions.any { it.currentValue("motion") == "active" }) return true
+    if (bypasses.any { it.currentValue("motion") == "active" }) return true
     if (lights.any { it.currentValue("switch") == "on" }) return true
     if (tvs.any { it.currentValue("switch") == "on" }) return true
     
@@ -436,6 +443,7 @@ def appButtonHandler(btn) {
                     roomMap.each { id, name ->
                         if (i <= 12) {
                             app.updateSetting("enableRoom_${i}", [type: "bool", value: true])
+                            app.updateSetting("vacuumAssign_${i}", [type: "enum", value: "Vacuum 1"])
                             app.updateSetting("roomName_${i}", [type: "text", value: name])
                             app.updateSetting("roomId_${i}", [type: "text", value: id])
                             i++
@@ -448,6 +456,40 @@ def appButtonHandler(btn) {
                 }
             } else {
                 addToHistory("<span style='color:red;'><b>Room Sync Failed: No room data found on Vacuum 1.</b></span>")
+            }
+        }
+    }
+    
+    if (btn == "btnSyncRoomsV2") {
+        if (vacuum2) {
+            String roomsAttr = vacuum2.currentValue("rooms")?.toString() ?: vacuum2.currentValue("Rooms")?.toString()
+            if (roomsAttr) {
+                try {
+                    def roomMap = new groovy.json.JsonSlurper().parseText(roomsAttr)
+                    int added = 0
+                    roomMap.each { id, name ->
+                        int targetSlot = 0
+                        for (int k = 1; k <= 12; k++) {
+                            if (!settings["enableRoom_${k}"]) {
+                                targetSlot = k
+                                break
+                            }
+                        }
+                        if (targetSlot > 0) {
+                            app.updateSetting("enableRoom_${targetSlot}", [type: "bool", value: true])
+                            app.updateSetting("vacuumAssign_${targetSlot}", [type: "enum", value: "Vacuum 2"])
+                            app.updateSetting("roomName_${targetSlot}", [type: "text", value: name])
+                            app.updateSetting("roomId_${targetSlot}", [type: "text", value: id])
+                            added++
+                        }
+                    }
+                    addToHistory("<span style='color:purple;'><b>Room Sync: Successfully imported ${added} rooms from Vacuum 2 into empty slots.</b></span>")
+                } catch (e) {
+                    addToHistory("<span style='color:red;'><b>Room Sync Failed: Could not parse vacuum room data for Vacuum 2.</b></span>")
+                    log.error "Room Sync Error V2: ${e}"
+                }
+            } else {
+                addToHistory("<span style='color:red;'><b>Room Sync Failed: No room data found on Vacuum 2.</b></span>")
             }
         }
     }
@@ -623,13 +665,22 @@ def occupancyHandler(evt) {
     
     String triggeredRoom = ""
     int triggeredIndex = 0
+    boolean isAccumulator = false
+    String evtDevId = evt.device.id?.toString() ?: evt.deviceId?.toString()
+    
     for (int i = 1; i <= 12; i++) {
         if (settings["enableRoom_${i}"]) {
             def motions = [settings["roomMotion_${i}"]].flatten().findAll { it }
+            def bypasses = [settings["roomBypass_${i}"]].flatten().findAll { it }
             def lights = [settings["roomLight_${i}"]].flatten().findAll { it }
             def tvs = [settings["roomTV_${i}"]].flatten().findAll { it }
             
-            if (motions.any { it.id == evt.deviceId } || lights.any { it.id == evt.deviceId } || tvs.any { it.id == evt.deviceId }) {
+            if (motions.any { it.id?.toString() == evtDevId }) {
+                triggeredRoom = settings["roomName_${i}"]
+                triggeredIndex = i
+                isAccumulator = true
+                break
+            } else if (bypasses.any { it.id?.toString() == evtDevId } || lights.any { it.id?.toString() == evtDevId } || tvs.any { it.id?.toString() == evtDevId }) {
                 triggeredRoom = settings["roomName_${i}"]
                 triggeredIndex = i
                 break
@@ -642,24 +693,34 @@ def occupancyHandler(evt) {
     if (goodNightMode && location.mode in goodNightMode) isGoodNight = true
     if (goodNightSwitch && goodNightSwitch.currentValue("switch") == "on") isGoodNight = true
 
-    if (evt.name == "motion") {
+    if (evt.name == "motion" && isAccumulator) {
         if (!isGoodNight) {
-            int currentCount = state["activeMotionCount_${triggeredRoom}"] ?: 0
-            if (evt.value == "active") {
-                if (currentCount == 0) {
-                    state["motionStart_${triggeredRoom}"] = now()
+            def motions = [settings["roomMotion_${triggeredIndex}"]].flatten().findAll { it }
+            int activeSensors = 0
+            
+            motions.each { m ->
+                if (m.id?.toString() == evtDevId) {
+                    if (evt.value == "active") activeSensors++
+                } else {
+                    if (m.currentValue("motion") == "active") activeSensors++
                 }
-                state["activeMotionCount_${triggeredRoom}"] = currentCount + 1
+            }
+            
+            boolean wasActive = state["isMotionActive_${triggeredRoom}"] ?: false
+            
+            if (evt.value == "active") {
                 state["motionEvents_${triggeredRoom}"] = (state["motionEvents_${triggeredRoom}"] ?: 0) + 1
+                if (!wasActive) {
+                    state["motionStart_${triggeredRoom}"] = now()
+                    state["isMotionActive_${triggeredRoom}"] = true
+                }
             } else if (evt.value == "inactive") {
-                if (currentCount > 0) {
-                    state["activeMotionCount_${triggeredRoom}"] = currentCount - 1
-                    if (state["activeMotionCount_${triggeredRoom}"] == 0) {
-                        long start = state["motionStart_${triggeredRoom}"] ?: now()
-                        long deltaSecs = (now() - start) / 1000
-                        state["occSecs_${triggeredRoom}"] = (state["occSecs_${triggeredRoom}"] ?: 0) + deltaSecs
-                        addToHistory("Activity: ${triggeredRoom} recorded ${deltaSecs}s of motion.")
-                    }
+                if (activeSensors == 0 && wasActive) {
+                    state["isMotionActive_${triggeredRoom}"] = false
+                    long start = state["motionStart_${triggeredRoom}"] ?: now()
+                    long deltaSecs = (now() - start) / 1000
+                    state["occSecs_${triggeredRoom}"] = (state["occSecs_${triggeredRoom}"] ?: 0) + deltaSecs
+                    addToHistory("<span style='color:#0066cc;'><b>Activity Log:</b> ${triggeredRoom} recorded ${deltaSecs}s of motion.</span>")
                 }
             }
         }
@@ -900,7 +961,7 @@ void executeRoomClean(List selectedRoomNames, Map options = [:]) {
             
             state["occSecs_${room.name}"] = 0 
             state["motionEvents_${room.name}"] = 0
-            state["activeMotionCount_${room.name}"] = 0
+            state["isMotionActive_${room.name}"] = false
             pauseExecution(2500)
         }
     }
@@ -921,7 +982,7 @@ void executeRoomClean(List selectedRoomNames, Map options = [:]) {
             
             state["occSecs_${room.name}"] = 0 
             state["motionEvents_${room.name}"] = 0
-            state["activeMotionCount_${room.name}"] = 0
+            state["isMotionActive_${room.name}"] = false
             pauseExecution(2500)
         }
     }
