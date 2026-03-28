@@ -178,6 +178,7 @@ def initialize() {
     if (priorityYieldSwitch) subscribe(priorityYieldSwitch, "switch", priorityYieldHandler)
  
     schedule("0 0 0 * * ?", "midnightReset")
+ 
     if (enableNag && nagTime) schedule(nagTime, "nagHandler")
 }
 
@@ -188,10 +189,12 @@ def priorityYieldHandler(evt) {
             log.info "Priority sequence ended. Mail is waiting. Activating indicators."
             addToHistory("RESUMING: Priority ended. Turning on mail lights.")
             
-            // FREEZE Motion App & Capture State BEFORE changing lights
+            // CAPTURE STATE BEFORE CHANGING
+            if (indicatorLight) captureLightState(indicatorLight)
+            
+            // FREEZE Motion App
             if (overrideSwitch && overrideSwitch.currentValue("switch") != "on") {
                 overrideSwitch.on()
-                if (indicatorLight) captureLightState(indicatorLight)
             }
             
             if (indicatorLight) setLightColor(indicatorLight, deliveryColor, lightLevel ?: 100)
@@ -204,6 +207,7 @@ def appButtonHandler(btn) {
     if (btn == "btnClearMail") {
         log.info "Manually clearing mail status..."
         if (mailSwitch) mailSwitch.off()
+     
         if (indicatorLight) {
             if (retrievalLightAction == "Turn Off") restoreLightState(indicatorLight)
         }
@@ -257,6 +261,7 @@ def sensorOpenHandler(evt) {
         if (enableSecondaryCheck && (exteriorDoors || arrivalSensors)) {
             def lastActivity = state.lastHomeActivity ?: 0
             def window = (activityTimeWindow ?: 10) * 60000
+           
             if ((now - lastActivity) > window) {
                 state.lastValidStateChange = now
                 if (sendPushDelivery) sendMessage("📫 More mail was delivered!")
@@ -280,7 +285,7 @@ def sensorOpenHandler(evt) {
         state.todayRetrievalTime = currentTimeStr
         updateAverage("retrieval", currentMinutes)
         addToHistory("RETRIEVAL DETECTED.${tripTimeStr}")
-        
+    
         if (retrievalLightAction == "Turn Off") {
             if (indicatorLight) restoreLightState(indicatorLight)
             if (inovelliSwitches) inovelliSwitches.each { it.ledEffectAll(255, 0, 0, 0) }
@@ -310,10 +315,12 @@ def sensorOpenHandler(evt) {
             return // Skip freezing other apps and skip turning on the indicator lights
         }
         
-        // FREEZE Motion App & Capture State BEFORE changing lights
+        // CAPTURE STATE BEFORE CHANGING
+        if (indicatorLight) captureLightState(indicatorLight)
+        
+        // FREEZE Motion App
         if (overrideSwitch && overrideSwitch.currentValue("switch") != "on") {
             overrideSwitch.on()
-            if (indicatorLight) captureLightState(indicatorLight)
         }
         
         if (indicatorLight) setLightColor(indicatorLight, deliveryColor, lightLevel ?: 100)
@@ -403,6 +410,17 @@ def tempHandler(evt) {
     }
 }
 
+// --- NEW NAG HANDLER ---
+def nagHandler() {
+    if (enableNag && mailSwitch?.currentValue("switch") == "on") {
+        log.info "Nag scheduled task running: Mail has not been retrieved."
+        def msg = nagMessage ?: "Don't forget the mail!"
+        sendMessage(msg)
+        if (ttsSpeakers) ttsSpeakers.speak(msg)
+        addToHistory("NAG ALERT: Reminder sent.")
+    }
+}
+
 def sendMessage(msg) { pushDevices ? pushDevices*.deviceNotification(msg) : sendPush(msg) }
 
 def updateAverage(type, currentMinutes) {
@@ -421,6 +439,7 @@ def minutesToTimeStr(minutesNum) {
     int totalMins = Math.round(minutesNum.toDouble()).toInteger() 
     int h = (totalMins / 60).toInteger()
     int m = totalMins % 60
+  
     def ampm = h >= 12 ? "PM" : "AM"
     h = h % 12 ?: 12
     return "${h}:${m < 10 ? '0'+m : m} ${ampm}"
