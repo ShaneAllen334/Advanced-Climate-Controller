@@ -1,5 +1,7 @@
 /**
  * Advanced Climate Controller
+ *
+ * Author: ShaneAllen
  */
 
 definition(
@@ -21,10 +23,12 @@ def mainPage() {
     dynamicPage(name: "mainPage", title: "<b>Advanced Climate Controller</b>", install: true, uninstall: true) {
         
         section("<b>Live System Dashboard</b>") {
+            input "btnRefresh", "button", title: "🔄 Refresh Data"
             paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Provides a real-time, top-down view of your entire HVAC system, including active setpoints, dynamic averages, and the current logic state of the BMS engine.</div>"
             
             def statusExplanation = getHumanReadableStatus()
-            paragraph "<div style='background-color:#e9ecef; padding:10px; border-radius:5px; border-left:5px solid #007bff;'>" +
+   
+         paragraph "<div style='background-color:#e9ecef; padding:10px; border-radius:5px; border-left:5px solid #007bff;'>" +
                       "<b>System Status:</b> ${statusExplanation}</div>"
 
             if (thermostat) {
@@ -100,10 +104,11 @@ def mainPage() {
                     def remaining = Math.max(0, Math.round((minRunTime ?: 10) - elapsedMins))
                     bufferStr = "<span style='color:blue;'><b>Engaged (${remaining} mins remaining)</b></span>"
                 }
-                
+   
                 def swapText = "N/A (Disabled)"
                 if (enableAutoSwap && !(state.freeCoolState in ["pending", "active"])) {
                     def safeSwapDB = autoSwapDeadband ?: 1.0
+                   
                     if (enableAverageSync && enableHysteresis) {
                         def drift = hysteresisDrift ?: 1.0
                         if (safeSwapDB <= drift) safeSwapDB = drift + 0.5
@@ -126,7 +131,7 @@ def mainPage() {
                         if (tstatState == "COOLING") dT = (retT - disT).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
                         else if (tstatState == "HEATING") dT = (disT - retT).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
                         else dT = Math.abs(retT - disT).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP) 
-                
+            
                         def health = ""
                         if (tstatState == "COOLING" && dT < (minCoolingDeltaT ?: 12.0)) health = " <span style='color:red;'>(Warning: Low)</span>"
                         else if (tstatState == "HEATING" && dT < (minHeatingDeltaT ?: 15.0)) health = " <span style='color:red;'>(Warning: Low)</span>"
@@ -444,7 +449,7 @@ def mainPage() {
                     paragraph "<b>Last Filter Change:</b> ${state.lastFilterDate ?: 'Not Recorded'}"
                     input "resetFilter", "button", title: "Record Filter Change (Resets Life to 100%)"
                 }
-                
+                 
                 paragraph "<hr>"
                 paragraph "<b>HVAC System Service Tracking</b>"
                 input "hvacCompanyName", "text", title: "HVAC Company Name", required: false
@@ -489,6 +494,13 @@ def mainPage() {
             }
         }
 
+        section("<b>External Money Saving Override</b>") {
+            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Allows external applications or virtual switches to force the system into a high-savings mode. All alignment and compressor protections still function normally around these new targets.</div>"
+            input "moneySavingSwitch", "capability.switch", title: "Select Money Saving Switch", required: false
+            input "moneySavingCoolingSetpoint", "decimal", title: "Money Saving Cooling Setpoint", required: false, defaultValue: 80
+            input "moneySavingHeatingSetpoint", "decimal", title: "Money Saving Heating Setpoint", required: false, defaultValue: 60
+        }
+
         section("<b>Base Operating Modes & Ranges</b>") {
             paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> The foundation of the BMS. Sets your default targets based on Hubitat Location Modes. <i>Note: 'Good Night' mode strictly locks these temperatures for maximum comfort, bypassing economy features.</i></div>"
             paragraph "<i>Leave 'Allowed Modes (Overall App)' BLANK to allow the app to run 24/7. Otherwise, make sure to select every single mode you want the app to function in.</i>"
@@ -507,6 +519,14 @@ def mainPage() {
             input "nightModes", "mode", title: "Select 'Good Night' modes", multiple: true, required: false
             input "nightCoolingSetpoint", "decimal", title: "Good Night Cooling Setpoint", required: false, defaultValue: 70
             input "nightHeatingSetpoint", "decimal", title: "Good Night Heating Setpoint", required: false, defaultValue: 66
+        }
+
+        section("<b>13. Alerts & Routine Notifications</b>") {
+            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Centralized notification hub. The app will quietly monitor system health and only notify you when routine maintenance is required or if critical efficiency drops are detected.</div>"
+            input "notifyDevices", "capability.notification", title: "Select Notification Devices", required: false, multiple: true
+            input "notifyDeltaT", "bool", title: "Notify on Bad Delta-T (Poor Efficiency/Freezing Coil)", defaultValue: true
+            input "notifyFilter", "bool", title: "Notify when Filter Life is < 10%", defaultValue: true
+            input "notifyMaintenance", "bool", title: "Notify for Summer/Winter Maintenance Reminders", defaultValue: true
         }
         
         section("<b>Disclaimer</b>") {
@@ -570,10 +590,12 @@ def initialize() {
     
     if (enableWindowDefeat && contactSensors) subscribe(contactSensors, "contact", contactHandler)
     if (appEnableSwitch) subscribe(appEnableSwitch, "switch", enableSwitchHandler)
+    if (moneySavingSwitch) subscribe(moneySavingSwitch, "switch", moneySavingHandler)
     
     schedulePeakTimes()
     schedulePreConditioning()
     scheduleAdaptiveRecoveryCheck()
+    schedule("0 0 10 * * ?", dailyMaintenanceCheck) 
     
     if (enableEnforcement) {
         def interval = enforcementInterval ?: "30"
@@ -600,9 +622,11 @@ def hubRestartHandler(evt) {
     state.alignmentLockout = null; state.alignmentLockoutTarget = null
     state.activeHysteresis = "idle"
     if (state.savedPlugStates) restorePlugs() 
+    
     unschedule()
   
     schedulePeakTimes(); schedulePreConditioning(); scheduleAdaptiveRecoveryCheck()
+    schedule("0 0 10 * * ?", dailyMaintenanceCheck)
     
     if (enableEnforcement) {
         def interval = enforcementInterval ?: "30"
@@ -610,6 +634,11 @@ def hubRestartHandler(evt) {
         else if (interval == "30") runEvery30Minutes(routineSweep)
         else if (interval == "60") runEvery1Hour(routineSweep)
     }
+    evaluateSystem()
+}
+
+def moneySavingHandler(evt) {
+    logAction("Money Saving Mode turned ${evt.value.toUpperCase()}.")
     evaluateSystem()
 }
 
@@ -622,6 +651,7 @@ String getHumanReadableStatus() {
     
     if (state.windowOpenHold) return "<span style='color:red;'><b>HVAC is OFF</b></span> because a monitored perimeter window or door is open."
     if (state.manualHold) return "<span style='color:orange;'><b>Automation Paused</b></span> because someone manually adjusted the physical thermostat."
+    if (moneySavingSwitch && moneySavingSwitch.currentValue("switch") == "on") return "<span style='color:green;'><b>Money Saving Mode Active:</b></span> Targets shifted to maximize energy savings based on external switch."
     
     if (state.isBuffering) return "<span style='color:blue;'><b>Compressor Protection Engaged:</b></span> The system is locked ON to satisfy the Minimum Run Time and prevent hardware damage."
     if (state.yoyoCooldownEnds && now() < state.yoyoCooldownEnds) return "<span style='color:orange;'><b>Anti-Yo-Yo Cooldown Active:</b></span> Dynamic Setpoint Alignment is temporarily paused to prevent the system from rapidly turning back on."
@@ -655,7 +685,7 @@ def getAverageTemp() {
             if (tempState != null && tempState.value != null) {
                 def tVal = tempState.value.toBigDecimal()
                 def lastUpdate = tempState.date?.time ?: now()
-                
+          
                 if (tVal >= 40.0 && tVal <= 100.0 && (now() - lastUpdate) <= maxAgeMs) {
                     if (isNight) {
                         def nightSwitch = settings["z${i}NightSwitch"]
@@ -692,9 +722,13 @@ def motionHandler(evt) { if (evt.value == "active") { if (!state.zoneLastActive)
 
 def appButtonHandler(btn) {
     def todayStr = new Date().format("MM/dd/yyyy", location.timeZone)
-    if (btn == "resetFilter") { 
+    if (btn == "btnRefresh") {
+        logInfo("Dashboard data manually refreshed by user.")
+    }
+    else if (btn == "resetFilter") { 
         state.filterRunMinutes = 0.0
         state.lastFilterDate = todayStr
+        state.filterAlertSent = false
         logAction("Filter logged as changed. Life reset to 100%.") 
     } 
     else if (btn == "resetService") {
@@ -853,9 +887,18 @@ def evaluateSystem() {
     def isAlignmentModeAllowed = !alignmentModes || (alignmentModes as List).contains(location.mode)
     
     def targetCool = homeCoolingSetpoint ?: 74.0; def targetHeat = homeHeatingSetpoint ?: 68.0
-    
-    if (isNight) { targetCool = nightCoolingSetpoint ?: 70.0; targetHeat = nightHeatingSetpoint ?: 66.0 } 
-    else if (isAway) { targetCool = awayCoolingSetpoint ?: 78.0; targetHeat = awayHeatingSetpoint ?: 62.0 }
+    def isMoneySaving = moneySavingSwitch && moneySavingSwitch.currentValue("switch") == "on"
+
+    if (isMoneySaving) { 
+        targetCool = moneySavingCoolingSetpoint ?: 80.0
+        targetHeat = moneySavingHeatingSetpoint ?: 60.0 
+    } else if (isNight) { 
+        targetCool = nightCoolingSetpoint ?: 70.0
+        targetHeat = nightHeatingSetpoint ?: 66.0 
+    } else if (isAway) { 
+        targetCool = awayCoolingSetpoint ?: 78.0
+        targetHeat = awayHeatingSetpoint ?: 62.0 
+    }
     
     // Check if we can release a previous alignment lockout based on local ambient recovery
     def currentLocalTemp = thermostat.currentValue("temperature")?.toBigDecimal()
@@ -869,12 +912,14 @@ def evaluateSystem() {
         }
     }
 
-    if (!isNight) {
+    if (!isNight && !isMoneySaving) {
         if (state.isAdaptiveRecovering) { targetCool = homeCoolingSetpoint ?: 74.0; targetHeat = homeHeatingSetpoint ?: 68.0 }
         if (enablePeakShaving && state.isPeakHours) { targetCool += (peakCoolingOffset ?: 3.0); targetHeat -= (peakHeatingOffset ?: 3.0) }
         if (enableDehumidification && state.dehumidifyingStage == 2) { targetCool -= (acDehumidifyOffset ?: 2.0) }
         if (enablePreCondition && state.isPreConditioning) { targetCool = (homeCoolingSetpoint ?: 74.0) - (preCoolOffset ?: 3.0) }
-        
+    }
+    
+    if (!isNight) {
         targetCool = checkFreeCooling(targetCool)
     } else {
         if (state.freeCoolState != "idle") {
@@ -1028,7 +1073,7 @@ def evaluateSystem() {
             def buffer = setpointBuffer ?: 2.0
             
             if (state.currentAction == "cooling") {
-                if (targetCool > thermostat.currentValue("coolingSetpoint").toBigDecimal()) {
+                 if (targetCool > thermostat.currentValue("coolingSetpoint").toBigDecimal()) {
                     targetCool = thermostat.currentValue("coolingSetpoint").toBigDecimal()
                     syncMessage += " [Compressor Protection: Lockout Prevented Setpoint Rise]"
                 }
@@ -1057,15 +1102,18 @@ def evaluateSystem() {
                     }
                 }
             }
+    
             else if (state.currentAction == "heating") {
                 if (targetHeat < thermostat.currentValue("heatingSetpoint").toBigDecimal()) {
                     targetHeat = thermostat.currentValue("heatingSetpoint").toBigDecimal()
                     syncMessage += " [Compressor Protection: Lockout Prevented Setpoint Drop]"
                 }
+ 
                 // Force target above physical temp to prevent the thermostat from deciding to shut down locally
                 if (targetHeat <= localTemp) {
                     targetHeat = localTemp + 1.0
                     def maxAllowed = baseHeat + buffer
+ 
                     
                     if (targetHeat > maxAllowed) {
                         targetHeat = maxAllowed
@@ -1114,7 +1162,7 @@ def evaluateSystem() {
     if (enableAutoSwap && !(state.freeCoolState in ["pending", "active"])) {
         def currentAvg = getAverageTemp()
         def tMode = thermostat.currentValue("thermostatMode")?.toLowerCase()
-        
+    
         if (tMode == "heat" || tMode == "cool" || tMode == "auto") {
             if (currentAvg >= (targetCool + safeSwapDB) && tMode != "cool") {
                 logAction("BMS Command -> Auto-Swap triggered. Switching thermostat to COOL mode. (Temp: ${currentAvg}°, Target: ${targetCool}°, Safe DB: ${safeSwapDB}°)")
@@ -1131,6 +1179,7 @@ def evaluateSystem() {
 def compressorWatchdog() {
     if (state.currentAction in ["cooling", "heating"] && state.cycleStartTime) {
         def runMins = (now() - state.cycleStartTime) / 60000.0
+    
         if (runMins < (minRunTime ?: 10)) {
             evaluateSystem() 
             runIn(60, compressorWatchdog)
@@ -1361,10 +1410,18 @@ def checkDeltaT() {
     def retT = returnSensor.currentValue("temperature")
     def disT = dischargeSensor.currentValue("temperature")
     if (retT == null || disT == null) return
-    
+  
     def dT = (state.currentAction == "cooling") ? (retT - disT) : (disT - retT)
     if (dT < (state.currentAction == "cooling" ? (minCoolingDeltaT ?: 12.0) : (minHeatingDeltaT ?: 15.0))) { 
         logAction("HVAC WARNING: Poor efficiency. Delta-T is ${String.format('%.1f', dT)}°F.")
+        
+        if (notifyDeltaT && notifyDevices) {
+            if (!state.lastDeltaTAlert || (now() - state.lastDeltaTAlert) > 86400000) { 
+                notifyDevices.deviceNotification("HVAC Alert: Poor efficiency detected. Delta-T is ${String.format('%.1f', dT)}°F. Unit may be freezing up or low on refrigerant.")
+                state.lastDeltaTAlert = now()
+            }
+        }
+        
         if (emergencyShutoff) thermostat.off() 
     } else {
         logAction("Delta-T Check Passed: ${String.format('%.1f', dT)}°F.")
@@ -1373,7 +1430,42 @@ def checkDeltaT() {
     runIn((deltaTCheckDelay ?: 30) * 60, checkDeltaT)
 }
 
-def processFilterWear(actualRunMinutes) { def ind = indoorIAQ ? (indoorIAQ.currentValue("airQualityIndex") ?: 0) : 0; def out = outdoorIAQ ? (outdoorIAQ.currentValue("airQualityIndex") ?: 0) : 0; state.filterRunMinutes += (actualRunMinutes * (1.0 + (ind * 0.01) + (out * 0.002))) }
+def processFilterWear(actualRunMinutes) { 
+    def ind = indoorIAQ ? (indoorIAQ.currentValue("airQualityIndex") ?: 0) : 0
+    def out = outdoorIAQ ? (outdoorIAQ.currentValue("airQualityIndex") ?: 0) : 0
+    state.filterRunMinutes += (actualRunMinutes * (1.0 + (ind * 0.01) + (out * 0.002))) 
+    
+    if (notifyFilter && notifyDevices) {
+        def maxMins = (maxFilterHours ?: 300) * 60
+        def percentLeft = Math.max(0.0, 100.0 - ((state.filterRunMinutes / maxMins) * 100))
+        if (percentLeft < 10.0 && !state.filterAlertSent) {
+            notifyDevices.deviceNotification("HVAC Maintenance: Your air filter life is below 10%. Please replace it soon to maintain efficiency.")
+            state.filterAlertSent = true
+        }
+    }
+}
+
+def dailyMaintenanceCheck() {
+    if (!notifyMaintenance || !notifyDevices) return
+
+    def today = new Date()
+    def month = today.format("MM", location.timeZone).toInteger()
+    def day = today.format("dd", location.timeZone).toInteger()
+    def year = today.format("yyyy", location.timeZone)
+
+    // May 1st - Summer check
+    if (month == 5 && day == 1 && state.lastMaintenanceAlert != "summer_${year}") {
+        notifyDevices.deviceNotification("HVAC Reminder: Summer is approaching. It's time to schedule your AC maintenance check and clear the condensate drain line.")
+        state.lastMaintenanceAlert = "summer_${year}"
+    }
+    
+    // October 1st - Winter check
+    if (month == 10 && day == 1 && state.lastMaintenanceAlert != "winter_${year}") {
+        notifyDevices.deviceNotification("HVAC Reminder: Winter is approaching. It's time to schedule your Heating maintenance check and test the ignitor/elements.")
+        state.lastMaintenanceAlert = "winter_${year}"
+    }
+}
+
 def humidityHandler(evt) { if (state.windowOpenHold || state.manualHold || !enableDehumidification) return; def avgHum = getAverageHumidity(); if (avgHum > (maxHumidity ?: 55.0) && state.dehumidifyingStage == 0) { state.dehumidifyingStage = 1; if (dehumidifierPlugs) { state.savedPlugStates = dehumidifierPlugs.collectEntries { [it.id, it.currentValue("switch")] }; dehumidifierPlugs.on() }; runIn((dehumidifierTimeout ?: 45) * 60, checkDehumidifierProgress) } else if (avgHum <= ((maxHumidity ?: 55.0) - 2.0) && state.dehumidifyingStage > 0) { state.dehumidifyingStage = 0; unschedule(checkDehumidifierProgress); restorePlugs(); evaluateSystem() } }
 def checkDehumidifierProgress() { if (getAverageHumidity() > (maxHumidity ?: 55.0)) { state.dehumidifyingStage = 2; restorePlugs(); evaluateSystem() } }
 def restorePlugs() { if (dehumidifierPlugs && state.savedPlugStates) { dehumidifierPlugs.each { plug -> def orig = state.savedPlugStates[plug.id]; if (orig == "off") plug.off(); else if (orig == "on") plug.on() } }; state.savedPlugStates = null }
@@ -1393,7 +1485,7 @@ def trackRecentCycle(action, runMinutes) {
     
     state.recentCycles.add(0, cycleLog)
     if (state.recentCycles.size() > 10) {
-        state.recentCycles = state.recentCycles[0..9]
+         state.recentCycles = state.recentCycles[0..9]
     }
 }
 
