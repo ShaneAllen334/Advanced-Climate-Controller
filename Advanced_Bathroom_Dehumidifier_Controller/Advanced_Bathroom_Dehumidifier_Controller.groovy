@@ -22,7 +22,7 @@ def mainPage() {
         section("Live Climate Dashboard") {
             // TABLE 1: Current Status
             def statusText = "<b>Live Space Status</b><br><table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc; margin-bottom: 15px;'>"
-            statusText += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Zone</th><th style='padding: 8px;'>Current Humidity</th><th style='padding: 8px;'>Motion State</th><th style='padding: 8px;'>Dehumidifier State</th></tr>"
+            statusText += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Zone</th><th style='padding: 8px;'>Humidity<br><span style='font-size:10px; font-weight:normal;'>Now (Avg)</span></th><th style='padding: 8px;'>Motion</th><th style='padding: 8px;'>Dehumidifier State</th><th style='padding: 8px;'>Run Time<br><span style='font-size:10px; font-weight:normal;'>Today (Yest)</span></th></tr>"
             
             def configuredCount = 0
             def numBaths = settings["numBathrooms"] ?: 1
@@ -36,6 +36,7 @@ def mainPage() {
                     configuredCount++
                     def hSensor = settings["bathHumidity_${i}"]
                     def mSensor = settings["bathMotion_${i}"]
+                    def swId = bSwitch.id.toString()
                     
                     def humVal = hSensor ? "${hSensor.currentValue('humidity')}%" : "N/A"
                     def motVal = mSensor ? mSensor.currentValue('motion')?.toUpperCase() : "N/A"
@@ -51,9 +52,32 @@ def mainPage() {
                         if (currentH >= highH) humColor = "red"
                     }
                     
-                    // Live Timers Logic
+                    // Humidity Math
+                    def humSum = state.dailyHumSum?."bath_${i}" ?: 0.0
+                    def humCount = state.dailyHumCount?."bath_${i}" ?: 0
+                    def avgHumStr = humCount > 0 ? "${Math.round(humSum / humCount)}%" : "--"
+                    def humDisplay = "<span style='color: ${humColor}; font-weight: bold;'>${humVal}</span><br><span style='font-size:11px; color:#555;'>Avg: ${avgHumStr}</span>"
+
+                    // Live Timers & Run Time Logic
                     def pendingMsg = ""
+                    def runSecondsToday = state.dailyDuration?."${swId}" ?: 0
+                    def runSecondsYesterday = state.yesterdayDuration?."${swId}" ?: 0
+                    
                     if (swVal == "ON") {
+                        def startTime = state.switchEpoch?."${swId}"
+                        def minRunMins = settings["bathMinRun_${i}"] ?: 15
+                        
+                        if (startTime) {
+                            def elapsedMs = now - startTime
+                            runSecondsToday += Math.round(elapsedMs / 1000).toInteger() // Live run time addition
+                            
+                            def minRunMs = minRunMins * 60000
+                            if (elapsedMs < minRunMs) {
+                                def remainMs = minRunMs - elapsedMs
+                                pendingMsg += "<br><span style='color:purple; font-size:11px;'>Min Run Lock: ${formatTime(remainMs)}</span>"
+                            }
+                        }
+
                         def maxEpoch = state["maxRunEpoch_${i}"]
                         def maxMins = settings["bathMaxRun_${i}"] ?: 120
                         if (maxEpoch) {
@@ -69,6 +93,20 @@ def mainPage() {
                         }
                     }
                     
+                    // Format Run Times
+                    def tMins = Math.floor(runSecondsToday / 60).toInteger()
+                    def tHours = Math.floor(tMins / 60).toInteger()
+                    tMins = tMins % 60
+                    def tStr = tHours > 0 ? "${tHours}h ${tMins}m" : "${tMins}m"
+
+                    def yMins = Math.floor(runSecondsYesterday / 60).toInteger()
+                    def yHours = Math.floor(yMins / 60).toInteger()
+                    yMins = yMins % 60
+                    def yStr = yHours > 0 ? "${yHours}h ${yMins}m" : "${yMins}m"
+                    
+                    def runDisplay = "<b>${tStr}</b><br><span style='font-size:11px; color:#666;'>Yest: ${yStr}</span>"
+                    
+                    // Grace Period formatting
                     def graceEpoch = state["graceEpoch_${i}"]
                     def graceMins = settings["bathGracePeriod_${i}"] ?: 2
                     if (graceEpoch && !state["motionActive_${i}"] && !state["timerEpoch_${i}"]) {
@@ -76,12 +114,12 @@ def mainPage() {
                         if (diffMs > 0) pendingMsg += "<br><span style='color:orange; font-size:11px;'>Grace Period: ${formatTime(diffMs)}</span>"
                     }
                     
-                    statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${bName}</b></td><td style='padding: 8px; color: ${humColor}; font-weight: bold;'>${humVal}</td><td style='padding: 8px; color: ${motColor};'>${motVal}</td><td style='padding: 8px; color: ${swColor}; font-weight: bold;'>${swVal}${pendingMsg}</td></tr>"
+                    statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${bName}</b></td><td style='padding: 8px;'>${humDisplay}</td><td style='padding: 8px; color: ${motColor};'>${motVal}</td><td style='padding: 8px; color: ${swColor}; font-weight: bold;'>${swVal}${pendingMsg}</td><td style='padding: 8px;'>${runDisplay}</td></tr>"
                 }
             }
             
             if (configuredCount == 0) {
-                statusText += "<tr><td colspan='4' style='padding: 8px; color: #888;'>No bathrooms fully configured.</td></tr>"
+                statusText += "<tr><td colspan='5' style='padding: 8px; color: #888;'>No bathrooms fully configured.</td></tr>"
             }
             statusText += "</table>"
             
@@ -99,17 +137,8 @@ def mainPage() {
                         def cycles = state.weeklyCycles?."${swId}" ?: 0
                         def runSeconds = state.weeklyDuration?."${swId}" ?: 0
                         
-                        // Self-Healing & Live Math Logic
                         if (bSwitch.currentValue("switch") == "on") {
-                            if (!state.switchEpoch) state.switchEpoch = [:]
-                            if (!state.switchEpoch["${swId}"]) {
-                                state.switchEpoch["${swId}"] = now
-                                if (!state.weeklyCycles) state.weeklyCycles = [:]
-                                cycles = cycles == 0 ? 1 : cycles
-                                state.weeklyCycles["${swId}"] = cycles
-                            }
-                            
-                            def epoch = state.switchEpoch["${swId}"]
+                            def epoch = state.switchEpoch?."${swId}"
                             if (epoch) {
                                 runSeconds += Math.round((now - epoch) / 1000).toInteger()
                             }
@@ -193,6 +222,7 @@ def bathroomPage(params) {
         section("Energy Efficiency & Failsafes") {
             paragraph "If a sensor breaks or gets stuck, this setting ensures your fan won't run forever and drain your electricity."
             input "bathMaxRun_${bNum}", "number", title: "Absolute Maximum Run Time (Minutes)", required: true, defaultValue: 120, description: "Emergency shutoff. Forcefully cuts power if the fan runs this long continuously, regardless of motion or humidity."
+            input "bathMinRun_${bNum}", "number", title: "Compressor Minimum Run Time (Minutes)", required: true, defaultValue: 15, description: "Prevents short-cycling by keeping the unit on for at least this long once started."
         }
 
         section("Automation Rules (Motion)") {
@@ -219,6 +249,10 @@ def initialize() {
     state.historyLog = state.historyLog ?: []
     state.weeklyCycles = state.weeklyCycles ?: [:]
     state.weeklyDuration = state.weeklyDuration ?: [:]
+    state.dailyDuration = state.dailyDuration ?: [:]
+    state.yesterdayDuration = state.yesterdayDuration ?: [:]
+    state.dailyHumSum = state.dailyHumSum ?: [:]
+    state.dailyHumCount = state.dailyHumCount ?: [:]
     state.switchEpoch = state.switchEpoch ?: [:]
     
     def numBaths = settings["numBathrooms"] ?: 1
@@ -239,6 +273,7 @@ def initialize() {
     
     subscribe(location, "systemStart", hubRebootHandler)
     schedule("0 0 0 ? * SUN", resetWeeklyCounters)
+    schedule("0 0 0 * * ?", resetDailyCounters)
     runIn(5, "sweepOrphanedFans")
 }
 
@@ -259,6 +294,37 @@ def addToHistory(String msg) {
 
 def isSystemPaused() {
     return (masterEnableSwitch && masterEnableSwitch.currentValue("switch") == "off")
+}
+
+def resetDailyCounters() {
+    def now = new Date().time
+    def numBaths = settings["numBathrooms"] ?: 1
+
+    if (!state.yesterdayDuration) state.yesterdayDuration = [:]
+    if (!state.dailyDuration) state.dailyDuration = [:]
+    if (!state.weeklyDuration) state.weeklyDuration = [:]
+
+    // Pre-process currently running fans to "bank" their time up to midnight
+    for (int i = 1; i <= (numBaths as Integer); i++) {
+        def bSwitch = settings["bathSwitch_${i}"]
+        if (bSwitch && bSwitch.currentValue("switch") == "on") {
+            def swId = bSwitch.id.toString()
+            if (state.switchEpoch && state.switchEpoch["${swId}"]) {
+                def durationSeconds = Math.round((now - state.switchEpoch["${swId}"]) / 1000).toInteger()
+                state.dailyDuration["${swId}"] = (state.dailyDuration["${swId}"] ?: 0) + durationSeconds
+                state.weeklyDuration["${swId}"] = (state.weeklyDuration["${swId}"] ?: 0) + durationSeconds
+                
+                // Reset epoch to midnight for the new day's math
+                state.switchEpoch["${swId}"] = now
+            }
+        }
+    }
+
+    // Move today to yesterday, then clear trackers
+    state.yesterdayDuration = state.dailyDuration.clone()
+    state.dailyDuration = [:]
+    state.dailyHumSum = [:]
+    state.dailyHumCount = [:]
 }
 
 def resetWeeklyCounters() {
@@ -303,9 +369,15 @@ def switchHandler(evt) {
     } else if (action == "off") {
         if (state.switchEpoch && state.switchEpoch["${swId}"]) {
             def durationSeconds = Math.round((new Date().time - state.switchEpoch["${swId}"]) / 1000).toInteger()
+            
             if (!state.weeklyDuration) state.weeklyDuration = [:]
             state.weeklyDuration["${swId}"] = (state.weeklyDuration["${swId}"] ?: 0) + durationSeconds
+            
+            if (!state.dailyDuration) state.dailyDuration = [:]
+            state.dailyDuration["${swId}"] = (state.dailyDuration["${swId}"] ?: 0) + durationSeconds
+            
             state.switchEpoch["${swId}"] = null
+            
             if (targetBathNum > 0) {
                 state["maxRunEpoch_${targetBathNum}"] = null
                 state["timerEpoch_${targetBathNum}"] = null
@@ -384,17 +456,21 @@ def startDehumidifierTimer(data) {
 def humidityHandler(evt) {
     if (isSystemPaused()) return
     def hId = evt.device.id
-    
-    // FIX: Safely parse the string to a Double
     def currentHum = evt.value.toDouble() 
-    
     def numBaths = settings["numBathrooms"] ?: 1
     
     for (int i = 1; i <= (numBaths as Integer); i++) {
         if (settings["bathHumidity_${i}"]?.id == hId) {
-            def bSwitch = settings["bathSwitch_${i}"]
             
-            // FIX: Safely parse settings as well
+            // Add to the daily rolling average map
+            if (!state.dailyHumSum) state.dailyHumSum = [:]
+            if (!state.dailyHumCount) state.dailyHumCount = [:]
+            def sum = state.dailyHumSum["bath_${i}"] ?: 0.0
+            def count = state.dailyHumCount["bath_${i}"] ?: 0
+            state.dailyHumSum["bath_${i}"] = sum + currentHum
+            state.dailyHumCount["bath_${i}"] = count + 1
+
+            def bSwitch = settings["bathSwitch_${i}"]
             def highT = settings["bathHumHigh_${i}"]?.toString()?.toDouble() 
             def targetT = settings["globalBaselineSensor"] ? settings["globalBaselineSensor"].currentValue("humidity") : settings["bathHumTarget_${i}"]
             
@@ -404,7 +480,6 @@ def humidityHandler(evt) {
                 bSwitch.on()
             }
             
-            // FIX: Safely parse the target variable
             if (targetT && currentHum <= targetT.toString().toDouble()) {
                 state["timerEpoch_${i}"] = null
                 state["graceEpoch_${i}"] = null
@@ -425,6 +500,21 @@ def evaluateTurnOff(data) {
     
     def targetT = settings["globalBaselineSensor"] ? settings["globalBaselineSensor"].currentValue("humidity") : settings["bathHumTarget_${bNum}"]
     if (hSensor && targetT && hSensor.currentValue("humidity") > (targetT as Number)) return
+
+    // --- Compressor Minimum Run Time Check ---
+    def swId = bSwitch.id.toString()
+    def startTime = state.switchEpoch?."${swId}"
+    def minRunMins = settings["bathMinRun_${bNum}"] ?: 15
+    
+    if (startTime) {
+        def elapsedMs = new Date().time - startTime
+        def minRunMs = minRunMins * 60000
+        if (elapsedMs < minRunMs) {
+            def remainingSecs = Math.round((minRunMs - elapsedMs) / 1000).toInteger()
+            runIn(remainingSecs, "evaluateTurnOff", [data: [bathNum: bNum, source: "minRunCheck"], overwrite: true])
+            return
+        }
+    }
 
     bSwitch.off()
     runIn(60, "executeDoubleTap", [data: [bathNum: bNum], overwrite: false])
