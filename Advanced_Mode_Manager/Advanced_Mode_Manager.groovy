@@ -86,13 +86,21 @@ def mainPage() {
                     input "dcGarageClose${i}", "capability.garageDoorControl", title: "Close these garages", required: false, multiple: true
                     
                     // --- INOVELLI LED CONTROL ---
-                    input "dcInovelli${i}", "capability.configuration", title: "Set Inovelli LED Color for these switches", required: false, multiple: true, submitOnChange: true
+                    input "dcInovelli${i}", "capability.configuration", title: "Set Inovelli LED Notifications for these switches", required: false, multiple: true, submitOnChange: true
                     if (settings["dcInovelli${i}"]) {
+                        input "dcInovelliTarget${i}", "enum", title: "Target LEDs", required: true, defaultValue: "All", options: [
+                            "All":"All LEDs", "7":"LED 7 (Top)", "6":"LED 6", "5":"LED 5", "4":"LED 4 (Middle)", "3":"LED 3", "2":"LED 2", "1":"LED 1 (Bottom)"
+                        ]
                         input "dcInovelliColor${i}", "enum", title: "LED Color", required: true, options: [
                             "0":"Red", "14":"Orange", "35":"Lemon", "64":"Lime", 
                             "85":"Green", "106":"Teal", "127":"Cyan", "149":"Aqua", 
                             "170":"Blue", "191":"Violet", "212":"Magenta", "234":"Pink", "255":"White"
                         ]
+                        input "dcInovelliLevel${i}", "number", title: "LED Light % (0-100)", required: true, defaultValue: 100
+                        input "dcInovelliEffect${i}", "enum", title: "Notification Effect", required: true, options: [
+                            "0":"Off", "1":"Solid", "2":"Fast Blink", "3":"Slow Blink", "4":"Pulse", "5":"Chase", "6":"Falling", "7":"Rising", "8":"Blink"
+                        ], defaultValue: "1"
+                        
                         input "dcInovelliBlocker${i}", "capability.switch", title: "Block LED color changes if this switch is ON (e.g., Mail Arrived Virtual Switch)", required: false, multiple: false
                     }
                 }
@@ -219,7 +227,10 @@ def blockerSwitchHandler(evt) {
                         
                         def colorMap = ["0":"Red", "14":"Orange", "35":"Lemon", "64":"Lime", "85":"Green", "106":"Teal", "127":"Cyan", "149":"Aqua", "170":"Blue", "191":"Violet", "212":"Magenta", "234":"Pink", "255":"White"]
                         def colorName = colorMap[settings["dcInovelliColor${i}"]] ?: settings["dcInovelliColor${i}"]
-                        logAction("Deferred LED Update -> [Inovelli LEDs caught up: ${colorName}]")
+                        def levelStr = settings["dcInovelliLevel${i}"] ?: 100
+                        def effectStr = settings["dcInovelliEffect${i}"] ?: "1"
+                        def targetStr = settings["dcInovelliTarget${i}"] == "All" ? "All LEDs" : "LED ${settings["dcInovelliTarget${i}"]}"
+                        logAction("Deferred LED Update -> [Inovelli: ${targetStr} ${colorName} at ${levelStr}% (Effect: ${effectStr})]")
                     }
                 }
             }
@@ -331,20 +342,48 @@ def enforceDevices(ruleIdx) {
             
             def colorMap = ["0":"Red", "14":"Orange", "35":"Lemon", "64":"Lime", "85":"Green", "106":"Teal", "127":"Cyan", "149":"Aqua", "170":"Blue", "191":"Violet", "212":"Magenta", "234":"Pink", "255":"White"]
             def colorName = colorMap[settings["dcInovelliColor${ruleIdx}"]] ?: settings["dcInovelliColor${ruleIdx}"]
-            logMsg += "[Inovelli LEDs: ${colorName}] "
+            def level = settings["dcInovelliLevel${ruleIdx}"] ?: 100
+            def effect = settings["dcInovelliEffect${ruleIdx}"] ?: "1"
+            def targetStr = settings["dcInovelliTarget${ruleIdx}"] == "All" ? "All LEDs" : "LED ${settings["dcInovelliTarget${ruleIdx}"]}"
+            
+            logMsg += "[Inovelli: ${targetStr} ${colorName} at ${level}% (Effect: ${effect})] "
         }
     }
     
     if (logMsg != "State Sweep -> ") logAction(logMsg)
 }
 
-// Helper function just for firing the LED parameters
+// Helper function to process native driver commands for Inovelli LEDs
 def enforceInovelliLEDs(ruleIdx) {
-    def colorVal = settings["dcInovelliColor${ruleIdx}"].toInteger()
+    def colorVal = settings["dcInovelliColor${ruleIdx}"]?.toInteger() ?: 170
+    def levelVal = settings["dcInovelliLevel${ruleIdx}"]?.toInteger() ?: 100
+    def effectVal = settings["dcInovelliEffect${ruleIdx}"]?.toInteger() ?: 1
+    def targetVal = settings["dcInovelliTarget${ruleIdx}"] ?: "All"
+    def durationVal = 255 // 255 = Indefinite duration
+    
     settings["dcInovelli${ruleIdx}"].each { dev ->
-        // Parameter 95 = LED Color (When On), Parameter 96 = LED Color (When Off)
-        dev.setParameter(95, colorVal)
-        dev.setParameter(96, colorVal)
+        // 1. Update the base "Idle" colors and intensities using standard setParameter
+        // The driver's setParameter method handles size natively
+        dev.setParameter(95, colorVal) // LED Color (When On)
+        dev.setParameter(96, colorVal) // LED Color (When Off)
+        dev.setParameter(97, levelVal) // LED Intensity (When On)
+        dev.setParameter(98, levelVal) // LED Intensity (When Off)
+        
+        // 2. Trigger the active Notification Effect using the driver's native custom commands
+        if (targetVal == "All") {
+            if (dev.hasCommand("ledEffectAll")) {
+                dev.ledEffectAll(effectVal, colorVal, levelVal, durationVal)
+            } else {
+                log.warn "Advanced Mode Manager: Device ${dev.displayName} does not support ledEffectAll command."
+            }
+        } else {
+            // Target is a specific LED (1-7)
+            if (dev.hasCommand("ledEffectOne")) {
+                dev.ledEffectOne(targetVal, effectVal, colorVal, levelVal, durationVal)
+            } else {
+                log.warn "Advanced Mode Manager: Device ${dev.displayName} does not support ledEffectOne command."
+            }
+        }
     }
 }
 
