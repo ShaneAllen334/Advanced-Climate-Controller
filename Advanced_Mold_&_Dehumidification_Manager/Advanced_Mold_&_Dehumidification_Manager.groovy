@@ -197,11 +197,20 @@ def globalLogicPage() {
 
 def alertsPage() {
     dynamicPage(name: "alertsPage", title: "Maintenance & Granular Alerts") {
-        section("<b>Global Alert Devices</b>") {
-            paragraph "<small>Select the devices that should receive Emergency Leak, Humidity Duration, and Filter notifications.</small>"
-            input "notifyDevices", "capability.notification", title: "Push Notification Devices", multiple: true, required: false
+        
+        section("<b>Notification Routing</b>") {
+            paragraph "<small>Select which devices receive specific types of alerts.</small>"
+            input "leakNotifyDevices", "capability.notification", title: "🚨 Emergency Leak Notification Devices", multiple: true, required: false
+            input "humNotifyDevices", "capability.notification", title: "💧 Prolonged Humidity Notification Devices", multiple: true, required: false
+            input "filterNotifyDevices", "capability.notification", title: "⚙️ Filter Maintenance Notification Devices", multiple: true, required: false
         }
         
+        section("<b>Notification Schedule (Non-Emergency)</b>") {
+            paragraph "<small>Set an active window for non-critical alerts (like filter cleaning or prolonged humidity). Emergency leaks will always bypass this schedule.</small>"
+            input "notifyStartTime", "time", title: "Active Window Start", required: false
+            input "notifyEndTime", "time", title: "Active Window End", required: false
+        }
+
         section("<b>Global House Humidity Alerts</b>") {
             input "enableGlobalAlert", "bool", title: "Alert on Prolonged High House Average?", defaultValue: false, submitOnChange: true
             if (enableGlobalAlert) {
@@ -261,7 +270,8 @@ def calculateDewPoint(tempF, hum) {
 }
 
 def getHouseAverageHum() {
-    def total = 0.0; def count = 0
+    def total = 0.0
+    def count = 0
     for (int i = 1; i <= 8; i++) {
         if (settings["z${i}Name"] && settings["z${i}Hum"]) {
             def h = settings["z${i}Hum"].currentValue("humidity")
@@ -307,7 +317,7 @@ def evaluateZones() {
         if (globalAvg >= thresh) {
             if (!state.globalHumAlertStart) state.globalHumAlertStart = now()
             else if (now() - state.globalHumAlertStart >= (reqMins * 60000) && !state.globalHumAlertNotified) {
-                sendNotification("ENVIRONMENT ALERT: House Average Humidity has been at or above ${thresh}% for over ${reqMins} minutes.")
+                sendNotification("ENVIRONMENT ALERT: House Average Humidity has been at or above ${thresh}% for over ${reqMins} minutes.", "humidity")
                 state.globalHumAlertNotified = true
             }
         } else {
@@ -333,7 +343,7 @@ def evaluateZones() {
             if (h >= zThresh) {
                 if (!state["z${i}HumAlertStart"]) state["z${i}HumAlertStart"] = now()
                 else if (now() - state["z${i}HumAlertStart"] >= (zReqMins * 60000) && !state["z${i}HumAlertNotified"]) {
-                    sendNotification("ENVIRONMENT ALERT: ${settings["z${i}Name"]} humidity has been at or above ${zThresh}% for over ${zReqMins} minutes.")
+                    sendNotification("ENVIRONMENT ALERT: ${settings["z${i}Name"]} humidity has been at or above ${zThresh}% for over ${zReqMins} minutes.", "humidity")
                     state["z${i}HumAlertNotified"] = true
                 }
             } else {
@@ -381,12 +391,11 @@ def evaluateZones() {
         // 3. Logic Cascade
         def shouldRun = false
         def reason = "All targets met."
-
         if (isLeaking) {
             shouldRun = true
             reason = "EMERGENCY: Water Leak Detected."
             if (!state["z${i}LeakNotified"]) {
-                sendNotification("CRITICAL ALERT: Water leak detected in Zone ${i} (${settings["z${i}Name"]}). Dehumidifier forced ON.")
+                sendNotification("CRITICAL ALERT: Water leak detected in Zone ${i} (${settings["z${i}Name"]}). Dehumidifier forced ON.", "leak")
                 state["z${i}LeakNotified"] = true
             }
         } else {
@@ -475,7 +484,7 @@ def evaluateZones() {
         def runLimit = settings["z${i}FilterLimit"] ?: 360
         def currentHours = state["z${i}FilterRunHours"] ?: 0.0
         if (currentHours >= runLimit && !state["z${i}FilterNotified"]) {
-            sendNotification("Maintenance Alert: Zone ${i} (${settings["z${i}Name"]}) dehumidifier requires filter cleaning.")
+            sendNotification("Maintenance Alert: Zone ${i} (${settings["z${i}Name"]}) dehumidifier requires filter cleaning.", "filter")
             state["z${i}FilterNotified"] = true
         }
     }
@@ -535,11 +544,27 @@ def calculateZoneState(zone) {
     ]
 }
 
-def sendNotification(msg) {
-    if (notifyDevices) {
-        notifyDevices.each { it.deviceNotification(msg) }
-        logAction(msg)
+def sendNotification(msg, type = "general") {
+    def shouldSend = true
+    
+    // Check Active Window Schedule for non-emergencies
+    if (type != "leak" && settings.notifyStartTime && settings.notifyEndTime) {
+        shouldSend = timeOfDayIsBetween(settings.notifyStartTime, settings.notifyEndTime, new Date(), location.timeZone)
     }
+
+    if (shouldSend) {
+        def devices = []
+        if (type == "leak") devices = settings.leakNotifyDevices
+        else if (type == "humidity") devices = settings.humNotifyDevices
+        else if (type == "filter") devices = settings.filterNotifyDevices
+        
+        if (devices) {
+            devices.each { it.deviceNotification(msg) }
+        }
+    }
+    
+    // Always log the action to the app dashboard regardless of notification schedule
+    logAction(msg)
 }
 
 def logAction(msg) {
