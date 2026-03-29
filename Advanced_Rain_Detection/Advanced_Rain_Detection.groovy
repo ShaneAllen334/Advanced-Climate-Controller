@@ -163,7 +163,13 @@ def mainPage() {
             paragraph "<i>Create a single virtual device that exposes all advanced meteorological data and states calculated by this app to your dashboards or rules.</i>"
             input "createDeviceBtn", "button", title: "➕ Create Rain Detector Information Device"
             if (getChildDevice("RainDet-${app.id}")) {
-                paragraph "<span style='color:green; font-weight:bold;'>✅ Child Device is Active.</span> Data is syncing."
+                paragraph "<span style='color:green; font-weight:bold;'>✅ Child Device is Active.</span>"
+                
+                input "enableSmartSync", "bool", title: "Enable Smart Sync (Instantly pushes updates when data changes)", defaultValue: true, submitOnChange: true
+                input "enableChildSync", "bool", title: "Enable Scheduled Data Sync (Routine heartbeat backup)", defaultValue: true, submitOnChange: true
+                if (enableChildSync != false) {
+                    input "childSyncInterval", "enum", title: "Scheduled Sync Interval (Minutes)", options: ["5", "10", "15", "30", "60"], defaultValue: "15", required: true, submitOnChange: true
+                }
             }
         }
         
@@ -269,6 +275,7 @@ def initialize() {
     if (!state.weatherState) state.weatherState = "Clear"
     if (!state.lastStateChange) state.lastStateChange = now()
     if (!state.lastHeartbeat) state.lastHeartbeat = now()
+    if (!state.lastChildPayload) state.lastChildPayload = ""
     
     // Initialize History Maps
     if (!state.pressureHistory) state.pressureHistory = []
@@ -302,9 +309,28 @@ def initialize() {
     
     // Scheduled fallback check
     runEvery5Minutes("evaluateWeather")
+
+    // Scheduled Child Device Sync
+    scheduleChildSync()
     
     logAction("Advanced Rain Detection Initialized.")
     evaluateWeather()
+}
+
+def scheduleChildSync() {
+    unschedule("updateChildDevice")
+    if (getChildDevice("RainDet-${app.id}") && settings.enableChildSync != false) {
+        def interval = settings.childSyncInterval ? settings.childSyncInterval.toInteger() : 15
+        switch(interval) {
+            case 5: runEvery5Minutes("updateChildDevice"); break;
+            case 10: runEvery10Minutes("updateChildDevice"); break;
+            case 15: runEvery15Minutes("updateChildDevice"); break;
+            case 30: runEvery30Minutes("updateChildDevice"); break;
+            case 60: runEvery1Hour("updateChildDevice"); break;
+            default: runEvery15Minutes("updateChildDevice"); break;
+        }
+        logAction("Child device periodic sync scheduled every ${interval} minutes.")
+    }
 }
 
 // Helper to subscribe to multiple potential attributes
@@ -386,6 +412,8 @@ def createChildDevice() {
         try {
             addChildDevice("ShaneAllen", "Advanced Rain Detector Information Device", deviceId, null, [name: "Advanced Rain Detector Information Device", label: "Advanced Rain Detector Information Device", isComponent: false])
             logAction("Child device successfully created.")
+            scheduleChildSync()
+            updateChildDevice()
         } catch (e) {
             log.error "Failed to create child device. Please ensure the 'Advanced Rain Detector Information Device' driver is installed under 'Drivers Code'. Error: ${e}"
         }
@@ -485,7 +513,6 @@ def evaluateWeather() {
         
         // Push to 7-Day History
         def hist = state.sevenDayRain ?: []
-  
         hist.add(0, [date: state.currentDateStr, amount: yesterdayTotal])
         if (hist.size() > 7) hist = hist[0..6]
         state.sevenDayRain = hist
@@ -505,7 +532,7 @@ def evaluateWeather() {
     // Keep track of the highest rain total seen today (Protects against sensor drops/reboots)
     def currentDaily = getFloat(sensorRainDaily, ["rainDaily", "dailyrainin", "water", "dailyWater"], 0.0)
     if (currentDaily > (state.currentDayRain ?: 0.0)) {
-        state.currentDayRain = currentDaily
+       state.currentDayRain = currentDaily
     }
 
     if (!sensorTemp || !sensorHum || !sensorPress) {
@@ -608,7 +635,7 @@ def evaluateWeather() {
             def oldestLux = state.luxHistory.first()?.value ?: 0.0
             if (oldestLux > 2000) { 
                 def dropPercentage = Math.abs(lTrendData.diff) / oldestLux
-                if (dropPercentage >= 0.60) { probability += 20; reasoning << "Solar radiation plummeted >60% (Heavy cloud cover)" }
+                 if (dropPercentage >= 0.60) { probability += 20; reasoning << "Solar radiation plummeted >60% (Heavy cloud cover)" }
                 else if (dropPercentage >= 0.40) { probability += 10; reasoning << "Significant solar drop" }
             }
         }
@@ -628,7 +655,6 @@ def evaluateWeather() {
         
         if (dewRejectionActive) reasoning << "Leak Sensor ignored (Morning Dew/Frost Detected)"
         if (probability == 0 && r == 0 && !leakWet) reasoning << "Conditions are stable and dry."
-        
     } else {
         probability = 0
         reasoning << "⚠ Sensors Stale/Offline (No data received in ${staleMins} mins)"
@@ -723,9 +749,33 @@ def evaluateWeather() {
             if (notifyOnClear && !isStale) sendNotification("Weather Update: Conditions have cleared.")
         }
     }
+
+    // --- Smart Sync Payload Comparison ---
+    def currentPayload = [
+        ws: state.weatherState,
+        rp: state.rainProbability,
+        ect: state.expectedClearTime,
+        dp: state.dryingPotential,
+        vpd: String.format("%.2f", state.currentVPD ?: 0.0),
+        dew: String.format("%.1f", state.currentDewPoint ?: 0.0),
+        spread: String.format("%.1f", state.dewPointSpread ?: 0.0),
+        pt: state.pressureTrendStr,
+        tt: state.tempTrendStr,
+        lt: state.luxTrendStr,
+        wt: state.windTrendStr,
+        cdr: state.currentDayRain,
+        rra: state.recordRain?.amount
+    ].toString()
+
+    def dataChanged = (state.lastChildPayload != currentPayload)
+    if (dataChanged) {
+        state.lastChildPayload = currentPayload
+    }
     
-    // Send final evaluation data to the child device
-    updateChildDevice()
+    // Push update if there's a hard state transition, OR if Smart Sync is enabled and the data payload changed
+    if (allowTransition || (dataChanged && settings.enableSmartSync != false)) {
+        updateChildDevice()
+    }
 }
 
 // === CHILD DEVICE SYNCHRONIZATION ===
