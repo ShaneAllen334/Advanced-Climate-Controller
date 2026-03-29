@@ -8,7 +8,7 @@ definition(
     name: "Advanced Meteorologist Report",
     namespace: "ShaneAllen",
     author: "ShaneAllen",
-    description: "Generates a TV-anchor style meteorologist report combining live local weather station data with macro-forecast APIs. Features Pollen, Moon Phase, Rain amounts, and granular triggers.",
+    description: "Generates a TV-anchor style meteorologist report combining live local weather station data with macro-forecast APIs. Features Pollen, Moon Phase, Rain amounts, offline protection, and granular triggers.",
     category: "Weather",
     iconUrl: "",
     iconX2Url: "",
@@ -34,8 +34,10 @@ def mainPage() {
                 def lWind = localStation.currentValue("windSpeed") ?: "--"
                 
                 def apiTemp = state.apiCurrentTemp ?: "--"
+                def apparentTemp = state.apiApparentTemp ?: "--"
+                def windGust = state.apiWindGust ?: "--"
                 def apiCondition = state.apiConditionDesc ?: "Unknown"
-                def pollenDisplay = state.pollenIndex ? "${state.pollenIndex} (${state.pollenCategory})" : "N/A"
+                def pollenDisplay = state.pollenIndex ? "${state.pollenIndex} (${state.pollenCategory})" : "Disabled/NA"
                 def moonDisplay = getMoonPhase()
 
                 def dashHTML = """
@@ -51,8 +53,8 @@ def mainPage() {
                 <table class="dash-table">
                     <thead><tr><th>Metric</th><th>Local (Your Station)</th><th>Macro (API)</th></tr></thead>
                     <tbody>
-                        <tr><td class="dash-hl">Current Temp</td><td><b>${lTemp}°</b></td><td>${apiTemp}°</td></tr>
-                        <tr><td class="dash-hl">Humidity / Wind</td><td><b>${lHum}% / ${lWind} mph</b></td><td>--</td></tr>
+                        <tr><td class="dash-hl">Current Temp</td><td><b>${lTemp}°</b></td><td>${apiTemp}° (Feels: ${apparentTemp}°)</td></tr>
+                        <tr><td class="dash-hl">Humidity / Wind</td><td><b>${lHum}% / ${lWind} mph</b></td><td>Gusts: ${windGust} mph</td></tr>
                         <tr><td class="dash-hl">Conditions</td><td colspan="2" class="dash-val"><b>${apiCondition}</b></td></tr>
                         <tr><td class="dash-hl">Pollen / Moon</td><td colspan="2" class="dash-val">🌸 ${pollenDisplay} | 🌔 ${moonDisplay}</td></tr>
                     </tbody>
@@ -66,10 +68,10 @@ def mainPage() {
                     forecastHTML += "</tr></thead><tbody><tr>"
                     
                     state.apiDailyDates.eachWithIndex { dStr, i ->
-                        def h = state.apiDailyHighs[i]
-                        def l = state.apiDailyLows[i]
-                        def r = state.apiDailyRain[i] ?: "0"
-                        def c = state.apiDailyConditions[i]?.capitalize()
+                        def h = state.apiDailyHighs ? state.apiDailyHighs[i] : "--"
+                        def l = state.apiDailyLows ? state.apiDailyLows[i] : "--"
+                        def r = state.apiDailyRain ? state.apiDailyRain[i] : "0"
+                        def c = state.apiDailyConditions ? state.apiDailyConditions[i]?.capitalize() : "Unknown"
                         forecastHTML += "<td class='day-box'><span style='color:#d9534f; font-weight:bold;'>H: ${h}°</span><br><span style='color:#007bff; font-weight:bold;'>L: ${l}°</span><br><span style='color:#17a2b8;'>💧 ${r}\"</span><br><i>${c}</i></td>"
                     }
                     forecastHTML += "</tr></tbody></table>"
@@ -98,6 +100,7 @@ def mainPage() {
             input "m_includeGreeting", "bool", title: "Include Greeting (Good Morning)", defaultValue: true
             input "m_includeMicro", "bool", title: "Include Local Station Data", defaultValue: true
             input "m_includeDaily", "bool", title: "Include Today's Highs/Lows/Conditions", defaultValue: true
+            input "m_includeFeelsLike", "bool", title: "Include 'Feels Like' & Wind Gusts", defaultValue: true
             input "m_includeRain", "bool", title: "Include Expected Rain Amount", defaultValue: true
             input "m_includeUV", "bool", title: "Include Peak UV Index", defaultValue: true
             input "m_includePollen", "bool", title: "Include Pollen Forecast", defaultValue: false
@@ -112,6 +115,7 @@ def mainPage() {
             input "e_includeGreeting", "bool", title: "Include Greeting (Good Evening)", defaultValue: true
             input "e_includeMicro", "bool", title: "Include Local Station Data", defaultValue: true
             input "e_includeDaily", "bool", title: "Include Tonight's Low & Tomorrow's Forecast", defaultValue: true
+            input "e_includeFeelsLike", "bool", title: "Include 'Feels Like' & Wind Gusts", defaultValue: false
             input "e_includeRain", "bool", title: "Include Tomorrow's Rain Amount", defaultValue: true
             input "e_includePollen", "bool", title: "Include Tomorrow's Pollen Forecast", defaultValue: false
             input "e_includeMoon", "bool", title: "Include Tonight's Moon Phase", defaultValue: true
@@ -119,7 +123,7 @@ def mainPage() {
         }
 
         section(title: "<b>4. Broadcast Triggers</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'>When should the report be announced automatically? Choose between scheduled times, mode changes, or a manual switch. All are optional.</div>"
+            paragraph "<div style='font-size:13px; color:#555;'>When should the report be announced automatically? All are optional.</div>"
             
             paragraph "<b>🕒 Scheduled Time Triggers</b>"
             input "timeTrigger1", "time", title: "Time Trigger 1", required: false
@@ -186,14 +190,48 @@ def initialize() {
 }
 
 def appButtonHandler(btn) {
-    if (btn == "btnRefresh") { routineSync(); logAction("Data manually refreshed.") }
+    if (btn == "btnRefresh") { state.lastErrorTime = null; routineSync(); logAction("Data manually refreshed.") }
     else if (btn == "btnClearHistory") { state.actionHistory = []; log.info "History cleared." }
     else if (btn == "btnTestTTS") { routineSync(); if (ttsSpeakers) ttsSpeakers.speak(state.latestScript); logAction("Test TTS Triggered.") }
     else if (btn == "btnTestNotify") { routineSync(); if (notifyDevices) notifyDevices.deviceNotification(state.latestScript); logAction("Test Notify Triggered.") }
     else if (btn == "btnCreateDevice") { createChildDevice(); routineSync(); logAction("Child device created.") }
 }
 
+// ==============================================================================
+// CIRCUIT BREAKER & SYNC
+// ==============================================================================
+
+def hasInternet() {
+    if (state.lastErrorTime) {
+        long elapsed = (now() - state.lastErrorTime) / 60000
+        if (elapsed < 15) { 
+            log.warn "Advanced Meteorologist: Network in 15-min cooldown. Skipping ping to prevent spam."
+            return false
+        }
+    }
+    try {
+        httpGet([uri: "http://clients3.google.com/generate_204", timeout: 3]) { resp ->
+            if (resp.status == 204) {
+                state.lastErrorTime = null 
+                return true
+            }
+        }
+    } catch (e) {
+        logAction("Network down. Entering 15-minute error cooldown.")
+        state.lastErrorTime = now()
+        return false
+    }
+    return false
+}
+
 def routineSync() {
+    if (!hasInternet()) {
+        state.apiFailed = true
+        generateScript() // Generate offline script
+        updateChildDevice() 
+        return 
+    }
+    
     state.apiFailed = false
     fetchApiData()
     fetchPollenData()
@@ -201,6 +239,10 @@ def routineSync() {
     updateChildDevice()
     logAction("Routine Background Sync Complete.")
 }
+
+// ==============================================================================
+// TRIGGERS
+// ==============================================================================
 
 def timeTrigger1Handler() { logAction("Scheduled Time Trigger 1 activated."); executeBroadcast() }
 def timeTrigger2Handler() { logAction("Scheduled Time Trigger 2 activated."); executeBroadcast() }
@@ -234,12 +276,7 @@ def modeChangeHandler(evt) {
     }
 }
 
-def switchTriggerHandler(evt) {
-    logAction("Virtual Switch triggered.")
-    executeBroadcast()
-    runIn(2, turnOffSwitch)
-}
-
+def switchTriggerHandler(evt) { logAction("Virtual Switch triggered."); executeBroadcast(); runIn(2, turnOffSwitch) }
 def turnOffSwitch() { if (triggerSwitch) triggerSwitch.off() }
 
 def executeBroadcast() {
@@ -248,18 +285,24 @@ def executeBroadcast() {
     if (notifyDevices) notifyDevices.deviceNotification(state.latestScript)
 }
 
+// ==============================================================================
+// DATA FETCHING
+// ==============================================================================
+
 def fetchApiData() {
     def lat = location.latitude
     def lon = location.longitude
     if (!lat || !lon) { logAction("ERROR: Hub Lat/Lon missing."); state.apiFailed = true; return }
 
-    def url = "https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,uv_index_max&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&timezone=auto"
+    def url = "https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,apparent_temperature,weather_code,wind_gusts_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,uv_index_max&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&timezone=auto"
     
     try {
         httpGet([uri: url, timeout: 10]) { resp ->
             if (resp.success) {
                 def data = resp.data
                 state.apiCurrentTemp = data.current?.temperature_2m?.toBigDecimal()?.setScale(0, BigDecimal.ROUND_HALF_UP)
+                state.apiApparentTemp = data.current?.apparent_temperature?.toBigDecimal()?.setScale(0, BigDecimal.ROUND_HALF_UP)
+                state.apiWindGust = data.current?.wind_gusts_10m?.toBigDecimal()?.setScale(0, BigDecimal.ROUND_HALF_UP)
                 state.apiConditionDesc = getWeatherDescription(data.current?.weather_code ?: 0)
                 
                 state.apiDailyDates = data.daily?.time ?: []
@@ -295,39 +338,34 @@ def fetchPollenData() {
                     else if (idx < 9.6) state.pollenCategory = "medium to high"
                     else state.pollenCategory = "high"
                 }
-            } else { state.apiFailed = true }
+            } else { logAction("Pollen API connection issue."); } // Don't fail the whole script if just pollen fails
         }
-    } catch (e) {
-        logAction("ERROR fetching Pollen API: ${e.message}")
-        state.apiFailed = true
-    }
+    } catch (e) { logAction("ERROR fetching Pollen API.") }
 }
 
 def generateScript() {
     def script = ""
     def nowTime = new Date()
     
-    // Parse time strings correctly to Date objects to avoid MissingMethodException
     def isMorning = morningStartTime && morningEndTime && timeOfDayIsBetween(toDateTime(morningStartTime), toDateTime(morningEndTime), nowTime, location.timeZone)
     def isEvening = eveningStartTime && eveningEndTime && timeOfDayIsBetween(toDateTime(eveningStartTime), toDateTime(eveningEndTime), nowTime, location.timeZone)
     
     def useGreeting = true; def useMicro = true; def useDaily = true; def useWeekly = false
-    def useRain = false; def usePollen = false; def useMoon = false; def useUV = false
+    def useRain = false; def usePollen = false; def useMoon = false; def useUV = false; def useFeels = false
     def activeProfileName = "Standard"
     
     if (isMorning) {
         useGreeting = m_includeGreeting; useMicro = m_includeMicro; useDaily = m_includeDaily; useWeekly = m_includeWeekly
-        useRain = m_includeRain; usePollen = m_includePollen; useMoon = m_includeMoon; useUV = m_includeUV
+        useRain = m_includeRain; usePollen = m_includePollen; useMoon = m_includeMoon; useUV = m_includeUV; useFeels = m_includeFeelsLike
         activeProfileName = "Morning"
     } else if (isEvening) {
         useGreeting = e_includeGreeting; useMicro = e_includeMicro; useDaily = e_includeDaily; useWeekly = e_includeWeekly
-        useRain = e_includeRain; usePollen = e_includePollen; useMoon = e_includeMoon
+        useRain = e_includeRain; usePollen = e_includePollen; useMoon = e_includeMoon; useFeels = e_includeFeelsLike
         activeProfileName = "Evening"
     }
     
-    // Check for Connection Errors
     if (state.apiFailed) {
-        script += "I currently cannot connect to the news desk so part of your report is missing. "
+        script += "I currently cannot connect to the news desk, so part of your report is missing. "
     }
     
     // 1. Greeting
@@ -346,21 +384,33 @@ def generateScript() {
         script += "Right now at your house, it is currently ${lTemp} degrees with a humidity of ${lHum} percent. "
     }
     
-    // 3. Macro Forecast (API) + New Modules
+    // Null Checks for Arrays to prevent getAt() error
+    def safeGet = { list, index, defaultVal -> (list && list.size() > index) ? list[index] : defaultVal }
+    
+    // 3. Macro Forecast (API)
     if (useDaily && state.apiDailyDates && state.apiDailyDates.size() > 1) {
-        def tIndex = activeProfileName == "Evening" ? 1 : 0 // Evening looks to tomorrow
+        def tIndex = activeProfileName == "Evening" ? 1 : 0 
         def dayContext = activeProfileName == "Evening" ? "Tomorrow" : "Today"
         
-        def cond = state.apiDailyConditions[tIndex] ?: "varying conditions"
-        def tHigh = state.apiDailyHighs[tIndex] ?: "unknown"
-        def tLow = state.apiDailyLows[0] ?: "unknown" // Always tonight's low
-        def rainAmt = state.apiDailyRain[tIndex] ?: 0
-        def uvIndex = state.apiDailyUV[tIndex] ?: 0
+        def cond = safeGet(state.apiDailyConditions, tIndex, "varying conditions")
+        def tHigh = safeGet(state.apiDailyHighs, tIndex, "unknown")
+        def tLow = safeGet(state.apiDailyLows, 0, "unknown") 
+        def rainAmt = safeGet(state.apiDailyRain, tIndex, 0)
+        def uvIndex = safeGet(state.apiDailyUV, tIndex, 0)
 
         if (activeProfileName == "Evening") {
             script += "Overnight, expect temperatures to drop to a low of ${tLow}. Looking ahead to tomorrow, we will see ${cond} with a high of ${tHigh}. "
         } else {
             script += "Looking at the broader forecast, expect ${cond} today. We will reach a high of ${tHigh}, and drop to a low of ${tLow} tonight. "
+        }
+        
+        if (useFeels && state.apiApparentTemp && state.apiCurrentTemp) {
+            if (Math.abs(state.apiCurrentTemp - state.apiApparentTemp) >= 4) {
+                script += "However, it currently feels more like ${state.apiApparentTemp} out there. "
+            }
+        }
+        if (useFeels && state.apiWindGust && state.apiWindGust > 20) {
+            script += "Watch out for wind gusts reaching up to ${state.apiWindGust} miles per hour. "
         }
         
         if (useRain && rainAmt > 0) script += "We are expecting about ${rainAmt} inches of rain ${dayContext.toLowerCase()}. "
@@ -374,8 +424,8 @@ def generateScript() {
     // 5. Weekly Teaser
     if (useWeekly && state.apiDailyDates && state.apiDailyDates.size() >= 5) {
         def day4Name = getDayOfWeek(state.apiDailyDates[3])
-        def day4High = state.apiDailyHighs[3]
-        def day4Cond = state.apiDailyConditions[3]
+        def day4High = safeGet(state.apiDailyHighs, 3, "unknown")
+        def day4Cond = safeGet(state.apiDailyConditions, 3, "varying conditions")
         script += "Keep an eye out as we move through the week, ${day4Name} is looking to be ${day4Cond} with temperatures around ${day4High} degrees."
     }
 
@@ -386,40 +436,22 @@ def generateScript() {
 
 def getMoonPhase() {
     def date = new Date()
-    int year = date.format("yyyy").toInteger()
-    int month = date.format("MM").toInteger()
-    int day = date.format("dd").toInteger()
-    
+    int year = date.format("yyyy").toInteger(); int month = date.format("MM").toInteger(); int day = date.format("dd").toInteger()
     if (month < 3) { year--; month += 12 }
     ++month
-    int c = 365.25 * year
-    int e = 30.6 * month
-    double jd = c + e + day - 694039.09 
-    jd /= 29.5305882 
-    int b = jd
-    jd -= b 
-    b = Math.round(jd * 8)
+    int c = 365.25 * year; int e = 30.6 * month
+    double jd = c + e + day - 694039.09; jd /= 29.5305882 
+    int b = jd; jd -= b; b = Math.round(jd * 8)
     if (b >= 8) b = 0
-    
-    def phases = ["New Moon", "Waxing Crescent", "First Quarter", "Waxing Gibbous", "Full Moon", "Waning Gibbous", "Third Quarter", "Waning Crescent"]
-    return phases[b]
+    return ["New Moon", "Waxing Crescent", "First Quarter", "Waxing Gibbous", "Full Moon", "Waning Gibbous", "Third Quarter", "Waning Crescent"][b]
 }
 
 def getWeatherDescription(code) {
-    def map = [
-        0: "clear skies", 1: "mostly clear skies", 2: "partly cloudy skies", 3: "overcast conditions",
-        45: "foggy conditions", 48: "depositing rime fog", 51: "light drizzle", 53: "moderate drizzle", 
-        55: "dense drizzle", 61: "slight rain", 63: "moderate rain", 65: "heavy rain",
-        71: "slight snow fall", 73: "moderate snow fall", 75: "heavy snow fall",
-        77: "snow grains", 80: "light rain showers", 81: "moderate rain showers", 82: "violent rain showers",
-        95: "thunderstorms", 96: "thunderstorms with slight hail", 99: "thunderstorms with heavy hail"
-    ]
+    def map = [ 0: "clear skies", 1: "mostly clear skies", 2: "partly cloudy skies", 3: "overcast conditions", 45: "foggy conditions", 48: "depositing rime fog", 51: "light drizzle", 53: "moderate drizzle", 55: "dense drizzle", 61: "slight rain", 63: "moderate rain", 65: "heavy rain", 71: "slight snow fall", 73: "moderate snow fall", 75: "heavy snow fall", 77: "snow grains", 80: "light rain showers", 81: "moderate rain showers", 82: "violent rain showers", 95: "thunderstorms", 96: "thunderstorms with slight hail", 99: "thunderstorms with heavy hail" ]
     return map[code as Integer] ?: "variable conditions"
 }
 
-def getDayOfWeek(dateString) {
-    try { return Date.parse("yyyy-MM-dd", dateString).format("EEE") } catch (e) { return "Unknown" }
-}
+def getDayOfWeek(dateString) { try { return Date.parse("yyyy-MM-dd", dateString).format("EEE") } catch (e) { return "N/A" } }
 
 def logAction(msg) { 
     if(txtEnable) log.info "${app.label}: ${msg}"
@@ -434,11 +466,8 @@ def createChildDevice() {
     def child = getChildDevice(childNetworkId)
     if (!child) {
         log.info "Creating Meteorologist Report Child Device..."
-        try {
-            addChildDevice("ShaneAllen", "Advanced Meteorologist Report Device", childNetworkId, [name: "Advanced Meteorologist Report", isComponent: true])
-        } catch (e) {
-            logAction("ERROR: Failed to create child device. Ensure the Driver is installed. Error: ${e}")
-        }
+        try { addChildDevice("ShaneAllen", "Advanced Meteorologist Report Device", childNetworkId, [name: "Advanced Meteorologist Report", isComponent: true]) } 
+        catch (e) { logAction("ERROR: Failed to create child device. Ensure Driver is installed.") }
     }
 }
 
@@ -446,17 +475,16 @@ def updateChildDevice() {
     def childNetworkId = "MeteorologistReport_${app.id}"
     def child = getChildDevice(childNetworkId)
     if (child) {
-        // Send a mapped payload so it easily scales with new attributes
         child.updateTile([
-            script: state.latestScript,
+            script: state.latestScript ?: "Awaiting data...",
             currentTemp: state.apiCurrentTemp,
             currentConditions: state.apiConditionDesc,
-            dates: state.apiDailyDates,
-            highs: state.apiDailyHighs,
-            lows: state.apiDailyLows,
-            conditions: state.apiDailyConditions,
-            rain: state.apiDailyRain,
-            uv: state.apiDailyUV,
+            dates: state.apiDailyDates ?: [],
+            highs: state.apiDailyHighs ?: [],
+            lows: state.apiDailyLows ?: [],
+            conditions: state.apiDailyConditions ?: [],
+            rain: state.apiDailyRain ?: [],
+            uv: state.apiDailyUV ?: [],
             pollen: state.pollenIndex ? "${state.pollenIndex} (${state.pollenCategory})" : "N/A",
             moon: getMoonPhase()
         ])
