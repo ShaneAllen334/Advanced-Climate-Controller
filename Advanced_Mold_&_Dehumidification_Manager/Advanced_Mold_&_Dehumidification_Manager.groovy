@@ -8,7 +8,7 @@ definition(
     name: "Advanced Mold & Dehumidification Manager",
     namespace: "ShaneAllen",
     author: "ShaneAllen",
-    description: "ASHRAE-based mold engine with System Boot Recovery, Energy Saver Overrides, Granular Notifications, Compressor Protection, Leak Emergencies, and Dew Point Tracking.",
+    description: "ASHRAE-based mold engine with System Boot Recovery, Energy Saver Overrides, Granular Notifications, Compressor Protection, Leak Emergencies, Dew Point Tracking, TV Setpoint Offsets, and Mode Restrictions.",
     category: "Safety & Security",
     iconUrl: "",
     iconX2Url: "",
@@ -114,7 +114,7 @@ def mainPage() {
             href "globalLogicPage", title: "2. Advanced Logic Systems", description: "Configure Energy Manager Overrides, Averaging System, and Winter Shield."
             href "alertsPage", title: "3. Maintenance & Notifications", description: "Granular Time-Based Alerts, Filter tracking, and notifications."
             input "kwhCost", "decimal", title: "Utility Rate (per kWh)", defaultValue: 0.14, required: true
-            input "appEnableSwitch", "capability.switch", title: "Master Enable Switch", required: false
+            input "appEnableSwitch", "capability.switch", title: "Master Enable Switch (Turn off to halt logic)", required: false
             input "txtEnable", "bool", title: "Enable verbose logging", defaultValue: true
         }
     }
@@ -133,6 +133,13 @@ def zoneConfigPage() {
                     
                     input "z${i}Leak", "capability.waterSensor", title: "Emergency Water Leak Sensors", multiple: true, required: false
                     
+                    input "z${i}Modes", "mode", title: "Allowed Modes (Leave blank to run in all modes)", multiple: true, required: false
+
+                    input "z${i}TV", "capability.switch", title: "TV / Media Switch (Raises setpoint to reduce noise)", required: false, submitOnChange: true
+                    if (settings["z${i}TV"]) {
+                        input "z${i}TVOffset", "number", title: "↳ TV ON Setpoint Increase (%)", defaultValue: 5
+                    }
+
                     input "z${i}CompProtect", "bool", title: "Enable Compressor Protection (Minimum Run Time)", defaultValue: true, submitOnChange: true
                     if (settings["z${i}CompProtect"]) {
                         input "z${i}MinRun", "number", title: "↳ Minimum Run Time (Minutes)", defaultValue: 15
@@ -356,6 +363,14 @@ def evaluateZones() {
         def leakSensors = settings["z${i}Leak"]
         def isLeaking = leakSensors ? leakSensors.any { it.currentValue("water") == "wet" } : false
 
+        // Check Mode Restriction
+        def allowedModes = settings["z${i}Modes"]
+        def modeRestricted = allowedModes ? !allowedModes.contains(location.mode) : false
+
+        // Check TV Offset
+        def isTvOn = settings["z${i}TV"]?.currentValue("switch") == "on"
+        def tvOffset = isTvOn ? (settings["z${i}TVOffset"] ?: 5) : 0
+
         // --- Shared App Control Override ---
         if (isHardwareOn && !isAppControlled && isShared && !isLeaking) {
             if (state["z${i}LogicNote"] != "Externally Controlled") logAction("ZONE ${i}: Dehumidifier is ON. Triggered by external app. Suspending local overrides.")
@@ -391,6 +406,7 @@ def evaluateZones() {
         // 3. Logic Cascade
         def shouldRun = false
         def reason = "All targets met."
+        
         if (isLeaking) {
             shouldRun = true
             reason = "EMERGENCY: Water Leak Detected."
@@ -401,42 +417,51 @@ def evaluateZones() {
         } else {
             state["z${i}LeakNotified"] = false
             
-            if (rapidCoolTrigger) {
-                shouldRun = true
-                reason = "Preemptive: Rapid temperature drop detected (AC is off)."
-            }
+            if (modeRestricted) {
+                shouldRun = false
+                reason = "Location Mode Restricted."
+            } else {
+                if (rapidCoolTrigger) {
+                    shouldRun = true
+                    reason = "Preemptive: Rapid temperature drop detected (AC is off)."
+                }
 
-            if (!shouldRun && winterActive) {
-                def wPoint = winterHumSetpoint ?: 35
-                def wDB = winterShieldDB ?: 3
-                if (h >= wPoint) { shouldRun = true; reason = "Winter Window Shield Active (${wPoint}% goal)." }
-                else if (isHardwareOn && h > (wPoint - wDB)) { shouldRun = true; reason = "Maintaining Winter Shield Deadband." }
-            }
+                if (!shouldRun && winterActive) {
+                    def wPoint = winterHumSetpoint ?: 35
+                    def wDB = winterShieldDB ?: 3
+                    if (h >= wPoint) { shouldRun = true; reason = "Winter Window Shield Active (${wPoint}% goal)." }
+                    else if (isHardwareOn && h > (wPoint - wDB)) { shouldRun = true; reason = "Maintaining Winter Shield Deadband." }
+                }
 
-            if (!shouldRun && avgTrigger) {
-                shouldRun = true
-                reason = "Averaging System Triggered (House Avg: ${globalAvg}%)."
-            }
+                if (!shouldRun && avgTrigger) {
+                    shouldRun = true
+                    reason = "Averaging System Triggered (House Avg: ${globalAvg}%)."
+                }
 
-            if (!shouldRun) {
-                // Determine Setpoint based on Energy Mode Switch
-                def useComfort = !saverActive && settings["z${i}EnableComfort"]
-                def useSaving = settings["z${i}EnableSaving"]
-                
-                if (useComfort) {
-                    def cp = settings["z${i}ComfortPoint"]; def cdb = settings["z${i}ComfortDB"]
-                    if (h >= cp) { shouldRun = true; reason = "Comfort limit (${cp}%) exceeded." }
-                    else if (isHardwareOn && h > (cp - cdb)) { shouldRun = true; reason = "Comfort deadband." }
-                } 
-                else if (useSaving) {
-                    def sp = settings["z${i}SavePoint"]; def sdb = settings["z${i}SaveDB"]
-                    if (h >= sp) { shouldRun = true; reason = "Savings limit (${sp}%) exceeded" + (saverActive ? " (Energy Saver Active)." : ".") }
-                    else if (isHardwareOn && h > (sp - sdb)) { shouldRun = true; reason = "Savings deadband." }
+                if (!shouldRun) {
+                    // Determine Setpoint based on Energy Mode Switch
+                    def useComfort = !saverActive && settings["z${i}EnableComfort"]
+                    def useSaving = settings["z${i}EnableSaving"]
+                    
+                    if (useComfort) {
+                        def cp = (settings["z${i}ComfortPoint"] ?: 45) + tvOffset
+                        def cdb = settings["z${i}ComfortDB"] ?: 3
+                        if (h >= cp) { shouldRun = true; reason = "Comfort limit (${cp}%) exceeded" + (isTvOn ? " (TV Offset Active)." : ".") }
+                        else if (isHardwareOn && h > (cp - cdb)) { shouldRun = true; reason = "Comfort deadband." }
+                    } 
+                    else if (useSaving) {
+                        def sp = (settings["z${i}SavePoint"] ?: 60) + tvOffset
+                        def sdb = settings["z${i}SaveDB"] ?: 5
+                        if (h >= sp) { shouldRun = true; reason = "Savings limit (${sp}%) exceeded" + (isTvOn ? " (TV Offset Active)." : ".") }
+                        else if (isHardwareOn && h > (sp - sdb)) { shouldRun = true; reason = "Savings deadband." }
+                    }
                 }
             }
         }
 
         // --- COMPRESSOR PROTECTION (Minimum Run Time) ---
+        // Note: Because this runs after the mode restricted block, if the mode changes 
+        // to a restricted mode while the compressor is running, it will safely finish its minimum run time first!
         if (!shouldRun && isHardwareOn && isAppControlled && settings["z${i}CompProtect"]) {
             def minRunMs = (settings["z${i}MinRun"] ?: 15) * 60000
             def runTimeMs = state["z${i}RunStart"] ? (now() - state["z${i}RunStart"]) : 0
@@ -514,11 +539,17 @@ def calculateZoneState(zone) {
     def dp = calculateDewPoint(currTemp, currHum)
     def spread = (currTemp != null && dp != null) ? (Math.round((currTemp - dp) * 10.0) / 10.0) : null
 
+    // Check TV offset & Mode Restriction for the dashboard display
+    def isTvOn = settings["z${zone}TV"]?.currentValue("switch") == "on"
+    def tvOffset = isTvOn ? (settings["z${zone}TVOffset"] ?: 5) : 0
+    def allowedModes = settings["z${zone}Modes"]
+    def modeRestricted = allowedModes ? !allowedModes.contains(location.mode) : false
+
     def target = 100
     if (isWinterShieldActive()) target = winterHumSetpoint ?: 35
-    else if (isEnergySaverActive() && settings["z${zone}EnableSaving"]) target = settings["z${zone}SavePoint"]
-    else if (!isEnergySaverActive() && settings["z${zone}EnableComfort"]) target = settings["z${zone}ComfortPoint"]
-    else if (settings["z${zone}EnableSaving"]) target = settings["z${zone}SavePoint"]
+    else if (isEnergySaverActive() && settings["z${zone}EnableSaving"]) target = (settings["z${zone}SavePoint"] ?: 60) + tvOffset
+    else if (!isEnergySaverActive() && settings["z${zone}EnableComfort"]) target = (settings["z${zone}ComfortPoint"] ?: 45) + tvOffset
+    else if (settings["z${zone}EnableSaving"]) target = (settings["z${zone}SavePoint"] ?: 60) + tvOffset
     
     def rScore = state["z${zone}RiskScore"] ?: 0
     def dur = state["z${zone}RunStart"] ? "${Math.round((now() - state["z${zone}RunStart"]) / 60000)} mins" : "Idle"
@@ -526,6 +557,9 @@ def calculateZoneState(zone) {
     def fLimit = settings["z${zone}FilterLimit"] ?: 360
     def fCurrent = state["z${zone}FilterRunHours"] ?: 0.0
     def fLife = Math.max(0, Math.round(100 - ((fCurrent / fLimit) * 100)))
+
+    def statusNote = state["z${zone}LogicNote"] ?: "Standby"
+    if (!isHardwareOn && modeRestricted) statusNote = "Mode Restricted"
 
     return [
         currHum: currHum,
@@ -537,7 +571,7 @@ def calculateZoneState(zone) {
         riskLevel: (rScore > 80 ? "DANGER" : rScore > 50 ? "WARNING" : "SAFE"), 
         duration: dur, 
         runCount: state["z${zone}CycleCount"] ?: 0, 
-        status: state["z${zone}LogicNote"] ?: "Standby", 
+        status: statusNote, 
         filterLife: fLife,
         hardwareOn: isHardwareOn,
         isLeaking: isLeaking
@@ -585,17 +619,39 @@ def hubRebootHandler(evt) {
     evaluateZones()
 }
 
+def handleMasterSwitch(evt) {
+    if (evt.value == "off") {
+        logAction("Master Enable Switch turned OFF. App suspended. Halting active dehumidifiers...")
+        for (int i = 1; i <= 8; i++) {
+            if (settings["z${i}Name"] && state["z${i}AppControlled"]) {
+                settings["z${i}Dehum"]?.off()
+                state["z${i}AppControlled"] = false
+                state["z${i}LogicNote"] = "Master Disabled"
+                calculateFinancials(i, true)
+                state["z${i}RunStart"] = now()
+            }
+        }
+    } else {
+        logAction("Master Enable Switch turned ON. Resuming operations.")
+        evaluateZones()
+    }
+}
+
 def initialize() {
     unschedule()
     
     // Subscribe to Hub Reboots to ensure recovery
     subscribe(location, "systemStart", "hubRebootHandler")
+    subscribe(location, "mode", "handleEnvChange")
+    
+    if (appEnableSwitch) subscribe(appEnableSwitch, "switch", "handleMasterSwitch")
     
     for (int i = 1; i <= 8; i++) { 
         if (settings["z${i}Hum"]) subscribe(settings["z${i}Hum"], "humidity", "handleEnvChange") 
         if (settings["z${i}Temp"]) subscribe(settings["z${i}Temp"], "temperature", "handleEnvChange")
         if (settings["z${i}Leak"]) subscribe(settings["z${i}Leak"], "water", "handleEnvChange")
         if (settings["z${i}Thermostat"]) subscribe(settings["z${i}Thermostat"], "thermostatOperatingState", "handleEnvChange")
+        if (settings["z${i}TV"]) subscribe(settings["z${i}TV"], "switch", "handleEnvChange")
     }
     if (outdoorTempSensor) subscribe(outdoorTempSensor, "temperature", "handleEnvChange")
     if (outdoorHumSensor) subscribe(outdoorHumSensor, "humidity", "handleEnvChange")
