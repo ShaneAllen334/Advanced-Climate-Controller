@@ -8,7 +8,7 @@ definition(
     name: "Advanced Mold & Dehumidification Manager",
     namespace: "ShaneAllen",
     author: "ShaneAllen",
-    description: "BMS-grade mold engine featuring Free Dehumidification, Time-of-Use Financials, Window Interlocks, and Advanced Tank Full Diagnostics.",
+    description: "BMS-grade mold engine featuring Free Dehumidification, Time-of-Use Financials, Window Interlocks, Advanced Tank Diagnostics, and ALL original core protections.",
     category: "Safety & Security",
     iconUrl: "",
     iconX2Url: "",
@@ -49,8 +49,15 @@ def mainPage() {
                     else if (zData.windowOpen) { pwrBadge = "<span style='background:#34495e; color:white; padding:2px 5px; border-radius:3px; font-weight:bold; font-size:10px;'>PAUSED (WINDOW)</span>" }
                     else if (zData.tankFull) { pwrBadge = "<span style='background:#e74c3c; color:white; padding:2px 5px; border-radius:3px; font-weight:bold; font-size:10px;'>TANK FULL</span>" }
                     else if (zData.freeDehumOn) { pwrBadge = "<span style='background:#1abc9c; color:white; padding:2px 5px; border-radius:3px; font-weight:bold; font-size:10px;'>ON (FREE DEHUM)</span>" }
-                    else if (zData.hardwareOn) { pwrBadge = "<span style='background:#27ae60; color:white; padding:2px 5px; border-radius:3px; font-weight:bold; font-size:10px;'>ON (ACTIVE)</span>" }
+                    else if (zData.hardwareOn) {
+                        if (zData.status == "Externally Controlled") pwrBadge = "<span style='background:#8e44ad; color:white; padding:2px 5px; border-radius:3px; font-weight:bold; font-size:10px;'>ON (EXTERNAL)</span>"
+                        else if (zData.status.contains("Preemptive")) pwrBadge = "<span style='background:#e67e22; color:white; padding:2px 5px; border-radius:3px; font-weight:bold; font-size:10px;'>ON (PREEMPTIVE)</span>"
+                        else if (zData.status.contains("Compressor")) pwrBadge = "<span style='background:#f39c12; color:white; padding:2px 5px; border-radius:3px; font-weight:bold; font-size:10px;'>ON (PROTECT)</span>"
+                        else pwrBadge = "<span style='background:#27ae60; color:white; padding:2px 5px; border-radius:3px; font-weight:bold; font-size:10px;'>ON (ACTIVE)</span>"
+                    } 
                     else { pwrBadge = "<span style='background:#95a5a6; color:white; padding:2px 5px; border-radius:3px; font-weight:bold; font-size:10px;'>OFF (STANDBY)</span>" }
+                    
+                    def logicDisplay = zData.status == "Externally Controlled" ? "Yielding to external app" : zData.status
                     
                     def envDisplay = "<b>${zData.currHum}% RH</b>"
                     if (zData.currTemp) {
@@ -69,7 +76,7 @@ def mainPage() {
                     }
                     
                     statusText += "<tr style='border-bottom: 1px solid #eee;'>"
-                    statusText += "<td style='padding: 8px;'><b>${settings["z${i}Name"]}</b><br><div style='margin-top:4px; margin-bottom:4px;'>${pwrBadge}</div><small style='color:#555;'>${zData.status}</small>${ashraeFlag}</td>"
+                    statusText += "<td style='padding: 8px;'><b>${settings["z${i}Name"]}</b><br><div style='margin-top:4px; margin-bottom:4px;'>${pwrBadge}</div><small style='color:#555;'>${logicDisplay}</small>${ashraeFlag}</td>"
                     statusText += "<td style='padding: 8px;'>${envDisplay}<br><small style='color:#666;'>Target: ${zData.target}%</small></td>"
                     statusText += "<td style='padding: 8px; color:${riskColor}; font-weight:bold;'>${zData.riskLevel}<br><small>${zData.riskScore}%</small></td>"
                     statusText += "<td style='padding: 8px;'>${zData.duration}<br><small>${filterDisplay}</small>${actionHtml}</td>"
@@ -91,9 +98,13 @@ def mainPage() {
             def isPeak = isTOUPeak()
             def touMode = isPeak ? "<span style='color:#e74c3c;'><b>PEAK TIER</b></span>" : "<span style='color:#27ae60;'><b>OFF-PEAK</b></span>"
             def curRate = isPeak ? (settings.peakRate ?: 0.20) : (settings.offPeakRate ?: 0.10)
+            def winterMode = isWinterShieldActive() ? "<span style='color:blue;'><b>ACTIVE</b></span>" : "Inactive"
+            def houseMode = isWholeHouseAveragingTriggered(globalAvg) ? "<span style='color:red;'><b>TRIGGERED</b></span>" : "Stable"
+            def energyMode = isEnergySaverActive() ? "<span style='color:#8e44ad;'><b>FORCED SAVER</b></span>" : "Standard"
             
             paragraph "<div style='font-size: 12px; background: #f0f4f7; padding: 10px; border-radius: 5px; border: 1px solid #d1d9e1; margin-bottom: 15px;'>" +
-                      "<b>Outdoor Dew Point:</b> ${outDpDisplay} | <b>House Avg Hum:</b> ${globalAvg}%<br><b>Utility Status:</b> ${touMode} (&#36;${curRate}/kWh)</div>"
+                      "<b>Outdoor Dew Point:</b> ${outDpDisplay} | <b>House Avg:</b> ${globalAvg}% | <b>Winter Shield:</b> ${winterMode} | <b>Averaging:</b> ${houseMode}<br>" + 
+                      "<b>Utility Status:</b> ${touMode} (&#36;${curRate}/kWh) | <b>Energy Mode (Switch):</b> ${energyMode}</div>"
                       
             // Event History
             paragraph "<b>Event History (Last 25 Events)</b>"
@@ -102,10 +113,10 @@ def mainPage() {
         }
 
         section("<b>Configuration</b>") {
-            href "zoneConfigPage", title: "1. Zone Detail Configuration", description: "Sensors, Setpoints, Windows, Fans, and Tank Logic."
+            href "zoneConfigPage", title: "1. Zone Detail Configuration", description: "Sensors, Targets, Windows, Fans, Tank Logic, TV Offsets, Rapid Cool."
             href "globalLogicPage", title: "2. Global Advanced Logic", description: "Time-of-Use Financials, Averaging System, Winter Shield."
             href "alertsPage", title: "3. Maintenance & Notifications", description: "Granular Time-Based Alerts, Filter tracking, Tank notifications."
-            input "appEnableSwitch", "capability.switch", title: "Master Enable Switch (Turn off to halt logic)", required: false
+            input "appEnableSwitch", "capability.switch", title: "Master Enable Switch (Turn off to halt logic safely)", required: false
             input "txtEnable", "bool", title: "Enable verbose logging", defaultValue: true
         }
     }
@@ -120,32 +131,59 @@ def zoneConfigPage() {
                     
                     paragraph "<b>Primary Hardware</b>"
                     input "z${i}Hum", "capability.relativeHumidityMeasurement", title: "Humidity Sensor", required: true
-                    input "z${i}Temp", "capability.temperatureMeasurement", title: "Temperature Sensor (For Dew Point & Cooling)", required: true
-                    input "z${i}Dehum", "capability.switch", title: "Dehumidifier Smart Plug", required: true
-                    input "z${i}Thermostat", "capability.thermostat", title: "HVAC Thermostat (To detect active cooling)", required: false
+                    input "z${i}Temp", "capability.temperatureMeasurement", title: "Temperature Sensor", required: true
+                    input "z${i}Dehum", "capability.switch", title: "Dehumidifier(s)", multiple: true, required: true
+                    input "z${i}Watts", "number", title: "Dehumidifier Watts", defaultValue: 500
                     
-                    paragraph "<b>Free Dehumidification & Interlocks</b>"
-                    input "z${i}ExhaustFan", "capability.switch", title: "Exhaust Fan / ERV (Option 1: Free Dehumidification)", required: false, description: "If outside Dew Point is lower than inside, this turns on instead of the compressor."
-                    input "z${i}Window", "capability.contactSensor", title: "Window/Door Interlock (Option 6)", required: false, description: "Pauses dehumidifier if window is open."
-                    
+                    paragraph "<b>Interlocks & Context</b>"
+                    input "z${i}Leak", "capability.waterSensor", title: "Emergency Water Leak Sensors", multiple: true, required: false
+                    input "z${i}Window", "capability.contactSensor", title: "Window/Door Interlock", multiple: true, required: false
+                    input "z${i}TV", "capability.switch", title: "TV / Media Switch (Raises setpoint)", multiple: true, required: false, submitOnChange: true
+                    if (settings["z${i}TV"]) {
+                        input "z${i}TVOffset", "number", title: "↳ TV ON Setpoint Increase (%)", defaultValue: 5
+                    }
+                    input "z${i}Modes", "mode", title: "Allowed Modes (Leave blank for all)", multiple: true, required: false
+                    input "z${i}ExternalCtrl", "bool", title: "Shared App Control (Yield to external apps)", defaultValue: false
+
+                    paragraph "<b>Free Dehumidification & Prediction</b>"
+                    input "z${i}ExhaustFan", "capability.switch", title: "Exhaust Fan / ERV", multiple: true, required: false
+                    input "z${i}EnableRapidCool", "bool", title: "Enable Rapid Cooling Prediction", defaultValue: false, submitOnChange: true
+                    if (settings["z${i}EnableRapidCool"]) {
+                        input "z${i}Thermostat", "capability.thermostat", title: "↳ HVAC Thermostat (To detect active cooling)", required: true
+                        input "z${i}TempDrop", "decimal", title: "↳ Temp Drop Threshold (°F)", defaultValue: 3.0
+                        input "z${i}TempTime", "number", title: "↳ Drop Time Window (Minutes)", defaultValue: 60
+                    }
+
                     paragraph "<b>Tank Full Diagnostics</b>"
                     input "z${i}TankMethod", "enum", title: "Detection Method", options: ["None", "Power Meter", "Humidity Stall"], submitOnChange: true
                     if (settings["z${i}TankMethod"] == "Power Meter") {
-                        input "z${i}Power", "capability.powerMeter", title: "↳ Smart Plug with Power Meter", required: true
+                        input "z${i}Power", "capability.powerMeter", title: "↳ Smart Plug with Power Meter", multiple: true, required: true
                         input "z${i}ActiveWatts", "number", title: "↳ Active Compressor Watts (Threshold)", defaultValue: 100
                     } else if (settings["z${i}TankMethod"] == "Humidity Stall") {
+                        if (!settings["z${i}Thermostat"] && !settings["z${i}EnableRapidCool"]) {
+                            input "z${i}Thermostat", "capability.thermostat", title: "↳ HVAC Thermostat (Needed for HVAC Awareness)", required: true
+                        }
                         input "z${i}StallMins", "number", title: "↳ Stall Time Limit (Mins)", defaultValue: 90
                         input "z${i}StallDrop", "number", title: "↳ Required Drop (%)", defaultValue: 5
                     }
 
                     paragraph "<b>Setpoints & Protections</b>"
-                    input "z${i}Watts", "number", title: "Dehumidifier Watts (For ROI tracking)", defaultValue: 500
-                    input "z${i}Modes", "mode", title: "Allowed Modes (Leave blank for all)", multiple: true, required: false
+                    input "z${i}EnableSaving", "bool", title: "Enable Savings Setpoint", defaultValue: true, submitOnChange: true
+                    if (settings["z${i}EnableSaving"]) {
+                        input "z${i}SavePoint", "number", title: "↳ Savings Setpoint (%)", defaultValue: 60
+                        input "z${i}SaveDB", "number", title: "↳ Savings Deadband (%)", defaultValue: 5
+                    }
+
+                    input "z${i}EnableComfort", "bool", title: "Enable Comfort Setpoint", defaultValue: false, submitOnChange: true
+                    if (settings["z${i}EnableComfort"]) {
+                        input "z${i}ComfortPoint", "number", title: "↳ Comfort Setpoint (%)", defaultValue: 45
+                        input "z${i}ComfortDB", "number", title: "↳ Comfort Deadband (%)", defaultValue: 3
+                    }
                     
-                    input "z${i}SavePoint", "number", title: "Savings Setpoint (Peak Time / Eco) (%)", defaultValue: 60
-                    input "z${i}SaveDB", "number", title: "↳ Savings Deadband (%)", defaultValue: 5
-                    input "z${i}ComfortPoint", "number", title: "Comfort Setpoint (Off-Peak) (%)", defaultValue: 45
-                    input "z${i}ComfortDB", "number", title: "↳ Comfort Deadband (%)", defaultValue: 3
+                    input "z${i}CompProtect", "bool", title: "Enable Compressor Protection (Min Run Time)", defaultValue: true, submitOnChange: true
+                    if (settings["z${i}CompProtect"]) {
+                        input "z${i}MinRun", "number", title: "↳ Minimum Run Time (Minutes)", defaultValue: 15
+                    }
                 }
             }
         }
@@ -156,7 +194,6 @@ def globalLogicPage() {
     dynamicPage(name: "globalLogicPage", title: "Global Advanced Logic") {
         
         section("<b>Time-of-Use Financial Manager (Option 4)</b>") {
-            paragraph "<small>Dynamically shifts targets and tracking costs based on peak utility hours.</small>"
             input "enableTOU", "bool", title: "Enable Time-of-Use logic", defaultValue: false, submitOnChange: true
             if (enableTOU) {
                 input "peakStartTime", "time", title: "Peak Rate Start Time", required: true
@@ -167,16 +204,31 @@ def globalLogicPage() {
             } else {
                 input "offPeakRate", "decimal", title: "Standard Rate (per kWh)", defaultValue: 0.14
             }
+            input "energyModeSwitch", "capability.switch", title: "Energy Saver Override Switch (Force Savings Mode instantly)", required: false
+        }
+        
+        section("<b>Averaging System (Whole-House Mode)</b>") {
+            input "enableAvgSystem", "bool", title: "Enable Averaging System", defaultValue: false, submitOnChange: true
+            if (enableAvgSystem) {
+                input "avgHumThreshold", "number", title: "House Average Humidity Threshold (%)", defaultValue: 65
+                input "avgHumDeadband", "number", title: "Averaging Deadband (%)", defaultValue: 5
+            }
         }
 
         section("<b>Global Tank Full Output</b>") {
-            paragraph "<small>Virtual switch that turns on if ANY mapped zone has a full tank. Great for external Dashboards.</small>"
             input "globalTankSwitch", "capability.switch", title: "Global Tank Full Switch", required: false
         }
         
-        section("<b>Outdoor Weather Data</b>") {
-            input "outdoorTempSensor", "capability.temperatureMeasurement", title: "Outdoor Temperature Sensor (Required for Enthalpy)", required: true
+        section("<b>Outdoor Weather & Winter Shield</b>") {
+            input "outdoorTempSensor", "capability.temperatureMeasurement", title: "Outdoor Temperature Sensor (Required for Enthalpy/Shield)", required: true
             input "outdoorHumSensor", "capability.relativeHumidityMeasurement", title: "Outdoor Humidity Sensor (Required for Enthalpy)", required: true
+            
+            input "enableWinterShield", "bool", title: "Enable Winter Shield", defaultValue: false, submitOnChange: true
+            if (enableWinterShield) {
+                input "winterTempThreshold", "number", title: "Outdoor Cold Threshold (°F)", defaultValue: 35
+                input "winterHumSetpoint", "number", title: "Winter Humidity Limit (%)", defaultValue: 35
+                input "winterShieldDB", "number", title: "Winter Deadband (%)", defaultValue: 3
+            }
         }
     }
 }
@@ -184,13 +236,32 @@ def globalLogicPage() {
 def alertsPage() {
     dynamicPage(name: "alertsPage", title: "Maintenance & Granular Alerts") {
         
-        section("<b>Notification Routing</b>") {
+        section("<b>Notification Routing & Scheduling</b>") {
+            input "leakNotifyDevices", "capability.notification", title: "🚨 Emergency Leak Notification Devices", multiple: true, required: false
             input "tankNotifyDevices", "capability.notification", title: "🚰 Tank Full Notification Devices", multiple: true, required: false
+            input "humNotifyDevices", "capability.notification", title: "💧 Prolonged Humidity Notification Devices", multiple: true, required: false
             input "filterNotifyDevices", "capability.notification", title: "⚙️ Filter Maintenance Notification Devices", multiple: true, required: false
+            
+            input "notifyStartTime", "time", title: "Quiet Window Start (Non-Emergencies)", required: false
+            input "notifyEndTime", "time", title: "Quiet Window End (Non-Emergencies)", required: false
         }
+
+        section("<b>Global House Humidity Alerts</b>") {
+            input "enableGlobalAlert", "bool", title: "Alert on Prolonged High House Average?", defaultValue: false, submitOnChange: true
+            if (enableGlobalAlert) {
+                input "globalAlertThresh", "number", title: "↳ House Average Humidity Threshold (%)", defaultValue: 65
+                input "globalAlertMins", "number", title: "↳ Time Required Above Threshold (Minutes)", defaultValue: 120
+            }
+        }
+        
         for (int i = 1; i <= 8; i++) {
             if (settings["z${i}Name"]) {
-                section("<b>Zone ${i}: ${settings["z${i}Name"]} Limits</b>") {
+                section("<b>Zone ${i}: ${settings["z${i}Name"]} Alerts & Limits</b>") {
+                    input "z${i}EnableAlert", "bool", title: "Enable Room-Specific Humidity Alert?", defaultValue: false, submitOnChange: true
+                    if (settings["z${i}EnableAlert"]) {
+                        input "z${i}AlertThresh", "number", title: "↳ Alert Threshold (%)", defaultValue: 70
+                        input "z${i}AlertMins", "number", title: "↳ Time Required Above Threshold (Minutes)", defaultValue: 60
+                    }
                     input "z${i}FilterLimit", "number", title: "Filter Run-Time Limit (Hours)", defaultValue: 360
                     input "btnResetFilter_${i}", "button", title: "🔄 Reset Filter Counter"
                 }
@@ -246,6 +317,26 @@ def isTOUPeak() {
     return timeOfDayIsBetween(settings.peakStartTime, settings.peakEndTime, new Date(), location.timeZone)
 }
 
+def isEnergySaverActive() {
+    return (energyModeSwitch && energyModeSwitch.currentValue("switch") == "on")
+}
+
+def isWinterShieldActive() {
+    if (!enableWinterShield || !outdoorTempSensor) return false
+    def outT = outdoorTempSensor.currentValue("temperature")
+    return (outT != null && outT <= winterTempThreshold)
+}
+
+def isWholeHouseAveragingTriggered(currentAvg) {
+    if (!enableAvgSystem) return false
+    def wasTriggered = (state.averagingActive == true)
+    def threshold = avgHumThreshold ?: 65
+    def db = avgHumDeadband ?: 5
+    if (currentAvg >= threshold) return true
+    if (wasTriggered && currentAvg > (threshold - db)) return true
+    return false
+}
+
 def resetTankFullFlag(i, reason) {
     state["z${i}TankFull"] = false
     state["z${i}StallBaseRH"] = null
@@ -258,37 +349,115 @@ def resetTankFullFlag(i, reason) {
 def evaluateZones() {
     if (appEnableSwitch && appEnableSwitch.currentValue("switch") == "off") return
 
+    def globalAvg = getHouseAverageHum()
+    def avgTrigger = isWholeHouseAveragingTriggered(globalAvg)
+    state.averagingActive = avgTrigger
+    def winterActive = isWinterShieldActive()
+    def saverActive = isEnergySaverActive()
+    
     def isPeak = isTOUPeak()
     def outT = outdoorTempSensor?.currentValue("temperature")
     def outH = outdoorHumSensor?.currentValue("humidity")
     def outDP = calculateDewPoint(outT, outH)
     def anyTankFull = false
+    
+    // --- Global Humidity Alerts ---
+    if (settings.enableGlobalAlert) {
+        def thresh = settings.globalAlertThresh ?: 65
+        def reqMins = settings.globalAlertMins ?: 120
+        if (globalAvg >= thresh) {
+            if (!state.globalHumAlertStart) state.globalHumAlertStart = now()
+            else if (now() - state.globalHumAlertStart >= (reqMins * 60000) && !state.globalHumAlertNotified) {
+                sendNotification("ENVIRONMENT ALERT: House Average Humidity has been at or above ${thresh}% for over ${reqMins} minutes.", "humidity")
+                state.globalHumAlertNotified = true
+            }
+        } else {
+            state.globalHumAlertStart = null
+            state.globalHumAlertNotified = false
+        }
+    }
 
     for (int i = 1; i <= 8; i++) {
         if (!settings["z${i}Name"]) continue
         
+        // Multi-Device Array Safeties
         def h = settings["z${i}Hum"]?.currentValue("humidity")
         def t = settings["z${i}Temp"]?.currentValue("temperature")
-        def dehum = settings["z${i}Dehum"]
-        def isHardwareOn = dehum.currentValue("switch") == "on"
         
-        def inDP = calculateDewPoint(t, h)
+        def dehum = settings["z${i}Dehum"]
+        def isHardwareOn = dehum ? dehum.any { it.currentValue("switch") == "on" } : false
+        
+        def exFan = settings["z${i}ExhaustFan"]
+        def isFanOn = exFan ? exFan.any { it.currentValue("switch") == "on" } : false
+        
+        def leakSensors = settings["z${i}Leak"]
+        def isLeaking = leakSensors ? leakSensors.any { it.currentValue("water") == "wet" } : false
+        
+        def windows = settings["z${i}Window"]
+        def windowOpen = windows ? windows.any { it.currentValue("contact") == "open" } : false
+        
+        def tvs = settings["z${i}TV"]
+        def isTvOn = tvs ? tvs.any { it.currentValue("switch") == "on" } : false
+        
         def isCooling = settings["z${i}Thermostat"]?.currentValue("thermostatOperatingState")?.toLowerCase()?.contains("cool") ?: false
-        def windowOpen = settings["z${i}Window"]?.currentValue("contact") == "open"
+        def inDP = calculateDewPoint(t, h)
+        def isAppControlled = state["z${i}AppControlled"] ?: false
+        def isShared = settings["z${i}ExternalCtrl"]
         
         // Mode Check
         def allowedModes = settings["z${i}Modes"]
         def modeRestricted = allowedModes ? !allowedModes.contains(location.mode) : false
 
+        // --- Zone Specific Humidity Alerts ---
+        if (settings["z${i}EnableAlert"] && h != null) {
+            def zThresh = settings["z${i}AlertThresh"] ?: 70
+            def zReqMins = settings["z${i}AlertMins"] ?: 60
+            if (h >= zThresh) {
+                if (!state["z${i}HumAlertStart"]) state["z${i}HumAlertStart"] = now()
+                else if (now() - state["z${i}HumAlertStart"] >= (zReqMins * 60000) && !state["z${i}HumAlertNotified"]) {
+                    sendNotification("ENVIRONMENT ALERT: ${settings["z${i}Name"]} humidity has been at or above ${zThresh}% for over ${zReqMins} minutes.", "humidity")
+                    state["z${i}HumAlertNotified"] = true
+                }
+            } else {
+                state["z${i}HumAlertStart"] = null
+                state["z${i}HumAlertNotified"] = false
+            }
+        }
+
+        // --- Shared App Control Override ---
+        if (isHardwareOn && !isAppControlled && isShared && !isLeaking) {
+            if (state["z${i}LogicNote"] != "Externally Controlled") logAction("ZONE ${i}: Dehumidifier is ON. Triggered by external app. Suspending local overrides.")
+            state["z${i}LogicNote"] = "Externally Controlled"
+            calculateFinancials(i, true)
+            state["z${i}RunStart"] = now()
+            continue
+        }
+
         // 1. ASHRAE Tracking
         if (h > 70) state["z${i}RiskScore"] = Math.min(100, (state["z${i}RiskScore"] ?: 0) + 2)
         else if (h < 50) state["z${i}RiskScore"] = Math.max(0, (state["z${i}RiskScore"] ?: 0) - 5)
 
-        // 2. TANK FULL DIAGNOSTICS
+        // 2. Rapid Cooling Calculation
+        def rapidCoolTrigger = false
+        if (settings["z${i}EnableRapidCool"] && t != null) {
+            def maxT = state["z${i}MaxTemp"]
+            def maxTTime = state["z${i}MaxTempTime"]
+            def windowMs = (settings["z${i}TempTime"] ?: 60) * 60000
+            def dropThresh = settings["z${i}TempDrop"] ?: 3.0
+            
+            if (maxT == null || maxTTime == null || (now() - maxTTime) > windowMs || t > maxT) {
+                state["z${i}MaxTemp"] = t
+                state["z${i}MaxTempTime"] = now()
+                maxT = t
+            }
+            if ((maxT - t) >= dropThresh && !isCooling) rapidCoolTrigger = true 
+        }
+
+        // 3. TANK FULL DIAGNOSTICS
         def method = settings["z${i}TankMethod"]
-        
         if (method == "Power Meter" && isHardwareOn) {
-            def watts = settings["z${i}Power"]?.currentValue("power") ?: 0
+            def powerMeters = settings["z${i}Power"]
+            def watts = powerMeters ? powerMeters.sum { it.currentValue("power") ?: 0 } : 0
             def threshold = settings["z${i}ActiveWatts"] ?: 100
             
             if (watts < threshold) {
@@ -323,11 +492,10 @@ def evaluateZones() {
                  state["z${i}StallStart"] = null
             }
             
-            // Auto-Reset Logic (Mold Guardian Method)
+            // Auto-Reset Logic
             if (state["z${i}TankFull"]) {
                 def maxRH = state["z${i}TankMaxRH"] ?: h
                 if (h > maxRH) state["z${i}TankMaxRH"] = h // Track the spike
-                // If it drops 3% from the spike AND the AC is off, the dehumidifier is working again!
                 else if (h <= (maxRH - 3) && !isCooling) {
                     resetTankFullFlag(i, "Humidity Drop (AC Off) - Auto Clear")
                 }
@@ -336,87 +504,143 @@ def evaluateZones() {
         
         if (state["z${i}TankFull"]) {
             anyTankFull = true
-            if (!state["z${i}TankNotified"] && settings.tankNotifyDevices) {
-                settings.tankNotifyDevices.each { it.deviceNotification("🚰 TANK FULL: Zone ${i} (${settings["z${i}Name"]}) requires emptying.") }
+            if (!state["z${i}TankNotified"]) {
+                sendNotification("🚰 TANK FULL: Zone ${i} (${settings["z${i}Name"]}) requires emptying.", "tank")
                 state["z${i}TankNotified"] = true
             }
         }
-
-        // 3. DETERMINE TARGETS (Time-Of-Use Logic)
-        def forceSave = settings.enableTOU && isPeak && settings.forceSaveOnPeak
-        def useSaving = forceSave || settings["z${i}EnableSaving"]
-        def target = forceSave ? (settings["z${i}SavePoint"] ?: 60) : (settings["z${i}ComfortPoint"] ?: 45)
-        def db = forceSave ? (settings["z${i}SaveDB"] ?: 5) : (settings["z${i}ComfortDB"] ?: 3)
 
         // 4. LOGIC CASCADE
         def shouldRun = false
         def reason = "All targets met."
         def useFreeDehum = false
         
-        if (windowOpen) {
-            shouldRun = false
-            reason = "Window/Door Open."
-        } else if (state["z${i}TankFull"]) {
-            // Force Smart Plug to stay ON so it can detect when the tank is emptied (power draw returns)
-            shouldRun = true 
-            reason = "TANK FULL (Idling pending empty)."
-        } else if (modeRestricted) {
-            shouldRun = false
-            reason = "Location Mode Restricted."
+        if (isLeaking) {
+            shouldRun = true
+            reason = "EMERGENCY: Water Leak Detected."
+            if (!state["z${i}LeakNotified"]) {
+                sendNotification("CRITICAL ALERT: Water leak detected in Zone ${i} (${settings["z${i}Name"]}). Dehumidifier forced ON.", "leak")
+                state["z${i}LeakNotified"] = true
+            }
         } else {
-            if (h >= target) { 
-                shouldRun = true; 
-                reason = "Target limit (${target}%) exceeded." 
-            }
-            else if (isHardwareOn && h > (target - db)) { 
-                shouldRun = true; 
-                reason = "Maintaining Deadband." 
-            }
+            state["z${i}LeakNotified"] = false
             
-            // ENTHALPY / FREE DEHUMIDIFICATION CHECK (Option 1)
-            if (shouldRun && settings["z${i}ExhaustFan"] && outDP != null && inDP != null) {
-                if (outDP <= (inDP - 2.0)) { 
-                    useFreeDehum = true
-                    reason += " (Free Dehum via Enthalpy: Out DP ${outDP}° < In DP ${inDP}°)"
+            if (windowOpen) {
+                shouldRun = false
+                reason = "Window/Door Open."
+            } else if (state["z${i}TankFull"]) {
+                shouldRun = true // Keeps smart plug on for auto-reset detection
+                reason = "TANK FULL (Idling pending empty)."
+            } else if (modeRestricted) {
+                shouldRun = false
+                reason = "Location Mode Restricted."
+            } else {
+                
+                // Targets
+                if (rapidCoolTrigger) {
+                    shouldRun = true
+                    reason = "Preemptive: Rapid temp drop detected."
+                }
+                else if (!shouldRun && winterActive) {
+                    def wPoint = winterHumSetpoint ?: 35
+                    def wDB = winterShieldDB ?: 3
+                    if (h >= wPoint) { shouldRun = true; reason = "Winter Window Shield Active (${wPoint}% goal)." }
+                    else if (isHardwareOn && h > (wPoint - wDB)) { shouldRun = true; reason = "Maintaining Winter Shield Deadband." }
+                }
+                else if (!shouldRun && avgTrigger) {
+                    shouldRun = true
+                    reason = "Averaging System Triggered (House Avg: ${globalAvg}%)."
+                }
+                else if (!shouldRun) {
+                    def tvOffset = isTvOn ? (settings["z${i}TVOffset"] ?: 5) : 0
+                    def forceSave = saverActive || (settings.enableTOU && isPeak && settings.forceSaveOnPeak)
+                    def useComfort = !forceSave && settings["z${i}EnableComfort"]
+                    def useSaving = settings["z${i}EnableSaving"] || forceSave
+                    
+                    if (useComfort) {
+                        def cp = (settings["z${i}ComfortPoint"] ?: 45) + tvOffset
+                        def cdb = settings["z${i}ComfortDB"] ?: 3
+                        if (h >= cp) { shouldRun = true; reason = "Comfort limit (${cp}%) exceeded" + (isTvOn ? " (TV Active)." : ".") }
+                        else if (isHardwareOn && h > (cp - cdb)) { shouldRun = true; reason = "Comfort deadband." }
+                    } 
+                    else if (useSaving) {
+                        def sp = (settings["z${i}SavePoint"] ?: 60) + tvOffset
+                        def sdb = settings["z${i}SaveDB"] ?: 5
+                        if (h >= sp) { shouldRun = true; reason = "Savings limit (${sp}%) exceeded" + (isTvOn ? " (TV Active)." : ".") }
+                        else if (isHardwareOn && h > (sp - sdb)) { shouldRun = true; reason = "Savings deadband." }
+                    }
+                }
+                
+                // ENTHALPY / FREE DEHUMIDIFICATION CHECK
+                if (shouldRun && exFan && outDP != null && inDP != null) {
+                    if (outDP <= (inDP - 2.0)) { 
+                        useFreeDehum = true
+                        reason += " (Free Dehum via Enthalpy: Out DP ${outDP}° < In DP ${inDP}°)"
+                    }
                 }
             }
         }
 
-        // 5. EXECUTION
-        def exFan = settings["z${i}ExhaustFan"]
-        
+        // --- COMPRESSOR PROTECTION (Minimum Run Time) ---
+        if (!shouldRun && isHardwareOn && isAppControlled && settings["z${i}CompProtect"] && !isLeaking && !windowOpen) {
+            def minRunMs = (settings["z${i}MinRun"] ?: 15) * 60000
+            def runTimeMs = state["z${i}RunStart"] ? (now() - state["z${i}RunStart"]) : 0
+            if (runTimeMs < minRunMs) {
+                shouldRun = true
+                useFreeDehum = false // Force compressor to finish its cycle
+                def minsRemaining = Math.round((minRunMs - runTimeMs) / 60000.0)
+                reason = "Compressor Protection: Forcing completion (${minsRemaining}m remaining)."
+            }
+        }
+
+        // 5. EXECUTION & ROI
         if (shouldRun) {
             if (state["z${i}TankFull"]) {
-                // If tank is full, just leave plug ON but don't run fans
-                if (!isHardwareOn) dehum.on() 
-                if (exFan && exFan.currentValue("switch") == "on") exFan.off()
+                // Keep power to plug, but it's not actually running
+                if (!isHardwareOn) dehum?.each { it.on() }
+                if (isFanOn) exFan?.each { it.off() }
                 state["z${i}LogicNote"] = "Tank Full (Waiting)"
                 state["z${i}FreeDehumOn"] = false
             } else if (useFreeDehum) {
-                if (isHardwareOn) dehum.off()
-                if (exFan && exFan.currentValue("switch") == "off") exFan.on()
+                if (isHardwareOn) dehum?.each { it.off() }
+                if (!isFanOn) exFan?.each { it.on() }
                 state["z${i}LogicNote"] = "Free Dehum Active"
                 state["z${i}FreeDehumOn"] = true
+                state["z${i}AppControlled"] = true
             } else {
-                if (!isHardwareOn) dehum.on()
-                if (exFan && exFan.currentValue("switch") == "on") exFan.off()
-                state["z${i}LogicNote"] = "Compressor Active: ${reason}"
+                if (!isHardwareOn) dehum?.each { it.on() }
+                if (isFanOn) exFan?.each { it.off() }
+                state["z${i}LogicNote"] = "Active: ${reason}"
                 state["z${i}FreeDehumOn"] = false
+                state["z${i}AppControlled"] = true
             }
             
             if (!state["z${i}RunStart"]) state["z${i}RunStart"] = now()
             calculateFinancials(i, true)
         } else {
-            if (isHardwareOn) {
-                dehum.off()
-                if (exFan) exFan.off()
-                state["z${i}LogicNote"] = "Idle"
-                state["z${i}FreeDehumOn"] = false
-                calculateFinancials(i, true)
-                state["z${i}RunStart"] = now() // Reset timer for standby duration
+            if (isHardwareOn || isFanOn) {
+                if (isAppControlled || (!isShared && !isLeaking)) {
+                    if (isHardwareOn) dehum?.each { it.off() }
+                    if (isFanOn) exFan?.each { it.off() }
+                    state["z${i}AppControlled"] = false
+                    calculateFinancials(i, true)
+                    state["z${i}RunStart"] = now()
+                    state["z${i}LogicNote"] = "Idle"
+                    state["z${i}FreeDehumOn"] = false
+                }
             } else {
                 calculateFinancials(i, false)
+                state["z${i}RunStart"] = now()
+                state["z${i}LogicNote"] = "Idle"
             }
+        }
+        
+        // 6. Filter Evaluation
+        def runLimit = settings["z${i}FilterLimit"] ?: 360
+        def currentHours = state["z${i}FilterRunHours"] ?: 0.0
+        if (currentHours >= runLimit && !state["z${i}FilterNotified"]) {
+            sendNotification("Maintenance Alert: Zone ${i} (${settings["z${i}Name"]}) requires filter cleaning.", "filter")
+            state["z${i}FilterNotified"] = true
         }
     }
     
@@ -435,12 +659,9 @@ def calculateFinancials(zone, isEndingCycle) {
     // TOU Support
     def isPeak = isTOUPeak()
     def rate = isPeak ? (settings.peakRate ?: 0.20) : (settings.offPeakRate ?: 0.10)
-    
-    // If Free Dehumidification is running, override watts to roughly 30W (exhaust fan)
     def actualWatts = state["z${zone}FreeDehumOn"] ? 30.0 : watts
     def amt = (actualWatts / 1000.0) * durationHours * rate
     
-    // Only track spend if compressor or fan was actually running (not if tank was full & idling)
     if (isEndingCycle && !state["z${zone}TankFull"]) {
         state["z${zone}TotalSpend"] = (state["z${zone}TotalSpend"] ?: 0.0) + amt
         state["z${zone}FilterRunHours"] = (state["z${zone}FilterRunHours"] ?: 0.0) + durationHours
@@ -452,19 +673,40 @@ def calculateFinancials(zone, isEndingCycle) {
 def calculateZoneState(zone) {
     def currHum = settings["z${zone}Hum"]?.currentValue("humidity") ?: 0
     def currTemp = settings["z${zone}Temp"]?.currentValue("temperature")
+    
     def dehum = settings["z${zone}Dehum"]
-    def isHardwareOn = dehum ? dehum.currentValue("switch") == "on" : false
+    def isHardwareOn = dehum ? dehum.any { it.currentValue("switch") == "on" } : false
+    
+    def leakSensors = settings["z${zone}Leak"]
+    def isLeaking = leakSensors ? leakSensors.any { it.currentValue("water") == "wet" } : false
+    
+    def windows = settings["z${zone}Window"]
+    def windowOpen = windows ? windows.any { it.currentValue("contact") == "open" } : false
+    
+    def tvs = settings["z${zone}TV"]
+    def isTvOn = tvs ? tvs.any { it.currentValue("switch") == "on" } : false
     
     def inDP = calculateDewPoint(currTemp, currHum)
-    def outDP = calculateDewPoint(outdoorTempSensor?.currentValue("temperature"), outdoorHumSensor?.currentValue("humidity"))
     
-    def target = (settings.enableTOU && isTOUPeak() && settings.forceSaveOnPeak) ? (settings["z${zone}SavePoint"] ?: 60) : (settings["z${zone}ComfortPoint"] ?: 45)
-
+    def tvOffset = isTvOn ? (settings["z${zone}TVOffset"] ?: 5) : 0
+    def forceSave = isEnergySaverActive() || (settings.enableTOU && isTOUPeak() && settings.forceSaveOnPeak)
+    
+    def target = 100
+    if (isWinterShieldActive()) target = winterHumSetpoint ?: 35
+    else if (forceSave || settings["z${zone}EnableSaving"]) target = (settings["z${zone}SavePoint"] ?: 60) + tvOffset
+    else if (settings["z${zone}EnableComfort"]) target = (settings["z${zone}ComfortPoint"] ?: 45) + tvOffset
+    
     def rScore = state["z${zone}RiskScore"] ?: 0
     def dur = state["z${zone}RunStart"] ? "${Math.round((now() - state["z${zone}RunStart"]) / 60000)} mins" : "Idle"
+    
     def fLimit = settings["z${zone}FilterLimit"] ?: 360
     def fCurrent = state["z${zone}FilterRunHours"] ?: 0.0
     
+    def allowedModes = settings["z${zone}Modes"]
+    def modeRestricted = allowedModes ? !allowedModes.contains(location.mode) : false
+    def statusNote = state["z${zone}LogicNote"] ?: "Standby"
+    if (!isHardwareOn && modeRestricted) statusNote = "Mode Restricted"
+
     return [
         currHum: currHum,
         currTemp: currTemp,
@@ -474,13 +716,32 @@ def calculateZoneState(zone) {
         riskScore: rScore, 
         riskLevel: (rScore > 80 ? "DANGER" : rScore > 50 ? "WARNING" : "SAFE"), 
         duration: dur, 
-        status: state["z${zone}LogicNote"] ?: "Standby", 
+        status: statusNote, 
         filterLife: Math.max(0, Math.round(100 - ((fCurrent / fLimit) * 100))),
         hardwareOn: isHardwareOn,
         freeDehumOn: state["z${zone}FreeDehumOn"] ?: false,
         tankFull: state["z${zone}TankFull"] ?: false,
-        windowOpen: settings["z${zone}Window"]?.currentValue("contact") == "open"
+        windowOpen: windowOpen,
+        isLeaking: isLeaking
     ]
+}
+
+def sendNotification(msg, type = "general") {
+    def shouldSend = true
+    if (type != "leak" && settings.notifyStartTime && settings.notifyEndTime) {
+        shouldSend = timeOfDayIsBetween(settings.notifyStartTime, settings.notifyEndTime, new Date(), location.timeZone)
+    }
+
+    if (shouldSend) {
+        def devices = []
+        if (type == "leak") devices = settings.leakNotifyDevices
+        else if (type == "tank") devices = settings.tankNotifyDevices
+        else if (type == "humidity") devices = settings.humNotifyDevices
+        else if (type == "filter") devices = settings.filterNotifyDevices
+        
+        if (devices) devices.each { it.deviceNotification(msg) }
+    }
+    logAction(msg)
 }
 
 def logAction(msg) {
@@ -491,27 +752,56 @@ def logAction(msg) {
 }
 
 def getRiskColor(score) { return score > 80 ? "#cc0000" : score > 50 ? "#e67e22" : "#27ae60" }
+
 def installed() { initialize() }
 def updated() { initialize() }
+
+def hubRebootHandler(evt) {
+    logAction("SYSTEM ALERT: Hub reboot detected. Re-initializing.")
+    initialize()
+    evaluateZones()
+}
+
+def handleMasterSwitch(evt) {
+    if (evt.value == "off") {
+        logAction("Master Enable Switch turned OFF. App suspended. Halting active dehumidifiers...")
+        for (int i = 1; i <= 8; i++) {
+            if (settings["z${i}Name"] && state["z${i}AppControlled"]) {
+                settings["z${i}Dehum"]?.each { it.off() }
+                settings["z${i}ExhaustFan"]?.each { it.off() }
+                state["z${i}AppControlled"] = false
+                state["z${i}LogicNote"] = "Master Disabled"
+                calculateFinancials(i, true)
+                state["z${i}RunStart"] = now()
+            }
+        }
+    } else {
+        logAction("Master Enable Switch turned ON. Resuming operations.")
+        evaluateZones()
+    }
+}
 
 def initialize() {
     unschedule()
     subscribe(location, "systemStart", "hubRebootHandler")
     subscribe(location, "mode", "handleEnvChange")
-    if (appEnableSwitch) subscribe(appEnableSwitch, "switch", "handleEnvChange")
+    
+    if (appEnableSwitch) subscribe(appEnableSwitch, "switch", "handleMasterSwitch")
     
     for (int i = 1; i <= 8; i++) { 
         if (settings["z${i}Hum"]) subscribe(settings["z${i}Hum"], "humidity", "handleEnvChange") 
         if (settings["z${i}Temp"]) subscribe(settings["z${i}Temp"], "temperature", "handleEnvChange")
+        if (settings["z${i}Leak"]) subscribe(settings["z${i}Leak"], "water", "handleEnvChange")
         if (settings["z${i}Thermostat"]) subscribe(settings["z${i}Thermostat"], "thermostatOperatingState", "handleEnvChange")
+        if (settings["z${i}TV"]) subscribe(settings["z${i}TV"], "switch", "handleEnvChange")
         if (settings["z${i}Window"]) subscribe(settings["z${i}Window"], "contact", "handleEnvChange")
         if (settings["z${i}Power"]) subscribe(settings["z${i}Power"], "power", "handleEnvChange")
     }
     if (outdoorTempSensor) subscribe(outdoorTempSensor, "temperature", "handleEnvChange")
     if (outdoorHumSensor) subscribe(outdoorHumSensor, "humidity", "handleEnvChange")
+    if (energyModeSwitch) subscribe(energyModeSwitch, "switch", "handleEnvChange")
     
     runEvery5Minutes("evaluateZones")
 }
 
 def handleEnvChange(evt) { evaluateZones() }
-def hubRebootHandler(evt) { logAction("SYSTEM ALERT: Hub reboot detected."); initialize(); evaluateZones() }
