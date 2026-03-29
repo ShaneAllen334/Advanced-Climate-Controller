@@ -8,7 +8,7 @@ definition(
     name: "Advanced Mold & Dehumidification Manager",
     namespace: "ShaneAllen",
     author: "ShaneAllen",
-    description: "BMS-grade mold engine featuring Free Dehumidification, Time-of-Use Financials, Window Interlocks, Advanced Tank Diagnostics, and ALL original core protections.",
+    description: "BMS-grade mold engine featuring Free Dehumidification, 7-Day Rolling Financials, Window Interlocks, Advanced Tank Diagnostics, and ALL original core protections.",
     category: "Safety & Security",
     iconUrl: "",
     iconX2Url: "",
@@ -37,8 +37,6 @@ def mainPage() {
                     hasZones = true
                     def zData = calculateZoneState(i)
                     def riskColor = getRiskColor(zData.riskScore)
-                    def spend = state["z${i}TotalSpend"] ?: 0.0
-                    def save = state["z${i}TotalSave"] ?: 0.0
                     
                     def filterDisplay = zData.filterLife <= 5 ? "<span style='color:red; font-weight:bold;'>Filter: ${zData.filterLife}%</span>" : "<span style='color:#555;'>Filter: ${zData.filterLife}%</span>"
                     def ashraeFlag = zData.riskScore > 50 ? "<div style='margin-top:4px;'><span style='background:#c0392b; color:white; padding:2px 5px; border-radius:3px; font-weight:bold; font-size:10px;'>⚠️ ASHRAE WARNING</span></div>" : ""
@@ -80,7 +78,7 @@ def mainPage() {
                     statusText += "<td style='padding: 8px;'>${envDisplay}<br><small style='color:#666;'>Target: ${zData.target}%</small></td>"
                     statusText += "<td style='padding: 8px; color:${riskColor}; font-weight:bold;'>${zData.riskLevel}<br><small>${zData.riskScore}%</small></td>"
                     statusText += "<td style='padding: 8px;'>${zData.duration}<br><small>${filterDisplay}</small>${actionHtml}</td>"
-                    statusText += "<td style='padding: 8px;'><span style='color:red;'>Spend: &#36;${String.format("%.2f", spend)}</span><br><span style='color:green;'>Saved: &#36;${String.format("%.2f", save)}</span></td>"
+                    statusText += "<td style='padding: 8px;'><span style='color:red;'>7D Spend: &#36;${String.format("%.2f", zData.spend7d)}</span><br><span style='color:green;'>7D Saved: &#36;${String.format("%.2f", zData.save7d)}</span></td>"
                     statusText += "</tr>"
                 }
             }
@@ -337,6 +335,13 @@ def isWholeHouseAveragingTriggered(currentAvg) {
     return false
 }
 
+def safeSum(list) {
+    if (!list) return 0.0
+    def total = 0.0
+    list.each { total += (it ?: 0.0) }
+    return total
+}
+
 def resetTankFullFlag(i, reason) {
     state["z${i}TankFull"] = false
     state["z${i}StallBaseRH"] = null
@@ -344,6 +349,37 @@ def resetTankFullFlag(i, reason) {
     state["z${i}TankNotified"] = false
     logAction("ZONE ${i}: Tank Full flag CLEARED. Reason: ${reason}")
     evaluateZones()
+}
+
+// System Cron Job - Triggers exactly at Midnight
+def midnightHandler() {
+    logAction("SYSTEM: Executing daily midnight rollover for runtimes and 7-day financials.")
+    
+    for (int i = 1; i <= 8; i++) {
+        if (!settings["z${i}Name"]) continue
+
+        // 1. Force a math calculation right up to 11:59:59 PM to close out "Today"
+        def dehum = settings["z${i}Dehum"]
+        def isHardwareOn = dehum ? dehum.any { it.currentValue("switch") == "on" } : false
+        calculateFinancials(i, isHardwareOn)
+
+        // 2. Rollover Runtime
+        state["z${i}YesterdayRunMs"] = state["z${i}DailyRunMs"] ?: 0
+        state["z${i}DailyRunMs"] = 0
+
+        // 3. Rollover Financials (7-Day Rolling Array)
+        def spendHist = state["z${i}SpendHist"] ?: []
+        spendHist.add(0, state["z${i}SpendToday"] ?: 0.0)
+        if (spendHist.size() > 6) spendHist = spendHist.take(6) // 6 past days + today's live tally = 7 Days
+        state["z${i}SpendHist"] = spendHist
+        state["z${i}SpendToday"] = 0.0
+
+        def saveHist = state["z${i}SaveHist"] ?: []
+        saveHist.add(0, state["z${i}SaveToday"] ?: 0.0)
+        if (saveHist.size() > 6) saveHist = saveHist.take(6)
+        state["z${i}SaveHist"] = saveHist
+        state["z${i}SaveToday"] = 0.0
+    }
 }
 
 def evaluateZones() {
@@ -429,7 +465,7 @@ def evaluateZones() {
             if (state["z${i}LogicNote"] != "Externally Controlled") logAction("ZONE ${i}: Dehumidifier is ON. Triggered by external app. Suspending local overrides.")
             state["z${i}LogicNote"] = "Externally Controlled"
             calculateFinancials(i, true)
-            state["z${i}RunStart"] = now()
+            if (!state["z${i}CycleStart"]) state["z${i}CycleStart"] = now()
             continue
         }
 
@@ -584,7 +620,7 @@ def evaluateZones() {
         // --- COMPRESSOR PROTECTION (Minimum Run Time) ---
         if (!shouldRun && isHardwareOn && isAppControlled && settings["z${i}CompProtect"] && !isLeaking && !windowOpen) {
             def minRunMs = (settings["z${i}MinRun"] ?: 15) * 60000
-            def runTimeMs = state["z${i}RunStart"] ? (now() - state["z${i}RunStart"]) : 0
+            def runTimeMs = state["z${i}CycleStart"] ? (now() - state["z${i}CycleStart"]) : 0
             if (runTimeMs < minRunMs) {
                 shouldRun = true
                 useFreeDehum = false // Force compressor to finish its cycle
@@ -596,7 +632,6 @@ def evaluateZones() {
         // 5. EXECUTION & ROI
         if (shouldRun) {
             if (state["z${i}TankFull"]) {
-                // Keep power to plug, but it's not actually running
                 if (!isHardwareOn) dehum?.each { it.on() }
                 if (isFanOn) exFan?.each { it.off() }
                 state["z${i}LogicNote"] = "Tank Full (Waiting)"
@@ -615,7 +650,7 @@ def evaluateZones() {
                 state["z${i}AppControlled"] = true
             }
             
-            if (!state["z${i}RunStart"]) state["z${i}RunStart"] = now()
+            if (!state["z${i}CycleStart"]) state["z${i}CycleStart"] = now()
             calculateFinancials(i, true)
         } else {
             if (isHardwareOn || isFanOn) {
@@ -624,13 +659,12 @@ def evaluateZones() {
                     if (isFanOn) exFan?.each { it.off() }
                     state["z${i}AppControlled"] = false
                     calculateFinancials(i, true)
-                    state["z${i}RunStart"] = now()
+                    state["z${i}CycleStart"] = null // Reset active visual cycle duration
                     state["z${i}LogicNote"] = "Idle"
                     state["z${i}FreeDehumOn"] = false
                 }
             } else {
                 calculateFinancials(i, false)
-                state["z${i}RunStart"] = now()
                 state["z${i}LogicNote"] = "Idle"
             }
         }
@@ -651,23 +685,34 @@ def evaluateZones() {
     }
 }
 
-def calculateFinancials(zone, isEndingCycle) {
-    if (!state["z${zone}RunStart"]) return
-    def durationHours = (now() - state["z${zone}RunStart"]) / 3600000.0
+// Fixed Financial Engine - Tracks exactly since last evaluation, preventing exponential bugs
+def calculateFinancials(zone, isCompressorOn) {
+    if (!state["z${zone}LastMathCalc"]) {
+        state["z${zone}LastMathCalc"] = now()
+        return
+    }
+    
+    def durationMs = now() - state["z${zone}LastMathCalc"]
+    if (durationMs < 1000) return // Avoid micro-calculations
+    
+    def durationHours = durationMs / 3600000.0
     def watts = settings["z${zone}Watts"] ?: 500
     
-    // TOU Support
     def isPeak = isTOUPeak()
     def rate = isPeak ? (settings.peakRate ?: 0.20) : (settings.offPeakRate ?: 0.10)
     def actualWatts = state["z${zone}FreeDehumOn"] ? 30.0 : watts
     def amt = (actualWatts / 1000.0) * durationHours * rate
     
-    if (isEndingCycle && !state["z${zone}TankFull"]) {
-        state["z${zone}TotalSpend"] = (state["z${zone}TotalSpend"] ?: 0.0) + amt
+    if (isCompressorOn && !state["z${zone}TankFull"]) {
+        state["z${zone}SpendToday"] = (state["z${zone}SpendToday"] ?: 0.0) + amt
+        state["z${zone}DailyRunMs"] = (state["z${zone}DailyRunMs"] ?: 0) + durationMs
         state["z${zone}FilterRunHours"] = (state["z${zone}FilterRunHours"] ?: 0.0) + durationHours
-    } else if (!isEndingCycle) {
-        state["z${zone}TotalSave"] = (state["z${zone}TotalSave"] ?: 0.0) + amt
+    } else if (!isCompressorOn) {
+        state["z${zone}SaveToday"] = (state["z${zone}SaveToday"] ?: 0.0) + amt
     }
+    
+    // Reset math tracker for the next 5-minute schedule block
+    state["z${zone}LastMathCalc"] = now()
 }
 
 def calculateZoneState(zone) {
@@ -697,7 +742,25 @@ def calculateZoneState(zone) {
     else if (settings["z${zone}EnableComfort"]) target = (settings["z${zone}ComfortPoint"] ?: 45) + tvOffset
     
     def rScore = state["z${zone}RiskScore"] ?: 0
-    def dur = state["z${zone}RunStart"] ? "${Math.round((now() - state["z${zone}RunStart"]) / 60000)} mins" : "Idle"
+    
+    // Format Display Durations
+    long tMs = state["z${zone}DailyRunMs"] ?: 0
+    def tHrs = (tMs / 3600000).toInteger()
+    def tMins = ((tMs % 3600000) / 60000).toInteger()
+
+    long yMs = state["z${zone}YesterdayRunMs"] ?: 0
+    def yHrs = (yMs / 3600000).toInteger()
+    def yMins = ((yMs % 3600000) / 60000).toInteger()
+
+    def durStr = ""
+    if (isHardwareOn && state["z${zone}CycleStart"]) {
+        def cMins = Math.round((now() - state["z${zone}CycleStart"]) / 60000)
+        durStr = "<span style='color:#3498db; font-weight:bold;'>Cycling: ${cMins}m</span><br>"
+    }
+    durStr += "Today: ${tHrs}h ${tMins}m<br>Yest: ${yHrs}h ${yMins}m"
+    
+    def spend7d = safeSum(state["z${zone}SpendHist"]) + (state["z${zone}SpendToday"] ?: 0.0)
+    def save7d = safeSum(state["z${zone}SaveHist"]) + (state["z${zone}SaveToday"] ?: 0.0)
     
     def fLimit = settings["z${zone}FilterLimit"] ?: 360
     def fCurrent = state["z${zone}FilterRunHours"] ?: 0.0
@@ -715,14 +778,16 @@ def calculateZoneState(zone) {
         target: target,
         riskScore: rScore, 
         riskLevel: (rScore > 80 ? "DANGER" : rScore > 50 ? "WARNING" : "SAFE"), 
-        duration: dur, 
+        duration: durStr, 
         status: statusNote, 
         filterLife: Math.max(0, Math.round(100 - ((fCurrent / fLimit) * 100))),
         hardwareOn: isHardwareOn,
         freeDehumOn: state["z${zone}FreeDehumOn"] ?: false,
         tankFull: state["z${zone}TankFull"] ?: false,
         windowOpen: windowOpen,
-        isLeaking: isLeaking
+        isLeaking: isLeaking,
+        spend7d: spend7d,
+        save7d: save7d
     ]
 }
 
@@ -772,7 +837,7 @@ def handleMasterSwitch(evt) {
                 state["z${i}AppControlled"] = false
                 state["z${i}LogicNote"] = "Master Disabled"
                 calculateFinancials(i, true)
-                state["z${i}RunStart"] = now()
+                state["z${i}CycleStart"] = null
             }
         }
     } else {
@@ -800,6 +865,9 @@ def initialize() {
     if (outdoorTempSensor) subscribe(outdoorTempSensor, "temperature", "handleEnvChange")
     if (outdoorHumSensor) subscribe(outdoorHumSensor, "humidity", "handleEnvChange")
     if (energyModeSwitch) subscribe(energyModeSwitch, "switch", "handleEnvChange")
+    
+    // Add Midnight Rollover Job
+    schedule("0 0 0 * * ?", "midnightHandler")
     
     runEvery5Minutes("evaluateZones")
 }
