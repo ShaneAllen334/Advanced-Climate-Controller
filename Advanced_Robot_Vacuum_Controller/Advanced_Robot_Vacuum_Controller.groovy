@@ -1,7 +1,7 @@
 /**
  * Advanced Robot Vacuum Controller
  * Orchestration app for the Roborock Robot Vacuum driver with Live Dashboard, Master Override, and Dynamic 12-Room Setup.
- */
+*/
 
 definition(
     name: "Advanced Robot Vacuum Controller",
@@ -36,6 +36,7 @@ def mainPage() {
 
         if (vacuum1 || vacuum2) {
             section("<b>Live System Dashboard</b>", hideable: true, hidden: false) {
+                input name: "btnRefresh", type: "button", title: "🔄 Refresh Data & Re-Evaluate Power"
                 paragraph buildDashboardHTML()
             }
             
@@ -171,7 +172,7 @@ def mainPage() {
             
             paragraph "<b>Smart ROI Savings (Phantom Power Control):</b>"
             input "smartROISavings", "bool", title: "<b>Enable Smart ROI Power Management</b>", defaultValue: true, submitOnChange: true
-            paragraph "<i>If enabled, the app automatically wakes the docks 90 seconds before dispatching, and cuts power once charged to 100%.</i>"
+            paragraph "<i>If enabled, the app automatically wakes the docks 90 seconds before dispatching, issues realignment commands, cuts power once charged to 100%, and wakes the dock for a top-off if the battery drops to 70%.</i>"
             
             input "dockPlug1", "capability.switch", title: "Vacuum 1 Dock Smart Plug", required: false
             input "dockPlug2", "capability.switch", title: "Vacuum 2 Dock Smart Plug", required: false
@@ -230,6 +231,7 @@ def updated() {
     }
 
     initialize()
+    evaluateROIPowerState()
 }
 
 boolean isAppPaused() {
@@ -331,12 +333,14 @@ void commandVacuum(vacDevice, String brand, String cmd) {
             case "Roborock (Community)":
                 if (cmd == "pause") vacDevice.appPause()
                 if (cmd == "resume") vacDevice.appRoomResume()
+                if (cmd == "dock") { try { vacDevice.charge() } catch(e) { try { vacDevice.home() } catch(ex){} } }
                 break
             case "iRobot Roomba (Native)":
             case "Ecovacs/Deebot":
             case "Dreame":
                 if (cmd == "pause") vacDevice.pause()
                 if (cmd == "resume") vacDevice.resume()
+                if (cmd == "dock") { try { vacDevice.charge() } catch(e) { try { vacDevice.home() } catch(ex){} } }
                 break
             default:
                 if (cmd == "pause") vacDevice.off()
@@ -463,10 +467,84 @@ def executePendingDispatch() {
     state.pendingDispatchOptions = [:]
 }
 
+void evaluateROIPowerState() {
+    if (isAppPaused() || !settings.smartROISavings) return
+    if (state.pendingDispatchRooms?.size() > 0) return // Do not cut power if we are waiting for a dispatch
+    
+    if (vacuum1 && dockPlug1) {
+        String state1 = vacuum1.currentValue("state")?.toString()?.toLowerCase() ?: ""
+        String bat1Str = vacuum1.currentValue("battery")?.toString()
+        int bat1 = bat1Str?.isInteger() ? (bat1Str as Integer) : 0
+        
+        if (bat1 == 100 && state1 in ["charging", "charged", "docked", "idle", "full"]) {
+            if (dockPlug1.currentValue("switch") != "off") {
+                dockPlug1.off()
+                addToHistory("V1 Dock Powered OFF (Smart ROI Assassin)")
+            }
+        } else if (bat1 <= 70) {
+            if (dockPlug1.currentValue("switch") == "off") {
+                dockPlug1.on()
+                addToHistory("V1 Dock Powered ON (Smart ROI Top-Off: Battery at ${bat1}%)")
+                runIn(15, "remountVacuum1")
+            }
+        }
+    }
+    
+    if (vacuum2 && dockPlug2) {
+        String state2 = vacuum2.currentValue("state")?.toString()?.toLowerCase() ?: ""
+        String bat2Str = vacuum2.currentValue("battery")?.toString()
+        int bat2 = bat2Str?.isInteger() ? (bat2Str as Integer) : 0
+        
+        if (bat2 == 100 && state2 in ["charging", "charged", "docked", "idle", "full"]) {
+            if (dockPlug2.currentValue("switch") != "off") {
+                dockPlug2.off()
+                addToHistory("V2 Dock Powered OFF (Smart ROI Assassin)")
+            }
+        } else if (bat2 <= 70) {
+            if (dockPlug2.currentValue("switch") == "off") {
+                dockPlug2.on()
+                addToHistory("V2 Dock Powered ON (Smart ROI Top-Off: Battery at ${bat2}%)")
+                runIn(15, "remountVacuum2")
+            }
+        }
+    }
+}
+
+def remountVacuum1() {
+    if (vacuum1 && dockPlug1 && dockPlug1.currentValue("switch") == "on") {
+        commandVacuum(vacuum1, settings.vac1Brand, "dock")
+        addToHistory("<span style='color:teal;'><b>V1 Alignment: Securing charging pins.</b></span>")
+    }
+}
+
+def remountVacuum2() {
+    if (vacuum2 && dockPlug2 && dockPlug2.currentValue("switch") == "on") {
+        commandVacuum(vacuum2, settings.vac2Brand, "dock")
+        addToHistory("<span style='color:teal;'><b>V2 Alignment: Securing charging pins.</b></span>")
+    }
+}
+
+def remountVacuums() {
+    remountVacuum1()
+    remountVacuum2()
+}
+
 def appButtonHandler(btn) {
     if (isAppPaused()) {
         logInfo "Command Center ignored: Master Virtual Switch is OFF."
         return
+    }
+    
+    if (btn == "btnRefresh") {
+        logInfo "Dashboard data manually refreshed."
+        if (vacuum1 && vacuum1.hasCommand("refresh")) {
+            try { vacuum1.refresh() } catch (e) { log.warn "Vacuum 1 refresh failed: ${e}" }
+        }
+        if (vacuum2 && vacuum2.hasCommand("refresh")) {
+            try { vacuum2.refresh() } catch (e) { log.warn "Vacuum 2 refresh failed: ${e}" }
+        }
+        evaluateROIPowerState()
+        addToHistory("<span style='color:purple;'><b>Data Refresh: Triggered successfully.</b></span>")
     }
     
     if (btn == "btnSyncRooms") {
@@ -599,17 +677,7 @@ def dockErrorHandler(evt) {
 }
 
 def batteryHandler(evt) {
-    if (isAppPaused()) return
-    if (evt.value == "100" && settings.smartROISavings) {
-        if (evt.deviceId == vacuum1?.id && dockPlug1 && dockPlug1.currentValue("switch") != "off" && vacuum1.currentValue("state") in ["charging", "charged", "docked"]) {
-            dockPlug1.off()
-            addToHistory("V1 Dock Powered OFF (Smart ROI Assassin)")
-        }
-        if (evt.deviceId == vacuum2?.id && dockPlug2 && dockPlug2.currentValue("switch") != "off" && vacuum2.currentValue("state") in ["charging", "charged", "docked"]) {
-            dockPlug2.off()
-            addToHistory("V2 Dock Powered OFF (Smart ROI Assassin)")
-        }
-    }
+    evaluateROIPowerState()
 }
 
 def dockPlugHandler(evt) {
@@ -631,15 +699,21 @@ def dockPlugHandler(evt) {
 
 def wakeDocks() {
     if (isAppPaused()) return
-    if (dockPlug1 && dockPlug1.currentValue("switch") != "on") dockPlug1.on()
-    if (dockPlug2 && dockPlug2.currentValue("switch") != "on") dockPlug2.on()
+    boolean waked = false
+    if (dockPlug1 && dockPlug1.currentValue("switch") != "on") { dockPlug1.on(); waked = true; }
+    if (dockPlug2 && dockPlug2.currentValue("switch") != "on") { dockPlug2.on(); waked = true; }
+    
+    if (waked) {
+        addToHistory("Docks Powered ON (Smart ROI Wake-Up)")
+        runIn(15, "remountVacuums") // Allow plugs to power up, then command alignment
+    }
 }
 
 def vacuumStateHandler(evt) {
     if (isAppPaused()) return
     String vState = evt.value?.toString()?.toLowerCase()
     
-    if (vState in ["charging", "charged", "docked", "returning to dock", "idle"]) {
+    if (vState in ["charging", "charged", "docked", "returning to dock", "idle", "full"]) {
         if (evt.device.id == vacuum1?.id && state.v1_maskedRooms?.size() > 0) {
             state.v1_maskedRooms.each { rName -> triggerFanCountdown(rName) }
             state.v1_maskedRooms = []
@@ -654,16 +728,7 @@ def vacuumStateHandler(evt) {
         }
     }
     
-    if (vState in ["charged", "docked"] && settings.smartROISavings) {
-        if (evt.device.id == vacuum1?.id && vacuum1.currentValue("battery") == "100" && dockPlug1 && dockPlug1.currentValue("switch") != "off") {
-            dockPlug1.off()
-            addToHistory("V1 Dock Powered OFF (Smart ROI Assassin)")
-        }
-        if (evt.device.id == vacuum2?.id && vacuum2.currentValue("battery") == "100" && dockPlug2 && dockPlug2.currentValue("switch") != "off") {
-            dockPlug2.off()
-            addToHistory("V2 Dock Powered OFF (Smart ROI Assassin)")
-        }
-    }
+    evaluateROIPowerState()
 }
 
 def triggerFanCountdown(String roomName) {
@@ -1157,6 +1222,7 @@ String buildDashboardHTML() {
     
     if (roomsExist) html += roomHtml
 
+    // --- UPDATED ROI CALCULATION BLOCK ---
     double v1Watts = getVacWatts(settings.vac1Model, settings.vac1Watts)
     double v2Watts = getVacWatts(settings.vac2Model, settings.vac2Watts)
     
@@ -1166,12 +1232,27 @@ String buildDashboardHTML() {
     double totalV1Hours = (state.dock1OfflineHours ?: 0.0) + currentV1Off
     double totalV2Hours = (state.dock2OfflineHours ?: 0.0) + currentV2Off
     
-    double kwhSaved = ((totalV1Hours * v1Watts) + (totalV2Hours * v2Watts)) / 1000.0
-    double moneySaved = kwhSaved * (settings.kwRate ?: 0.15)
+    double v1KwhSaved = (totalV1Hours * v1Watts) / 1000.0
+    double v2KwhSaved = (totalV2Hours * v2Watts) / 1000.0
+    double totalKwhSaved = v1KwhSaved + v2KwhSaved
     
-    if (kwhSaved > 0) {
+    double kwRate = settings.kwRate ?: 0.15
+    double v1MoneySaved = v1KwhSaved * kwRate
+    double v2MoneySaved = v2KwhSaved * kwRate
+    double totalMoneySaved = totalKwhSaved * kwRate
+    
+    // FIX: Removed the totalKwhSaved > 0 condition so the UI always renders.
+    if (settings.smartROISavings) {
         html += "<div style='margin-top: 10px; padding: 8px; background: #e8f5e9; border: 1px solid #c8e6c9; border-radius: 4px; font-size: 13px; color: #2e7d32;'>"
-        html += "<b>Financial & Energy ROI:</b> System has prevented <b>${String.format("%.2f", kwhSaved)} kWh</b> of phantom draw, saving <b>\$${String.format("%.2f", moneySaved)}</b>.</div>"
+        html += "<b>Financial & Energy ROI:</b> System has prevented a total of <b>${String.format("%.2f", totalKwhSaved)} kWh</b> of phantom draw, saving <b>\$${String.format("%.2f", totalMoneySaved)}</b>.<br>"
+        
+        // Always show the breakdown if the vacuums exist in the settings
+        html += "<div style='margin-top: 6px; font-size: 12px; border-top: 1px solid #c8e6c9; padding-top: 6px;'>"
+        if (vacuum1) html += "↳ <b>Vacuum 1:</b> ${String.format("%.2f", v1KwhSaved)} kWh saved (\$${String.format("%.2f", v1MoneySaved)})<br>"
+        if (vacuum2) html += "↳ <b>Vacuum 2:</b> ${String.format("%.2f", v2KwhSaved)} kWh saved (\$${String.format("%.2f", v2MoneySaved)})"
+        html += "</div>"
+        
+        html += "</div>"
     }
 
     return html
