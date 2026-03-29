@@ -265,6 +265,7 @@ def initialize() {
         state["motionActive_${i}"] = false
         state["graceEpoch_${i}"] = null
         state["timerEpoch_${i}"] = null
+        state["ownsCycle_${i}"] = false // Ownership state initialization
         
         if (bSwitch) subscribe(bSwitch, "switch", switchHandler)
         if (mSensor) subscribe(mSensor, "motion", motionHandler)
@@ -361,10 +362,14 @@ def switchHandler(evt) {
         if (!state.weeklyCycles) state.weeklyCycles = [:]
         state.weeklyCycles["${swId}"] = (state.weeklyCycles["${swId}"] ?: 0) + 1
         addToHistory("HARDWARE: ${swName} turned ON.")
+        
         if (targetBathNum > 0) {
-            def maxRunMins = settings["bathMaxRun_${targetBathNum}"] ?: 120
-            state["maxRunEpoch_${targetBathNum}"] = currentEpoch 
-            runIn(maxRunMins * 60, "executeEmergencyShutoff", [data: [bathNum: targetBathNum, epoch: currentEpoch], overwrite: false])
+            // ONLY start the guillotine timer if THIS app owns the current run cycle
+            if (state["ownsCycle_${targetBathNum}"]) {
+                def maxRunMins = settings["bathMaxRun_${targetBathNum}"] ?: 120
+                state["maxRunEpoch_${targetBathNum}"] = currentEpoch 
+                runIn(maxRunMins * 60, "executeEmergencyShutoff", [data: [bathNum: targetBathNum, epoch: currentEpoch], overwrite: false])
+            }
         }
     } else if (action == "off") {
         if (state.switchEpoch && state.switchEpoch["${swId}"]) {
@@ -379,6 +384,7 @@ def switchHandler(evt) {
             state.switchEpoch["${swId}"] = null
             
             if (targetBathNum > 0) {
+                state["ownsCycle_${targetBathNum}"] = false // CLEAR the cycle ownership flag
                 state["maxRunEpoch_${targetBathNum}"] = null
                 state["timerEpoch_${targetBathNum}"] = null
                 state["graceEpoch_${targetBathNum}"] = null
@@ -402,7 +408,9 @@ def dangerCheck(data) {
 }
 
 def executeEmergencyShutoff(data) {
+    if (!state["ownsCycle_${data.bathNum}"]) return // Verify cycle ownership
     if (state["maxRunEpoch_${data.bathNum}"] != data.epoch || isSystemPaused()) return
+    
     def bSwitch = settings["bathSwitch_${data.bathNum}"]
     if (bSwitch && bSwitch.currentValue("switch") == "on") {
         bSwitch.off()
@@ -411,6 +419,8 @@ def executeEmergencyShutoff(data) {
 }
 
 def executeDoubleTap(data) {
+    if (!state["ownsCycle_${data.bathNum}"]) return // Verify cycle ownership
+    
     def bSwitch = settings["bathSwitch_${data.bathNum}"]
     if (bSwitch && bSwitch.currentValue("switch") == "on" && !state["motionActive_${data.bathNum}"]) {
         bSwitch.off()
@@ -426,13 +436,17 @@ def motionHandler(evt) {
         if (settings["bathMotion_${i}"]?.id == mId) {
             def bSwitch = settings["bathSwitch_${i}"]
             if (!bSwitch) continue
+           
             if (action == "active") {
                 state["motionActive_${i}"] = true
                 state["graceEpoch_${i}"] = null
                 state["timerEpoch_${i}"] = null
                 def qStart = settings["bathQuietStart_${i}"], qEnd = settings["bathQuietEnd_${i}"]
                 if (!(qStart && qEnd && timeOfDayIsBetween(qStart, qEnd, new Date(), location.timeZone))) {
-                    if (bSwitch.currentValue("switch") != "on") bSwitch.on()
+                    if (bSwitch.currentValue("switch") != "on") {
+                        state["ownsCycle_${i}"] = true // CLAIM the cycle
+                        bSwitch.on()
+                    }
                 }
             } else {
                 state["motionActive_${i}"] = false
@@ -477,6 +491,7 @@ def humidityHandler(evt) {
             if (!bSwitch) continue
             
             if (highT && currentHum >= highT && bSwitch.currentValue("switch") != "on") {
+                state["ownsCycle_${i}"] = true // CLAIM the cycle
                 bSwitch.on()
             }
             
@@ -492,6 +507,9 @@ def humidityHandler(evt) {
 def evaluateTurnOff(data) {
     if (isSystemPaused()) return
     def bNum = data.bathNum
+    
+    if (!state["ownsCycle_${bNum}"]) return // IMMEDIATELY YIELD if we don't own the run cycle
+    
     def bSwitch = settings["bathSwitch_${bNum}"]
     def mSensor = settings["bathMotion_${bNum}"]
     def hSensor = settings["bathHumidity_${bNum}"]
