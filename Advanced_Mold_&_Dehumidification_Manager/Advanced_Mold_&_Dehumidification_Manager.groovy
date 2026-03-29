@@ -132,6 +132,7 @@ def zoneConfigPage() {
                     input "z${i}Temp", "capability.temperatureMeasurement", title: "Temperature Sensor", required: true
                     input "z${i}Dehum", "capability.switch", title: "Dehumidifier(s)", multiple: true, required: true
                     input "z${i}Watts", "number", title: "Dehumidifier Watts", defaultValue: 500
+                    input "z${i}LightMode", "bool", title: "Light Control & Monitor Mode (For slow trickle dehumidifiers)", defaultValue: false, submitOnChange: true
                     
                     paragraph "<b>Interlocks & Context</b>"
                     input "z${i}Leak", "capability.waterSensor", title: "Emergency Water Leak Sensors", multiple: true, required: false
@@ -300,7 +301,8 @@ def calculateDewPoint(tempF, hum) {
 }
 
 def getHouseAverageHum() {
-    def total = 0.0; def count = 0
+    def total = 0.0
+    def count = 0
     for (int i = 1; i <= 8; i++) {
         if (settings["z${i}Name"] && settings["z${i}Hum"]) {
             def h = settings["z${i}Hum"].currentValue("humidity")
@@ -443,10 +445,12 @@ def evaluateZones() {
         // Mode Check
         def allowedModes = settings["z${i}Modes"]
         def modeRestricted = allowedModes ? !allowedModes.contains(location.mode) : false
+        def isLightMode = settings["z${i}LightMode"] ?: false
 
         // --- Zone Specific Humidity Alerts ---
         if (settings["z${i}EnableAlert"] && h != null) {
-            def zThresh = settings["z${i}AlertThresh"] ?: 70
+            // Light mode strictly alters alert thresholds to 70%
+            def zThresh = isLightMode ? 70 : (settings["z${i}AlertThresh"] ?: 70)
             def zReqMins = settings["z${i}AlertMins"] ?: 60
             if (h >= zThresh) {
                 if (!state["z${i}HumAlertStart"]) state["z${i}HumAlertStart"] = now()
@@ -489,61 +493,67 @@ def evaluateZones() {
             if ((maxT - t) >= dropThresh && !isCooling) rapidCoolTrigger = true 
         }
 
-        // 3. TANK FULL DIAGNOSTICS
-        def method = settings["z${i}TankMethod"]
-        if (method == "Power Meter" && isHardwareOn) {
-            def powerMeters = settings["z${i}Power"]
-            def watts = powerMeters ? powerMeters.sum { it.currentValue("power") ?: 0 } : 0
-            def threshold = settings["z${i}ActiveWatts"] ?: 100
-            
-            if (watts < threshold) {
-                if (!state["z${i}LowPowerStart"]) state["z${i}LowPowerStart"] = now()
-                else if ((now() - state["z${i}LowPowerStart"]) > 300000) { // 5 mins low power
-                    state["z${i}TankFull"] = true
-                }
-            } else {
-                state["z${i}LowPowerStart"] = null
-                if (state["z${i}TankFull"]) resetTankFullFlag(i, "Power Meter Spike (Compressor On)")
-            }
-        } 
-        else if (method == "Humidity Stall") {
-            if (isHardwareOn && !state["z${i}TankFull"]) {
-                if (!state["z${i}StallStart"]) {
-                    state["z${i}StallStart"] = now()
-                    state["z${i}StallBaseRH"] = h
-                } else if (!isCooling) {
-                    def baseRH = state["z${i}StallBaseRH"]
-                    def reqDrop = settings["z${i}StallDrop"] ?: 5
-                    def limitMins = settings["z${i}StallMins"] ?: 90
-                    
-                    if ((baseRH - h) >= reqDrop) {
-                        state["z${i}StallStart"] = now()
-                        state["z${i}StallBaseRH"] = h // Progress made, reset timer
-                    } else if ((now() - state["z${i}StallStart"]) > (limitMins * 60000)) {
+        // 3. TANK FULL DIAGNOSTICS (Bypassed if Light Mode)
+        if (!isLightMode) {
+            def method = settings["z${i}TankMethod"]
+            if (method == "Power Meter" && isHardwareOn) {
+                def powerMeters = settings["z${i}Power"]
+                def watts = powerMeters ? powerMeters.sum { it.currentValue("power") ?: 0 } : 0
+                def threshold = settings["z${i}ActiveWatts"] ?: 100
+                
+                if (watts < threshold) {
+                    if (!state["z${i}LowPowerStart"]) state["z${i}LowPowerStart"] = now()
+                    else if ((now() - state["z${i}LowPowerStart"]) > 300000) { // 5 mins low power
                         state["z${i}TankFull"] = true
-                        state["z${i}TankMaxRH"] = h 
+                    }
+                } else {
+                    state["z${i}LowPowerStart"] = null
+                    if (state["z${i}TankFull"]) resetTankFullFlag(i, "Power Meter Spike (Compressor On)")
+                }
+            } 
+            else if (method == "Humidity Stall") {
+                if (isHardwareOn && !state["z${i}TankFull"]) {
+                    if (!state["z${i}StallStart"]) {
+                        state["z${i}StallStart"] = now()
+                        state["z${i}StallBaseRH"] = h
+                    } else if (!isCooling) {
+                        def baseRH = state["z${i}StallBaseRH"]
+                        def reqDrop = settings["z${i}StallDrop"] ?: 5
+                        def limitMins = settings["z${i}StallMins"] ?: 90
+                        
+                        if ((baseRH - h) >= reqDrop) {
+                            state["z${i}StallStart"] = now()
+                            state["z${i}StallBaseRH"] = h // Progress made, reset timer
+                        } else if ((now() - state["z${i}StallStart"]) > (limitMins * 60000)) {
+                            state["z${i}TankFull"] = true
+                            state["z${i}TankMaxRH"] = h 
+                        }
+                    }
+                } else if (!isHardwareOn) {
+                     state["z${i}StallStart"] = null
+                }
+                
+                // Auto-Reset Logic
+                if (state["z${i}TankFull"]) {
+                    def maxRH = state["z${i}TankMaxRH"] ?: h
+                    if (h > maxRH) state["z${i}TankMaxRH"] = h // Track the spike
+                    else if (h <= (maxRH - 3) && !isCooling) {
+                        resetTankFullFlag(i, "Humidity Drop (AC Off) - Auto Clear")
                     }
                 }
-            } else if (!isHardwareOn) {
-                 state["z${i}StallStart"] = null
             }
             
-            // Auto-Reset Logic
             if (state["z${i}TankFull"]) {
-                def maxRH = state["z${i}TankMaxRH"] ?: h
-                if (h > maxRH) state["z${i}TankMaxRH"] = h // Track the spike
-                else if (h <= (maxRH - 3) && !isCooling) {
-                    resetTankFullFlag(i, "Humidity Drop (AC Off) - Auto Clear")
+                anyTankFull = true
+                if (!state["z${i}TankNotified"]) {
+                    sendNotification("🚰 TANK FULL: Zone ${i} (${settings["z${i}Name"]}) requires emptying.", "tank")
+                    state["z${i}TankNotified"] = true
                 }
             }
-        }
-        
-        if (state["z${i}TankFull"]) {
-            anyTankFull = true
-            if (!state["z${i}TankNotified"]) {
-                sendNotification("🚰 TANK FULL: Zone ${i} (${settings["z${i}Name"]}) requires emptying.", "tank")
-                state["z${i}TankNotified"] = true
-            }
+        } else {
+            // Ensure tank flags are forcefully cleared in Light Mode
+            state["z${i}TankFull"] = false
+            state["z${i}TankNotified"] = false
         }
 
         // 4. LOGIC CASCADE
@@ -767,8 +777,10 @@ def calculateZoneState(zone) {
     
     def allowedModes = settings["z${zone}Modes"]
     def modeRestricted = allowedModes ? !allowedModes.contains(location.mode) : false
+    def isLightMode = settings["z${zone}LightMode"] ?: false
     def statusNote = state["z${zone}LogicNote"] ?: "Standby"
     if (!isHardwareOn && modeRestricted) statusNote = "Mode Restricted"
+    if (isLightMode) statusNote = "[Light Mode] " + statusNote
 
     return [
         currHum: currHum,
