@@ -144,14 +144,22 @@ def mainPage() {
             input "timeTrigger1", "time", title: "Time Trigger 1", required: false
             input "timeDays1", "enum", title: "Days to run", options: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"], multiple: true, required: false
             input "timeModes1", "mode", title: "Only when in Mode(s)", multiple: true, required: false
+            input "timeNotifyTarget1", "enum", title: "Who gets the Push Notification?", options: ["User 1", "User 2", "User 3", "User 4", "All Profiles", "No Push Notification"], defaultValue: "All Profiles"
+            input "timeAudio1", "bool", title: "Play Audio Broadcast (TTS)?", defaultValue: true
+            
             paragraph "<hr>"
             input "timeTrigger2", "time", title: "Time Trigger 2", required: false
             input "timeDays2", "enum", title: "Days to run", options: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"], multiple: true, required: false
             input "timeModes2", "mode", title: "Only when in Mode(s)", multiple: true, required: false
+            input "timeNotifyTarget2", "enum", title: "Who gets the Push Notification?", options: ["User 1", "User 2", "User 3", "User 4", "All Profiles", "No Push Notification"], defaultValue: "All Profiles"
+            input "timeAudio2", "bool", title: "Play Audio Broadcast (TTS)?", defaultValue: true
+            
             paragraph "<hr>"
             input "timeTrigger3", "time", title: "Time Trigger 3", required: false
             input "timeDays3", "enum", title: "Days to run", options: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"], multiple: true, required: false
             input "timeModes3", "mode", title: "Only when in Mode(s)", multiple: true, required: false
+            input "timeNotifyTarget3", "enum", title: "Who gets the Push Notification?", options: ["User 1", "User 2", "User 3", "User 4", "All Profiles", "No Push Notification"], defaultValue: "All Profiles"
+            input "timeAudio3", "bool", title: "Play Audio Broadcast (TTS)?", defaultValue: true
 
             paragraph "<hr><b>🏠 Mode-Based Triggers</b>"
             input "triggerMode1", "mode", title: "Mode Change To:", description: "E.g., Trigger when mode changes to 'Awake'.", required: false, multiple: false
@@ -167,21 +175,24 @@ def mainPage() {
             input "sw1StartTime", "time", title: "Allowable Start Time", required: false
             input "sw1EndTime", "time", title: "Allowable End Time", required: false
             input "sw1Modes", "mode", title: "Only when in Mode(s)", multiple: true, required: false
-            input "sw1NotifyTarget", "enum", title: "Who gets the notification?", description: "Route this trigger to a specific user's phone, or all devices.", options: ["User 1", "User 2", "User 3", "User 4", "All Profiles", "Audio Only"], defaultValue: "All Profiles"
+            input "sw1NotifyTarget", "enum", title: "Who gets the Push Notification?", options: ["User 1", "User 2", "User 3", "User 4", "All Profiles", "No Push Notification"], defaultValue: "All Profiles"
+            input "sw1Audio", "bool", title: "Play Audio Broadcast (TTS)?", description: "Turn this OFF if you want a silent push notification so you don't wake the house.", defaultValue: false
             
             paragraph "<hr>"
             input "triggerSwitch2", "capability.switch", title: "Switch Trigger 2", required: false, multiple: false
             input "sw2StartTime", "time", title: "Allowable Start Time", required: false
             input "sw2EndTime", "time", title: "Allowable End Time", required: false
             input "sw2Modes", "mode", title: "Only when in Mode(s)", multiple: true, required: false
-            input "sw2NotifyTarget", "enum", title: "Who gets the notification?", options: ["User 1", "User 2", "User 3", "User 4", "All Profiles", "Audio Only"], defaultValue: "All Profiles"
+            input "sw2NotifyTarget", "enum", title: "Who gets the Push Notification?", options: ["User 1", "User 2", "User 3", "User 4", "All Profiles", "No Push Notification"], defaultValue: "All Profiles"
+            input "sw2Audio", "bool", title: "Play Audio Broadcast (TTS)?", description: "Turn this OFF if you want a silent push notification so you don't wake the house.", defaultValue: false
             
             paragraph "<hr>"
             input "triggerSwitch3", "capability.switch", title: "Switch Trigger 3", required: false, multiple: false
             input "sw3StartTime", "time", title: "Allowable Start Time", required: false
             input "sw3EndTime", "time", title: "Allowable End Time", required: false
             input "sw3Modes", "mode", title: "Only when in Mode(s)", multiple: true, required: false
-            input "sw3NotifyTarget", "enum", title: "Who gets the notification?", options: ["User 1", "User 2", "User 3", "User 4", "All Profiles", "Audio Only"], defaultValue: "All Profiles"
+            input "sw3NotifyTarget", "enum", title: "Who gets the Push Notification?", options: ["User 1", "User 2", "User 3", "User 4", "All Profiles", "No Push Notification"], defaultValue: "All Profiles"
+            input "sw3Audio", "bool", title: "Play Audio Broadcast (TTS)?", description: "Turn this OFF if you want a silent push notification so you don't wake the house.", defaultValue: false
         }
 
         section(title: "<b>6. Outputs & Advanced Devices</b>", hideable: true, hidden: true) {
@@ -226,7 +237,6 @@ def mainPage() {
     }
 }
 
-// ... [The rest of the backend code from the previous iteration remains exactly the same] ...
 def installed() { initialize() }
 def updated() { unsubscribe(); unschedule(); initialize() }
 
@@ -256,8 +266,8 @@ def initialize() {
 def appButtonHandler(btn) {
     if (btn == "btnRefresh") { state.lastErrorTime = null; routineSync(); logAction("Data manually refreshed.") }
     else if (btn == "btnClearHistory") { state.actionHistory = []; log.info "History cleared." }
-    else if (btn == "btnTestTTS") { executeTargetedBroadcast("Audio Only"); logAction("Test Audio Broadcast Triggered.") }
-    else if (btn == "btnTestNotify") { executeTargetedBroadcast("All Profiles"); logAction("Test Notify Triggered for All Users.") }
+    else if (btn == "btnTestTTS") { executeTargetedBroadcast("No Push Notification", true); logAction("Test Audio Broadcast Triggered.") }
+    else if (btn == "btnTestNotify") { executeTargetedBroadcast("All Profiles", false); logAction("Test Notify Triggered for All Users.") }
     else if (btn == "btnCreateDevice") { createChildDevice(); routineSync(); logAction("Child device created.") }
 }
 
@@ -308,10 +318,10 @@ def routineSync() {
     logAction("Routine Background Sync Complete.")
 }
 
-def executeTargetedBroadcast(target) {
+def executeTargetedBroadcast(target, playAudio = true) {
     routineSync() 
     
-    if (target == "All Profiles" || target == "Audio Only") {
+    if (playAudio) {
         def defaultScript = state.latestScript 
         if (ttsSpeakers) ttsSpeakers.speak(defaultScript)
         
@@ -380,17 +390,25 @@ def sendSplitNotification(text, devices) {
 def timeTrigger1Handler() { 
     if (!checkDays(timeDays1)) return
     if (!checkModes(timeModes1)) return
-    logAction("Time Trigger 1 activated."); executeTargetedBroadcast("All Profiles") 
+    logAction("Time Trigger 1 activated.")
+    boolean doAudio = (timeAudio1 != null) ? timeAudio1 : true
+    executeTargetedBroadcast(timeNotifyTarget1 ?: "All Profiles", doAudio) 
 }
+
 def timeTrigger2Handler() { 
     if (!checkDays(timeDays2)) return
     if (!checkModes(timeModes2)) return
-    logAction("Time Trigger 2 activated."); executeTargetedBroadcast("All Profiles") 
+    logAction("Time Trigger 2 activated.")
+    boolean doAudio = (timeAudio2 != null) ? timeAudio2 : true
+    executeTargetedBroadcast(timeNotifyTarget2 ?: "All Profiles", doAudio) 
 }
+
 def timeTrigger3Handler() { 
     if (!checkDays(timeDays3)) return
     if (!checkModes(timeModes3)) return
-    logAction("Time Trigger 3 activated."); executeTargetedBroadcast("All Profiles") 
+    logAction("Time Trigger 3 activated.")
+    boolean doAudio = (timeAudio3 != null) ? timeAudio3 : true
+    executeTargetedBroadcast(timeNotifyTarget3 ?: "All Profiles", doAudio) 
 }
 
 def modeChangeHandler(evt) {
@@ -407,20 +425,21 @@ def modeChangeHandler(evt) {
     
     if (shouldTrigger) {
         logAction("Valid mode change detected. Broadcasting.")
-        executeTargetedBroadcast("All Profiles")
+        executeTargetedBroadcast("All Profiles", true)
     }
 }
 
-def switchTrigger1Handler(evt) { handleSwitchTrigger(1, triggerSwitch1, sw1StartTime, sw1EndTime, sw1Modes, sw1NotifyTarget) }
-def switchTrigger2Handler(evt) { handleSwitchTrigger(2, triggerSwitch2, sw2StartTime, sw2EndTime, sw2Modes, sw2NotifyTarget) }
-def switchTrigger3Handler(evt) { handleSwitchTrigger(3, triggerSwitch3, sw3StartTime, sw3EndTime, sw3Modes, sw3NotifyTarget) }
+def switchTrigger1Handler(evt) { handleSwitchTrigger(1, triggerSwitch1, sw1StartTime, sw1EndTime, sw1Modes, sw1NotifyTarget, sw1Audio) }
+def switchTrigger2Handler(evt) { handleSwitchTrigger(2, triggerSwitch2, sw2StartTime, sw2EndTime, sw2Modes, sw2NotifyTarget, sw2Audio) }
+def switchTrigger3Handler(evt) { handleSwitchTrigger(3, triggerSwitch3, sw3StartTime, sw3EndTime, sw3Modes, sw3NotifyTarget, sw3Audio) }
 
-def handleSwitchTrigger(num, sw, start, end, modes, target) {
+def handleSwitchTrigger(num, sw, start, end, modes, target, playAudio) {
     logAction("Virtual Switch ${num} triggered.")
     if (!checkTime(start, end)) { logAction("Trigger ignored: Outside allowed time window."); return }
     if (!checkModes(modes)) { logAction("Trigger ignored: Not in allowed mode."); return }
     
-    executeTargetedBroadcast(target ?: "All Profiles")
+    boolean doAudio = (playAudio != null) ? playAudio : false
+    executeTargetedBroadcast(target ?: "All Profiles", doAudio)
     runIn(2, "turnOffSwitch${num}")
 }
 
