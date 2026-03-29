@@ -205,23 +205,11 @@ def hasInternet() {
     if (state.lastErrorTime) {
         long elapsed = (now() - state.lastErrorTime) / 60000
         if (elapsed < 15) { 
-            log.warn "Advanced Meteorologist: Network in 15-min cooldown. Skipping ping to prevent spam."
+            log.warn "Advanced Meteorologist: Network in 15-min cooldown."
             return false
         }
     }
-    try {
-        httpGet([uri: "http://clients3.google.com/generate_204", timeout: 3]) { resp ->
-            if (resp.status == 204) {
-                state.lastErrorTime = null 
-                return true
-            }
-        }
-    } catch (e) {
-        logAction("Network down. Entering 15-minute error cooldown.")
-        state.lastErrorTime = now()
-        return false
-    }
-    return false
+    return true // We now let the individual API calls handle their own failure checks
 }
 
 def routineSync() {
@@ -299,6 +287,7 @@ def fetchApiData() {
     try {
         httpGet([uri: url, timeout: 10]) { resp ->
             if (resp.success) {
+                state.lastErrorTime = null // Reset error cooldown on successful connect
                 def data = resp.data
                 state.apiCurrentTemp = data.current?.temperature_2m?.toBigDecimal()?.setScale(0, BigDecimal.ROUND_HALF_UP)
                 state.apiApparentTemp = data.current?.apparent_temperature?.toBigDecimal()?.setScale(0, BigDecimal.ROUND_HALF_UP)
@@ -311,11 +300,15 @@ def fetchApiData() {
                 state.apiDailyRain = data.daily?.precipitation_sum ?: []
                 state.apiDailyUV = data.daily?.uv_index_max ?: []
                 state.apiDailyConditions = data.daily?.weather_code?.collect { getWeatherDescription(it) } ?: []
-            } else { state.apiFailed = true }
+            } else { 
+                state.apiFailed = true
+                state.lastErrorTime = now() 
+            }
         }
     } catch (e) {
         logAction("ERROR fetching weather API: ${e.message}")
         state.apiFailed = true
+        state.lastErrorTime = now()
     }
 }
 
@@ -324,7 +317,12 @@ def fetchPollenData() {
     try {
         def params = [
             uri: "https://www.pollen.com/api/forecast/current/pollen/${zipCode}",
-            headers: ["Referer": "https://www.pollen.com"]
+            headers: [
+                "Referer": "https://www.pollen.com",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "application/json"
+            ],
+            timeout: 10
         ]
         httpGet(params) { resp ->
             if (resp.success && resp.data?.Location?.periods) {
@@ -338,7 +336,7 @@ def fetchPollenData() {
                     else if (idx < 9.6) state.pollenCategory = "medium to high"
                     else state.pollenCategory = "high"
                 }
-            } else { logAction("Pollen API connection issue."); } // Don't fail the whole script if just pollen fails
+            } else { logAction("Pollen API connection issue."); } 
         }
     } catch (e) { logAction("ERROR fetching Pollen API.") }
 }
