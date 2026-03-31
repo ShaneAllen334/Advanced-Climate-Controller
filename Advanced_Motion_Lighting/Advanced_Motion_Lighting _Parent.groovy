@@ -75,7 +75,6 @@ def mainPage() {
                         }
                     } catch (e) { log.debug "Dashboard error: ${e.message}" }
                 }
-  
                 tableHTML += "</table>"
                 paragraph tableHTML
                 
