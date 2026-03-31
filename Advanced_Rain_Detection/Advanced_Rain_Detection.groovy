@@ -121,6 +121,79 @@ def renderChartHTML() {
     """
 }
 
+def renderTableHTML() {
+    if (!state.tempHistory || state.tempHistory.size() == 0) {
+        return "<div style='margin-top:20px; padding:15px; border:1px solid #ccc; background:#fff;'>Gathering history data... check back in a few minutes.</div>"
+    }
+    
+    def reversedHist = state.tempHistory.reverse()
+    
+    def tableHTML = """
+    <div style="width: 100%; max-width: 800px; margin: 20px auto; background: #fff; border: 1px solid #ccc; border-radius: 5px; overflow: hidden;">
+        <h4 style="margin:0; padding:10px 15px; background:#f4f4f4; border-bottom:1px solid #ccc; color:#333;">24-Hour Local Data Table</h4>
+        <div style="max-height: 300px; overflow-y: auto;">
+            <table style="width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; font-family: monospace;">
+                <thead style="background: #eee; position: sticky; top: 0; box-shadow: 0 1px 2px rgba(0,0,0,0.1);">
+                    <tr>
+                        <th style="padding: 8px; border-bottom: 1px solid #ccc;">Time</th>
+                        <th style="padding: 8px; border-bottom: 1px solid #ccc;">Temp</th>
+                        <th style="padding: 8px; border-bottom: 1px solid #ccc;">Pressure</th>
+                        <th style="padding: 8px; border-bottom: 1px solid #ccc;">DP Spread</th>
+                        <th style="padding: 8px; border-bottom: 1px solid #ccc;">Rain Prob</th>
+                    </tr>
+                </thead>
+                <tbody>
+    """
+    
+    reversedHist.each { entry ->
+        def timeStr = new Date((long)entry.time).format("MM/dd HH:mm", location.timeZone)
+        def tVal = String.format('%.1f', entry.value)
+        
+        // Find matching timestamps for other metrics (within ~2 minutes)
+        def findMatch = { hist -> 
+            def match = hist?.find { Math.abs(it.time - entry.time) < 120000 }
+            return match ? String.format('%.2f', match.value) : "--"
+        }
+        
+        def pVal = findMatch(state.pressureHistory)
+        def sVal = findMatch(state.spreadHistory)
+        
+        def probMatch = state.probHistory?.find { Math.abs(it.time - entry.time) < 120000 }
+        def probVal = probMatch ? "${Math.round(probMatch.value)}%" : "--"
+        
+        tableHTML += """
+            <tr style="border-bottom: 1px solid #eee;">
+                <td style="padding: 6px 8px; color: #555;">${timeStr}</td>
+                <td style="padding: 6px 8px;">${tVal}°</td>
+                <td style="padding: 6px 8px;">${pVal}</td>
+                <td style="padding: 6px 8px;">${sVal != "--" ? sVal + "°" : "--"}</td>
+                <td style="padding: 6px 8px; font-weight: bold; color: ${probMatch && probMatch.value > 50 ? 'red' : 'black'};">${probVal}</td>
+            </tr>
+        """
+    }
+    
+    tableHTML += """
+                </tbody>
+            </table>
+        </div>
+    </div>
+    """
+    return tableHTML
+}
+
+def renderRadarHTML() {
+    def lat = location.latitude ?: 39.8283
+    def lon = location.longitude ?: -98.5795
+
+    return """
+    <div style="width: 100%; max-width: 800px; margin: 20px auto; background: #fff; padding: 15px; border: 1px solid #ccc; border-radius: 5px;">
+        <h4 style="margin-top:0; border-bottom:1px solid #ccc; padding-bottom:5px; color:#333;">Live Regional Radar</h4>
+        <div style="font-size: 11px; color: #666; margin-bottom: 10px;">Cross-reference local sensor data with incoming NOAA/Global radar fronts. Centered on hub location.</div>
+        <iframe width="100%" height="350" src="https://embed.windy.com/embed2.html?lat=${lat}&lon=${lon}&zoom=8&level=surface&overlay=radar&menu=&message=&marker=true&calendar=&pressure=&type=map&location=coordinates&detail=&detailLat=${lat}&detailLon=${lon}&metricWind=mph&metricTemp=%C2%B0F&radarRange=-1" frameborder="0" style="border-radius: 4px;"></iframe>
+    </div>
+    """
+}
+
 def mainPage() {
     dynamicPage(name: "mainPage", title: "<b>Advanced Rain Detection</b>", install: true, uninstall: true) {
      
@@ -308,8 +381,18 @@ def mainPage() {
 
                 statusText += logicPanel
 
-                // --- 24-Hour Visual Data Trend ---
-                statusText += renderChartHTML()
+                // --- 24-Hour Visual Data Trend / Table ---
+                def dispMode = settings.historyDisplayMode ?: "Chart (Chart.js)"
+                if (dispMode == "Chart (Chart.js)") {
+                    statusText += renderChartHTML()
+                } else if (dispMode == "Data Table") {
+                    statusText += renderTableHTML()
+                }
+                
+                // --- Live NOAA Radar Map ---
+                if (settings.enableRadar != false) {
+                    statusText += renderRadarHTML()
+                }
                 
                 // Switch Status
                 def rainSw = switchRaining?.currentValue("switch") == "on" ? "<span style='color:blue; font-weight:bold;'>ON</span>" : "<span style='color:gray;'>OFF</span>"
@@ -371,6 +454,12 @@ def mainPage() {
 def configPage() {
     dynamicPage(name: "configPage", title: "<b>Configuration</b>", install: false, uninstall: false) {
         
+        section("<b>Dashboard UI Preferences</b>", hideable: true, hidden: true) {
+            paragraph "<i>Customize how data is visualized on your main application page.</i>"
+            input "historyDisplayMode", "enum", title: "24-Hour History Display", options: ["Chart (Chart.js)", "Data Table", "Hidden"], defaultValue: "Chart (Chart.js)", required: true, submitOnChange: true
+            input "enableRadar", "bool", title: "Enable Live NOAA Radar Map", defaultValue: true, submitOnChange: true
+        }
+
         section("<b>Primary Environment Sensors (Required)</b>", hideable: true, hidden: true) {
             paragraph "<i>Select the core sensors required for basic weather state and thermodynamic calculations. Temperature, Humidity, and Pressure form the baseline of the prediction engine.</i>"
             input "sensorTemp", "capability.sensor", title: "Outdoor Temperature Sensor", required: true
