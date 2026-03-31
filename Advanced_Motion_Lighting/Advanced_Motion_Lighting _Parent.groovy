@@ -22,6 +22,8 @@ def mainPage() {
     dynamicPage(name: "mainPage", title: "Advanced Motion Lighting", install: true, uninstall: true) {
         
         section("Global System Dashboard") {
+            input "btnRefresh", "button", title: "🔄 Refresh Dashboard Data Now"
+            
             def children = getChildApps()
             if (children) {
                 def tableHTML = "<table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc;'>"
@@ -64,8 +66,8 @@ def mainPage() {
                                 def roiRowBg = (roiRenderedCount % 2 == 0) ? "#ffffff" : "#f9f9f9"
                                 roiHTML += "<tr style='border-bottom: 1px solid #ddd; background-color: ${roiRowBg};'>"
                                 roiHTML += "<td style='padding: 8px;'>${z.name}</td>"
-                                roiHTML += "<td style='padding: 8px;'>\$${z.roi.today}</td>"
-                                roiHTML += "<td style='padding: 8px;'>\$${z.roi.lifetime}</td>"
+                                roiHTML += "<td style='padding: 8px;'>&#36;${z.roi.today}</td>"
+                                roiHTML += "<td style='padding: 8px;'>&#36;${z.roi.lifetime}</td>"
                                 roiHTML += "</tr>"
                                 
                                 totalToday += z.roi.today.toBigDecimal()
@@ -84,7 +86,7 @@ def mainPage() {
                     hTable += "<tr style='background-color: #f2dede; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 5px;'>Device Name</th><th style='padding: 5px;'>Battery</th><th style='padding: 5px;'>Last Activity</th></tr>"
                     healthData.unique{ it.name }.each { h ->
                         def bColor = (h.battery && h.battery.toInteger() < 25) ? "red" : "black"
-                        hTable += "<tr style='border-bottom: 1px solid #eee;'><td style='padding: 5px;'>${h.name}</td><td style='padding: 5px; color: ${bColor}; font-weight: bold;'>${h.battery ?: "--"}%</td><td style='padding: 5px;'>${h.lastActivity}</td></tr>"
+                        hTable += "<tr style='border-bottom: 1px solid #eee;'><td style='padding: 5px;'>${h.name}</td><td style='padding: 5px; color: ${bColor}; font-weight: bold;'>${h.battery ?: '--'}%</td><td style='padding: 5px;'>${h.lastActivity}</td></tr>"
                     }
                     hTable += "</table>"
                     paragraph hTable
@@ -93,8 +95,8 @@ def mainPage() {
                 if (hasROI) {
                     roiHTML += "<tr style='background-color: #dff0d8; border-top: 2px solid #ccc; font-weight: bold;'>"
                     roiHTML += "<td style='padding: 8px; text-align: right;'>SYSTEM TOTALS:</td>"
-                    roiHTML += "<td style='padding: 8px; color: green;'>\$${totalToday.setScale(2, BigDecimal.ROUND_HALF_UP)}</td>"
-                    roiHTML += "<td style='padding: 8px; color: green;'>\$${totalLifetime.setScale(2, BigDecimal.ROUND_HALF_UP)}</td>"
+                    roiHTML += "<td style='padding: 8px; color: green;'>&#36;${totalToday.setScale(2, BigDecimal.ROUND_HALF_UP)}</td>"
+                    roiHTML += "<td style='padding: 8px; color: green;'>&#36;${totalLifetime.setScale(2, BigDecimal.ROUND_HALF_UP)}</td>"
                     roiHTML += "</tr>"
                     roiHTML += "</table>"
                     paragraph roiHTML
@@ -186,11 +188,31 @@ def triggerArrivalLights() {
 def revertArrivalLights() { getChildApps().each { if (it.isArrivalEnabled()) it.revertFromArrival() } }
 
 def appButtonHandler(btn) {
-    if (btn == "btnGlobalSweep") {
-        getChildApps().each { it.executeParentSweep(new Random().nextInt(4500) + 500) }
+    if (btn == "btnRefresh") {
+        // Do nothing, framework refreshes naturally
+    } else if (btn == "btnGlobalSweep") {
+        getChildApps().each { child -> 
+            try {
+                child.executeParentSweep((new Random().nextInt(4500) + 500).toLong())
+            } catch (e) {
+                log.error "Failed to sweep ${child.label}: ${e.message}"
+            }
+        }
     } else if (btn == "btnClearOverrides") {
-        getChildApps().each { it.clearManualOverride() }
+        getChildApps().each { child -> 
+            try {
+                child.clearManualOverride()
+            } catch (e) {
+                log.error "Failed to clear override on ${child.label}: ${e.message}"
+            }
+        }
     } else if (btn == "btnResetROI") {
-        getChildApps().each { it.resetROI() }
+        getChildApps().each { child -> 
+            try {
+                child.resetROI()
+            } catch (e) {
+                log.error "Failed to reset ROI on ${child.label}: ${e.message}"
+            }
+        }
     }
 }
