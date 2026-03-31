@@ -41,15 +41,19 @@ def mainPage() {
                     def mDevs = settings["z${i}Motion"]
                     def vDevs = settings["z${i}Vibration"]
                     def pDevs = settings["z${i}Presence"]
+        
                     def devs = settings["z${i}Switches"]
                     def softDevs = settings["z${i}SoftKillDevices"]
                     def pMonitor = settings["z${i}PowerMonitor"]
                     def oSwitch = settings["z${i}OverrideSwitch"]
+        
                     def gnSwitch = settings["z${i}GoodNightSwitch"]
          
                     def statusAdditions = []
                     def sensorDetails = []
+              
                     def maxRemainingMs = 0
+               
                     def isHardActive = false
 
                     // Check Good Night Switch
@@ -83,13 +87,13 @@ def mainPage() {
                         def mLast = state."zoneLastActive_z${i}" ?: null
                         def mReqHits = settings["z${i}MotionActivationHits"] ?: 1
                         def mHits = state."motionHitCount_z${i}" ?: 0
-                     
+             
                         if (mLast && !mDevs.any{it.currentValue("motion") == "active"}) {
                             def mLeft = mTimeout - (now() - mLast)
                             if (mLeft > maxRemainingMs) maxRemainingMs = mLeft
                         }
                         
-                        // Hit Counter Window Timer (Displays even when occupied for tracking)
+                        // Hit Counter Window Timer
                         if (settings["z${i}TurnOnTriggers"]?.contains("Motion Hit Count") && mReqHits > 1 && mHits > 0 && mLast) {
                             def windowMs = (settings["z${i}MotionActivationWindow"] ?: 1) * 60000
                             def windowLeft = (mLast + windowMs) - now()
@@ -99,7 +103,7 @@ def mainPage() {
                             }
                         }
                         
-                        // Continuous Motion Display (Displays active duration when occupied)
+                        // Continuous Motion Display
                         if (settings["z${i}TurnOnTriggers"]?.contains("Continuous Motion")) {
                             def activeSince = state."motionActiveSince_z${i}" ?: null
                             if (activeSince) {
@@ -136,7 +140,7 @@ def mainPage() {
                             if (vLeft > maxRemainingMs) maxRemainingMs = vLeft
                         }
                         
-                        // Hit Counter Window Timer (Displays even when occupied for tracking)
+                        // Hit Counter Window Timer
                         if (settings["z${i}TurnOnTriggers"]?.contains("Vibration") && vReqHits > 1 && vHits > 0 && vLast) {
                             def windowMs = (settings["z${i}VibeActivationWindow"] ?: 1) * 60000
                             def windowLeft = (vLast + windowMs) - now()
@@ -457,7 +461,6 @@ def roomConfigPage(params) {
                 
                 paragraph "<b>Actuators & Device Power Profiles</b>"
                 input "z${i}Switches", "capability.switch", title: "Hard Power Relays (Smart Plugs, Wall Switches)", multiple: true, required: false, submitOnChange: true
-                
                 if (settings["z${i}Switches"]) {
                     settings["z${i}Switches"].each { dev ->
                         input "z${i}_${dev.id}_active", "decimal", title: "↳ ${dev.displayName} - Active/Idle Watts", required: true, defaultValue: 50.0
@@ -492,7 +495,7 @@ def roomConfigPage(params) {
                 input "z${i}ActiveDays", "enum", title: "Active Days (Leave blank for all days)", options: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"], multiple: true, required: false
                 input "z${i}StartTime", "time", title: "Active Start Time (Optional)", required: false
                 input "z${i}EndTime", "time", title: "Active End Time (Optional)", required: false
-            }
+             }
         }
     }
 }
@@ -620,6 +623,7 @@ def appButtonHandler(btn) {
         evaluateRooms(true)
         return
     }
+ 
     
     if (btn.startsWith("forceOccBtn_")) {
         def i = btn.split("_")[1].toInteger()
@@ -681,7 +685,7 @@ def appButtonHandler(btn) {
                 
                 state."switchIsManual_z${i}" = false
                 state."waitForClear_z${i}" = true
-                
+
                 state."motionHitCount_z${i}" = 0
                 state."vibeHitCount_z${i}" = 0
                 state."zoneLastActive_z${i}" = null
@@ -699,11 +703,54 @@ def appButtonHandler(btn) {
     }
 }
 
+// === ENHANCED RECOVERY LOGIC ===
 def hubRestartHandler(evt) {
     if (!isMasterEnabled()) return
-    logAction("SYSTEM REBOOT DETECTED: Clearing corrupted shutdown timers and forcing a hardware sync to correct physical device desyncs.")
-    for (int i = 1; i <= 12; i++) { state."shutdownDelayActive_z${i}" = false }
-    evaluateRooms(true) 
+    logAction("SYSTEM REBOOT / POWER OUTAGE DETECTED: Recovering previous room states and forcing hardware sync...")
+    
+    for (int i = 1; i <= 12; i++) { 
+        state."shutdownDelayActive_z${i}" = false 
+        
+        if (settings["enableZ${i}"]) {
+            def lastKnownState = state."currentRoomStates_z${i}"
+            def zName = settings["z${i}Name"] ?: "Room ${i}"
+            
+            if (lastKnownState == "occupied") {
+                logAction("RECOVERY: ${zName} was OCCUPIED before outage. Restoring ON state.")
+                
+                def oSwitch = settings["z${i}OverrideSwitch"]
+                if (oSwitch && state."switchIsManual_z${i}") {
+                    safeOn(oSwitch)
+                }
+                
+                turnRoomDevicesOn(i)
+            } else if (lastKnownState == "empty") {
+                logAction("RECOVERY: ${zName} was EMPTY before outage. Restoring OFF state.")
+                
+                def oSwitch = settings["z${i}OverrideSwitch"]
+                if (oSwitch && !state."switchIsManual_z${i}") {
+                    safeOff(oSwitch)
+                }
+                
+                // Force hard kill immediately to prevent phantom power draws
+                def hardDevs = settings["z${i}Switches"]
+                if (hardDevs) hardDevs.each { safeOff(it) }
+                def softDevs = settings["z${i}SoftKillDevices"]
+                if (softDevs) softDevs.each { safeOff(it) }
+            }
+        }
+    }
+    
+    // Give the mesh network 2 minutes to route properly before doing live sensor checks
+    logAction("Pausing live sensor evaluations for 2 minutes to allow Zigbee/Z-Wave meshes to stabilize...")
+    unschedule("evaluateRooms")
+    runIn(120, "resumeNormalOperations")
+}
+
+def resumeNormalOperations() {
+    logAction("Mesh stabilization complete. Resuming standard occupancy evaluations.")
+    runEvery5Minutes("evaluateRooms")
+    evaluateRooms(true)
 }
 
 def modeChangeHandler(evt) {
@@ -744,6 +791,15 @@ def buttonHandler(evt) {
                         state."expectedSwitchBehavior_z${i}" = "manual_off"
                         state."expectedSwitchBehaviorTime_z${i}" = now()
                         state."switchIsManual_z${i}" = false
+                 
+                        // FIX: Engage the "Wait For Clear" lockout and wipe trackers 
+                        // so lingering motion doesn't instantly re-occupy the room.
+                        state."waitForClear_z${i}" = true
+                        state."motionHitCount_z${i}" = 0
+                        state."vibeHitCount_z${i}" = 0
+                        state."zoneLastActive_z${i}" = null
+                        state."motionActiveSince_z${i}" = null
+                        
                         safeOff(oSwitch)
                     } else {
                         // Check for restrictions before turning ON
@@ -756,6 +812,7 @@ def buttonHandler(evt) {
                             state."expectedSwitchBehaviorTime_z${i}" = now()
                             state."switchIsManual_z${i}" = true
                             safeOn(oSwitch)
+                      
                             // Force hardware sync in case room was already occupied by motion but plug desynced
                             turnRoomDevicesOn(i) 
                             runIn(1, "evalR${i}")
@@ -801,7 +858,7 @@ def motionHandler(evt) {
                         def contMins = settings["z${i}MotionContinuousDuration"] ?: 3
                         runIn(contMins * 60, "evalR${i}")
                     }
-                    
+                 
                     def count = (state."motionHitCount_z${i}" ?: 0) + 1
                     state."motionHitCount_z${i}" = count
                     
@@ -810,7 +867,7 @@ def motionHandler(evt) {
                         def windowSecs = (windowMs / 1000).toInteger()
                         runIn(windowSecs, "resetMotionZ${i}")
                     }
-                    
+          
                     // Cancel any pending timeout shutdown for this specific room
                     unschedule("evalR${i}")
                     runIn(1, "evalR${i}") // re-eval quickly
@@ -843,7 +900,7 @@ def processMotionInactive(roomId) {
 
         // We update the timestamp AGAIN just in case the 15s grace period slightly delayed it
         state."zoneLastActive_z${roomId}" = now()
-        
+  
         if (settings["z${roomId}TurnOffTriggers"]?.contains("Motion/Vibe Timeout")) {
             def timeoutSecs = (settings["z${roomId}Timeout"] ?: 15) * 60
             runIn(timeoutSecs, "evalR${roomId}")
@@ -868,7 +925,7 @@ def vibrationHandler(evt) {
                     
                     def count = (state."vibeHitCount_z${i}" ?: 0) + 1
                     state."vibeHitCount_z${i}" = count
-                    
+         
                     def windowMs = (settings["z${i}VibeActivationWindow"] ?: 1) * 60000
                     if (count == 1 && windowMs > 0) {
                         def windowSecs = (windowMs / 1000).toInteger()
@@ -877,6 +934,7 @@ def vibrationHandler(evt) {
                     
                     unschedule("evalR${i}")
                     runIn(1, "evalR${i}")
+               
                 } else {
                     state."vibeLastActive_z${i}" = now() // Update timestamp to the moment vibration STOPS
 
@@ -896,6 +954,7 @@ def vibrationHandler(evt) {
 
 def sensorHandler(evt) {
     if (!isMasterEnabled()) return
+  
     if (evt.name == "switch") {
         for (int i = 1; i <= 12; i++) {
             if (settings["enableZ${i}"]) {
@@ -904,11 +963,21 @@ def sensorHandler(evt) {
                     def expected = state."expectedSwitchBehavior_z${i}"
                     def expectedTime = state."expectedSwitchBehaviorTime_z${i}" ?: 0
                     
-                    // Increased from 5000ms to 15000ms to account for hub latency
-                    def withinWindow = (now() - expectedTime) < 15000 
+                    // Tightened to 5000ms. If hub latency takes longer than 5s, 
+                    // it's better to process it as an external event anyway.
+                    def withinWindow = (now() - expectedTime) < 5000 
                     
+                    def isExpectedEcho = false
                     if (withinWindow) {
-                        // The event arrived within 15 seconds of the app issuing a command.
+                        if ((expected == "auto" && evt.value == "off") || (expected == "manual_off" && evt.value == "off")) {
+                            isExpectedEcho = true
+                        } else if ((expected == "auto" && evt.value == "on") || (expected == "manual_on" && evt.value == "on")) {
+                            isExpectedEcho = true
+                        }
+                    }
+                    
+                    if (isExpectedEcho) {
+                        // The event matches exactly what we just commanded the app to do.
                         if (expected == "auto") {
                             state."switchIsManual_z${i}" = false
                         } else if (expected == "manual_on") {
@@ -917,11 +986,11 @@ def sensorHandler(evt) {
                             state."switchIsManual_z${i}" = false
                         }
                     } else {
-                        // Event arrived outside the window. 
+                        // Event arrived outside the window OR it was an unexpected quick physical toggle.
                         if (evt.value == "on") {
                             // DUPLICATE EVENT GUARD: If the room is already occupied automatically, 
                             // do not let a late/ghost event hijack the room into a manual lock.
-                            if (state."currentRoomStates_z${i}" == "occupied" && state."switchIsManual_z${i}" == false) {
+                            if (state."currentRoomStates_z${i}" == "occupied" && state."switchIsManual_z${i}" != true) {
                                 logDebug("${settings["z${i}Name"]}: Ignored delayed/duplicate ON event for Virtual Switch. Room is already auto-occupied.")
                             } else {
                                 logAction("${settings["z${i}Name"]}: Virtual Switch manually turned ON externally.")
@@ -932,10 +1001,10 @@ def sensorHandler(evt) {
                         } else {
                             logAction("${settings["z${i}Name"]}: Virtual Switch manually turned OFF externally.")
                             state."switchIsManual_z${i}" = false
-                            
+    
                             // Engage the "Wait For Clear" lockout
                             state."waitForClear_z${i}" = true
-                            
+           
                             // Clear motion history to ensure immediate empty state
                             state."motionHitCount_z${i}" = 0
                             state."vibeHitCount_z${i}" = 0
@@ -974,7 +1043,7 @@ def getRoomOccupancyState(roomId) {
     // Forces the room to stay empty when manually turned off until all hardware stops sending active signals
     if (state."waitForClear_z${roomId}") {
         def isClear = true
-        
+       
         if (mDevs && mDevs.any { it.currentValue("motion") == "active" }) isClear = false
         if (vDevs && vDevs.any { it.currentValue("acceleration") == "active" }) isClear = false
         if (pDevs && pDevs.any { it.currentValue("presence") == "present" }) isClear = false
@@ -1018,6 +1087,7 @@ def getRoomOccupancyState(roomId) {
     if (pMonitor) {
         def currentDraw = pMonitor.currentValue("power") ?: 0.0
         def safeThresh = settings["z${roomId}ActiveWattageThreshold"] ?: 15.0
+  
         if (currentDraw > safeThresh) {
             state."zoneLastActive_z${roomId}" = now() // Force database save
             return true
@@ -1080,7 +1150,7 @@ def getRoomOccupancyState(roomId) {
     def offTriggers = settings["z${roomId}TurnOffTriggers"] ?: ["Motion/Vibe Timeout", "Virtual Switch OFF"]
 
     // --- EVALUATE TURN ON TRIGGERS ---
-    
+
     // A. Presence
     if (onTriggers.contains("Presence Sensor") && pDevs && pDevs.any { it.currentValue("presence") == "present" }) {
         isOccupied = true
@@ -1120,6 +1190,7 @@ def getRoomOccupancyState(roomId) {
     if (!isOccupied && !wasAlreadyOccupied && onTriggers.contains("Motion Hit Count") && mDevs) {
         def reqHits = (settings["z${roomId}MotionActivationHits"] ?: 1).toInteger()
         def hitCount = state."motionHitCount_z${roomId}" ?: 0
+    
         if (hitCount >= reqHits) {
             isOccupied = true
         }
@@ -1129,6 +1200,7 @@ def getRoomOccupancyState(roomId) {
     if (!isOccupied && !wasAlreadyOccupied && onTriggers.contains("Vibration") && vDevs) {
         def reqHits = (settings["z${roomId}VibeActivationHits"] ?: 1).toInteger()
         def hitCount = state."vibeHitCount_z${roomId}" ?: 0
+       
         if (hitCount >= reqHits) {
             isOccupied = true
         }
@@ -1217,6 +1289,7 @@ def evaluateRooms(boolean forceSync = false) {
     for (int i = 1; i <= 12; i++) {
         if (settings["enableZ${i}"]) {
             def zName = settings["z${i}Name"] ?: "Room ${i}"
+          
             def restriction = getRoomRestrictionReason(i)
             
             if (restriction) {
@@ -1228,13 +1301,14 @@ def evaluateRooms(boolean forceSync = false) {
                     def hardDevs = settings["z${i}Switches"]
                     def softDevs = settings["z${i}SoftKillDevices"]
                     def anyOn = false
+ 
                     if (hardDevs?.any { it.currentValue("switch") == "on" }) anyOn = true
                     if (softDevs?.any { it.currentValue("switch") == "on" }) anyOn = true
                     
                     if (anyOn) {
                         def pDevs = settings["z${i}Presence"]
                         def pActive = pDevs && pDevs.any { it.currentValue("presence") == "present" }
-                        
+                  
                         if (!pActive) {
                             def lastM = state."zoneLastActive_z${i}" ?: 0
                             def lastV = state."vibeLastActive_z${i}" ?: 0
@@ -1244,6 +1318,7 @@ def evaluateRooms(boolean forceSync = false) {
                                 state."zoneLastActive_z${i}" = now() // Initialize baseline if missing
                             } else {
                                 def timeoutMs = (settings["z${i}AbsoluteSweeperTimeout"] ?: 120) * 60000
+                              
                                 if ((now() - lastAct) >= timeoutMs) {
                                     logAction("${zName}: 🚨 ABSOLUTE SWEEPER activated! Devices left ON in paused room with no motion/presence for ${(settings["z${i}AbsoluteSweeperTimeout"] ?: 120)} minutes. Forcing shutdown.")
                                     initiateRoomShutdown(i)
@@ -1294,7 +1369,7 @@ def evaluateRooms(boolean forceSync = false) {
                     if (oSwitch && oSwitch.currentValue("switch") != "on") {
                         state."expectedSwitchBehavior_z${i}" = "auto"
                         state."expectedSwitchBehaviorTime_z${i}" = now()
-                        safeOn(oSwitch)
+                        runIn(1, "syncVirtualSwitchOn", [data: [room: i]])
                     }
                     
                     turnRoomDevicesOn(i)
@@ -1315,9 +1390,9 @@ def evaluateRooms(boolean forceSync = false) {
                     if (oSwitch && oSwitch.currentValue("switch") == "on") {
                         state."expectedSwitchBehavior_z${i}" = "auto"
                         state."expectedSwitchBehaviorTime_z${i}" = now()
-                        safeOff(oSwitch)
+                        runIn(1, "syncVirtualSwitchOff", [data: [room: i]])
                     }
-                    
+                  
                     initiateRoomShutdown(i)
                 }
             } else if (currentState == "empty" && settings["z${i}Sweeper"]) {
@@ -1327,7 +1402,7 @@ def evaluateRooms(boolean forceSync = false) {
                 def anyOn = false
                 if (hardDevs?.any { it.currentValue("switch") == "on" }) anyOn = true
                 if (softDevs?.any { it.currentValue("switch") == "on" }) anyOn = true
-                
+              
                 if (anyOn) {
                     def lastAct = state."zoneLastActive_z${i}" ?: now()
                     def timeoutMs = (settings["z${i}SweeperTimeout"] ?: 60) * 60000
@@ -1340,7 +1415,6 @@ def evaluateRooms(boolean forceSync = false) {
                         }
                         
                         initiateRoomShutdown(i)
-                        
                         state."zoneLastActive_z${i}" = now() // Reset to prevent spamming logs during device shutdown delays
                     }
                 }
@@ -1530,3 +1604,14 @@ def resetVibeZ9() { state."vibeHitCount_z9" = 0 }
 def resetVibeZ10() { state."vibeHitCount_z10" = 0 }
 def resetVibeZ11() { state."vibeHitCount_z11" = 0 }
 def resetVibeZ12() { state."vibeHitCount_z12" = 0 }
+
+// === DEFERRED VIRTUAL SWITCH WRAPPERS ===
+def syncVirtualSwitchOn(data) {
+    def dev = settings["z${data.room}OverrideSwitch"]
+    if (dev) safeOn(dev)
+}
+
+def syncVirtualSwitchOff(data) {
+    def dev = settings["z${data.room}OverrideSwitch"]
+    if (dev) safeOff(dev)
+}
