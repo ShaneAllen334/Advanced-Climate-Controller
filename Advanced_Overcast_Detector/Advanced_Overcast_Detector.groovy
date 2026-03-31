@@ -28,7 +28,7 @@ def mainPage() {
             def statusText = "<table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc;'>"
             statusText += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Environment</th><th style='padding: 8px;'>System Evaluation</th><th style='padding: 8px;'>Outputs</th></tr>"
             
-            def currentLux = luxSensors ? "${getAggregateLux()} lx" : "-- lx"
+            def currentLux = primaryLuxSensor ? "${getAggregateLux()} lx" : "-- lx"
             
             // Environment Display (Showing Dynamic Calculations)
             def envDisplay = "<div style='font-size: 14px; margin-bottom: 5px;'><b>${currentLux}</b></div>"
@@ -100,7 +100,7 @@ def mainPage() {
                     def dMax = rData?.dailyMax ?: 0
                     def setpt = rData?.currentSetpoint ?: (settings["roomBaseLux_${i}"] ?: 0)
                     def vName = settings["roomVar_${i}"] ?: "Not Configured"
-                    
+                
                     statusText += "<tr style='border-bottom: 1px solid #eee;'>"
                     statusText += "<td style='padding: 6px;'><b>${rName}</b></td>"
                     statusText += "<td style='padding: 6px;'>${dMax} lx</td>"
@@ -109,6 +109,9 @@ def mainPage() {
                     statusText += "</tr>"
                 }
                 statusText += "</table>"
+                
+                // INJECT ROOM BAR GRAPH HERE
+                statusText += generateRoomBarGraph()
             }
             
             // System Status Evaluation
@@ -124,7 +127,7 @@ def mainPage() {
                     def now = new Date()
                     def sSetOffset = sunsetOffset ? sunsetOffset.toInteger() : 0
                     def actualSunset = new Date(sunInfo.sunset.time + (sSetOffset * 60000))
-                    
+                   
                     if (now.before(actualSunset) && now.after(sunInfo.sunrise)) {
                         def diffMillis = actualSunset.time - now.time
                         def h = (diffMillis / 3600000).toInteger()
@@ -173,8 +176,12 @@ def mainPage() {
         
         section("24-Hour Lux Trend vs. Expected Solar Baseline") {
             if (state.luxHistory && state.luxHistory.size() > 2) {
-                def chartUrl = generateChartUrl()
-                paragraph "<div style='text-align:center;'><img src='${chartUrl}' width='100%' style='max-width:600px; border: 1px solid #ccc; border-radius: 5px;' /></div>"
+                if (chartSource == "SVG/HTML (Local)") {
+                    paragraph generateLocalLineChart()
+                } else {
+                    def chartUrl = generateChartUrl()
+                    paragraph "<div style='text-align:center;'><img src='${chartUrl}' width='100%' style='max-width:600px; border: 1px solid #ccc; border-radius: 5px;' /></div>"
+                }
             } else {
                 paragraph "<i>Collecting data... Graph will appear once enough data points are gathered.</i>"
             }
@@ -224,8 +231,17 @@ def mainPage() {
         }
         
         section("Sensor & Control Targets", hideable: true, hidden: true) {
-            input "luxSensors", "capability.illuminanceMeasurement", title: "Outdoor Master Lux Sensor(s)", multiple: true,
-                description: "Select multiple to auto-filter outliers and calculate a master average."
+            input "chartSource", "enum", title: "Chart Source Engine", options: ["QuickChart.io (Cloud)", "SVG/HTML (Local)"], defaultValue: "QuickChart.io (Cloud)", 
+                description: "Local generation runs completely offline but is visually simpler. Cloud generation creates advanced images via the QuickChart API."
+            
+            paragraph "<b>Outdoor Sensor Array:</b> Provide at least a Primary Sensor."
+            input "primaryLuxSensor", "capability.illuminanceMeasurement", title: "Primary Outdoor Lux Sensor", required: true
+            input "auxLuxSensor1", "capability.illuminanceMeasurement", title: "Auxiliary Outdoor Lux Sensor 1", required: false
+            input "auxLuxSensor2", "capability.illuminanceMeasurement", title: "Auxiliary Outdoor Lux Sensor 2", required: false
+            input "auxLuxSensor3", "capability.illuminanceMeasurement", title: "Auxiliary Outdoor Lux Sensor 3", required: false
+            
+            input "averageSensors", "bool", title: "Average all active outdoor sensors? (Smarter detection)", defaultValue: true,
+                description: "If ON, the app will drop the highest/lowest readings and average the rest for system logic. If OFF, it will only use the Primary Sensor for logic (but will still graph all of them)."
             
             input "sensorInterval", "number", title: "Sensor Update Interval (Minutes)", defaultValue: 15,
                 description: "How often your sensor reports data. The app dynamically scales its math windows based on this limitation so it doesn't miss sudden drops."
@@ -320,7 +336,11 @@ def initialize() {
         if (rLux) subscribe(rLux, "illuminance", roomLuxHandler)
     }
     
-    if (luxSensors) subscribe(luxSensors, "illuminance", luxHandler)
+    if (primaryLuxSensor) subscribe(primaryLuxSensor, "illuminance", luxHandler)
+    if (auxLuxSensor1) subscribe(auxLuxSensor1, "illuminance", luxHandler)
+    if (auxLuxSensor2) subscribe(auxLuxSensor2, "illuminance", luxHandler)
+    if (auxLuxSensor3) subscribe(auxLuxSensor3, "illuminance", luxHandler)
+
     subscribe(location, "mode", modeHandler)
    
     if (useAstro) {
@@ -449,8 +469,12 @@ def roomLuxHandler(evt) {
 
 // --- SENSOR AGGREGATION & SOLAR CALCS ---
 def getAggregateLux() {
-    if (!luxSensors) return 0
-    def values = luxSensors.collect { it.currentValue("illuminance")?.toInteger() ?: 0 }
+    if (!primaryLuxSensor) return 0
+    if (!averageSensors) return primaryLuxSensor.currentValue("illuminance")?.toInteger() ?: 0
+    
+    def sensors = [primaryLuxSensor, auxLuxSensor1, auxLuxSensor2, auxLuxSensor3].findAll { it != null }
+    def values = sensors.collect { it.currentValue("illuminance")?.toInteger() ?: 0 }
+    
     if (values.size() == 0) return 0
     if (values.size() == 1) return values[0]
     if (values.size() > 2) {
@@ -502,14 +526,18 @@ def getDynamicClearThreshold() {
 
 // --- UTILITY: GRAPHING & SOLAR BASELINE ---
 def logGraphData() {
-    if (!luxSensors) return
+    if (!primaryLuxSensor) return
     
-    def currentLux = getAggregateLux()
     def timestamp = new Date().format("HH:mm", location.timeZone)
     def nowTime = now()
     
-    def expectedLux = 0
+    def s1 = primaryLuxSensor?.currentValue("illuminance")?.toInteger() ?: 0
+    def s2 = auxLuxSensor1?.currentValue("illuminance")?.toInteger() ?: 0
+    def s3 = auxLuxSensor2?.currentValue("illuminance")?.toInteger() ?: 0
+    def s4 = auxLuxSensor3?.currentValue("illuminance")?.toInteger() ?: 0
     
+    def expectedLux = 0
+   
     // ALWAYS trace standard theoretical curve based on peak calibration for visual reference
     def sunInfo = getSunriseAndSunset()
     if (sunInfo && sunInfo.sunrise && sunInfo.sunset) {
@@ -526,7 +554,7 @@ def logGraphData() {
     if (!state.luxHistory) state.luxHistory = []
     
     // Add new data point including expected baseline
-    state.luxHistory.add([time: timestamp, lux: currentLux, expected: expectedLux])
+    state.luxHistory.add([time: timestamp, s1: s1, s2: s2, s3: s3, s4: s4, expected: expectedLux])
     
     if (state.luxHistory.size() > 96) {
         state.luxHistory = state.luxHistory.drop(1)
@@ -537,20 +565,115 @@ def generateChartUrl() {
     if (!state.luxHistory) return ""
     
     def labels = []
-    def actualData = []
-    def expectedData = []
+    state.luxHistory.each { labels << "'${it.time}'" }
     
-    state.luxHistory.each { pt ->
-        labels << "'${pt.time}'"
-        actualData << (pt.lux ?: 0)
-        expectedData << (pt.expected ?: 0) // Handles older data points safely
+    def datasets = []
+    if (primaryLuxSensor) {
+        def d = state.luxHistory.collect { it.s1 ?: (it.lux ?: 0) } // Backwards compatible with old logs
+        datasets << "{label:'Primary Lux',data:[${d.join(',')}],fill:false,borderColor:'rgba(54,162,235,1)',borderWidth:2,pointRadius:0}"
+    }
+    if (auxLuxSensor1) {
+        def d = state.luxHistory.collect { it.s2 ?: 0 }
+        datasets << "{label:'Aux 1',data:[${d.join(',')}],fill:false,borderColor:'rgba(255,99,132,1)',borderWidth:2,pointRadius:0}"
+    }
+    if (auxLuxSensor2) {
+        def d = state.luxHistory.collect { it.s3 ?: 0 }
+        datasets << "{label:'Aux 2',data:[${d.join(',')}],fill:false,borderColor:'rgba(75,192,192,1)',borderWidth:2,pointRadius:0}"
+    }
+    if (auxLuxSensor3) {
+        def d = state.luxHistory.collect { it.s4 ?: 0 }
+        datasets << "{label:'Aux 3',data:[${d.join(',')}],fill:false,borderColor:'rgba(153,102,255,1)',borderWidth:2,pointRadius:0}"
     }
     
+    def expData = state.luxHistory.collect { it.expected ?: 0 }
+    datasets << "{label:'Expected Clear Sky',data:[${expData.join(',')}],fill:false,borderColor:'rgba(255,159,64,0.8)',borderWidth:2,borderDash:[5,5],pointRadius:0}"
+
     // Compact JSON string to prevent URL encoding issues
-    def chartConfig = "{type:'line',data:{labels:[${labels.join(',')}],datasets:[{label:'Actual Lux',data:[${actualData.join(',')}],fill:true,backgroundColor:'rgba(54,162,235,0.1)',borderColor:'rgba(54,162,235,1)',borderWidth:2,pointRadius:0},{label:'Expected Clear Sky',data:[${expectedData.join(',')}],fill:false,borderColor:'rgba(255,159,64,0.8)',borderWidth:2,borderDash:[5,5],pointRadius:0}]},options:{legend:{display:true,position:'bottom'},scales:{xAxes:[{ticks:{autoSkip:true,maxTicksLimit:8}}]}}}"
+    def chartConfig = "{type:'line',data:{labels:[${labels.join(',')}],datasets:[${datasets.join(',')}]},options:{legend:{display:true,position:'bottom'},scales:{xAxes:[{ticks:{autoSkip:true,maxTicksLimit:8}}]}}}"
     
     def encodedConfig = java.net.URLEncoder.encode(chartConfig, "UTF-8")
     return "https://quickchart.io/chart?c=${encodedConfig}&w=600&h=300"
+}
+
+def generateLocalLineChart() {
+    if (!state.luxHistory || state.luxHistory.size() < 2) return "<i>Collecting data for local graph...</i>"
+    
+    def width = 600
+    def height = 250
+    def maxLux = state.luxHistory.collect { 
+        [it.s1 ?: (it.lux ?: 0), it.s2 ?: 0, it.s3 ?: 0, it.s4 ?: 0, it.expected ?: 0].max() 
+    }.max() ?: 1000
+    
+    if (maxLux < 1000) maxLux = 1000
+
+    def svg = "<svg width='100%' viewBox='0 0 ${width} ${height}' style='background:#fcfcfc; border:1px solid #ccc; border-radius:5px;'>"
+    
+    // Background Grid & Y-Axis
+    svg += "<line x1='0' y1='${height/2}' x2='${width}' y2='${height/2}' stroke='#eee' stroke-width='1'/>"
+    svg += "<text x='5' y='15' font-size='11' fill='#888' font-family='sans-serif'>${maxLux} lx</text>"
+    svg += "<text x='5' y='${height - 5}' font-size='11' fill='#888' font-family='sans-serif'>0 lx</text>"
+
+    def xStep = width / (state.luxHistory.size() - 1)
+
+    // Helper Closure
+    def makePolyline = { dataKey, color, strokeDash ->
+        def pts = []
+        state.luxHistory.eachWithIndex { pt, i ->
+            def x = (i * xStep).toInteger()
+            // Backwards compatibility included for old 'lux' tag
+            def val = pt[dataKey] ?: (dataKey == 's1' ? (pt.lux ?: 0) : 0)
+            def y = height - ((val / maxLux) * height).toInteger()
+            pts << "${x},${y}"
+        }
+        return "<polyline points='${pts.join(' ')}' fill='none' stroke='${color}' stroke-width='2' stroke-dasharray='${strokeDash}' stroke-linejoin='round'/>"
+    }
+
+    if (primaryLuxSensor) svg += makePolyline("s1", "rgba(54,162,235,1)", "none")
+    if (auxLuxSensor1) svg += makePolyline("s2", "rgba(255,99,132,1)", "none")
+    if (auxLuxSensor2) svg += makePolyline("s3", "rgba(75,192,192,1)", "none")
+    if (auxLuxSensor3) svg += makePolyline("s4", "rgba(153,102,255,1)", "none")
+    svg += makePolyline("expected", "rgba(255,159,64,0.8)", "5,5")
+
+    svg += "</svg>"
+    
+    // Generate Legend
+    def legend = "<div style='font-size:12px; margin-top:8px; text-align:center; font-family:sans-serif;'>"
+    if (primaryLuxSensor) legend += "<span style='color:rgba(54,162,235,1); font-weight:bold; margin-right:10px;'>■ Primary</span>"
+    if (auxLuxSensor1) legend += "<span style='color:rgba(255,99,132,1); font-weight:bold; margin-right:10px;'>■ Aux 1</span>"
+    if (auxLuxSensor2) legend += "<span style='color:rgba(75,192,192,1); font-weight:bold; margin-right:10px;'>■ Aux 2</span>"
+    if (auxLuxSensor3) legend += "<span style='color:rgba(153,102,255,1); font-weight:bold; margin-right:10px;'>■ Aux 3</span>"
+    legend += "<span style='color:rgba(255,159,64,1); font-weight:bold;'>■ Expected</span>"
+    legend += "</div>"
+
+    return "<div style='width:100%; max-width:600px; margin:auto;'>${svg}${legend}</div>"
+}
+
+def generateRoomBarGraph() {
+    def configuredRooms = numRooms ?: 0
+    if (configuredRooms == 0) return ""
+
+    def html = "<div style='margin-top: 20px; font-family: sans-serif;'>"
+    html += "<div style='font-weight: bold; font-size: 14px; margin-bottom: 10px;'>24-Hour Max Lux by Room</div>"
+    
+    def maxGlobal = 100 // baseline to avoid divide by zero errors
+    for (int i = 1; i <= configuredRooms; i++) {
+        def rData = state.roomData["${i}"]
+        if (rData && rData.dailyMax > maxGlobal) maxGlobal = rData.dailyMax
+    }
+
+    for (int i = 1; i <= configuredRooms; i++) {
+        def rName = settings["roomName_${i}"] ?: "Room ${i}"
+        def rData = state.roomData["${i}"]
+        def dMax = rData?.dailyMax ?: 0
+        def pct = (dMax / maxGlobal) * 100
+        
+        html += "<div style='margin-top: 8px; font-size: 12px; font-weight: bold; color: #444;'>${rName} <span style='font-weight:normal; color:#888;'>(${dMax} lx)</span></div>"
+        html += "<div style='width: 100%; height: 16px; background: #e0e0e0; border-radius: 4px; overflow: hidden; border: 1px solid #ccc;'>"
+        html += "<div style='width: ${pct}%; height: 100%; background: linear-gradient(90deg, #4facfe 0%, #00f2fe 100%); transition: width 0.5s ease;'></div>"
+        html += "</div>"
+    }
+    html += "</div>"
+    return html
 }
 
 // --- SYSTEM CHECKS ---
@@ -619,7 +742,7 @@ def luxHandler(evt) {
 }
 
 def forceImmediateEvaluation() {
-    if (!luxSensors || isSystemPaused() || !isModeAllowed() || (state.isNight && useAstro)) return
+    if (!primaryLuxSensor || isSystemPaused() || !isModeAllowed() || (state.isNight && useAstro)) return
     
     def lux = getAggregateLux()
     def overLimit = getSmartOvercastThreshold()
@@ -646,7 +769,7 @@ def evaluateLuxCondition() {
     if (isSystemPaused() || !isModeAllowed()) return
     if (state.isNight && useAstro) return 
     
-    if (!luxSensors) return
+    if (!primaryLuxSensor) return
     
     def lux = getAggregateLux()
     def overLimit = getSmartOvercastThreshold()
@@ -777,7 +900,7 @@ def triggerOvercast() {
     }
     
     if (targetSwitch && targetSwitch.currentValue("switch") != "on") targetSwitch.on()
-    if (targetDimmer && luxSensors) updateDimmerLevel(getAggregateLux())
+    if (targetDimmer && primaryLuxSensor) updateDimmerLevel(getAggregateLux())
 }
 
 def triggerClear() {
