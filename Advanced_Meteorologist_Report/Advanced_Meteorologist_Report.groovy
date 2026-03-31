@@ -195,7 +195,8 @@ def mainPage() {
             paragraph "<hr><b>🔘 Manual Switch Triggers</b>"
             input "enableSwitch1", "bool", title: "Enable Switch Trigger 1", submitOnChange: true, defaultValue: false
             if (enableSwitch1) {
-                input "triggerSwitch1", "capability.switch", title: "Switch Trigger 1", description: "Turns off automatically after 2 seconds.", required: true, multiple: false
+                input "triggerSwitch1", "capability.switch", title: "Switch Trigger 1", required: true, multiple: false
+                input "sw1AutoOff", "bool", title: "Auto-turn off switch after 2 seconds?", defaultValue: false
                 input "sw1StartTime", "time", title: "Allowable Start Time", required: false
                 input "sw1EndTime", "time", title: "Allowable End Time", required: false
                 input "sw1Modes", "mode", title: "Only when in Mode(s)", multiple: true, required: false
@@ -207,6 +208,7 @@ def mainPage() {
             input "enableSwitch2", "bool", title: "Enable Switch Trigger 2", submitOnChange: true, defaultValue: false
             if (enableSwitch2) {
                 input "triggerSwitch2", "capability.switch", title: "Switch Trigger 2", required: true, multiple: false
+                input "sw2AutoOff", "bool", title: "Auto-turn off switch after 2 seconds?", defaultValue: false
                 input "sw2StartTime", "time", title: "Allowable Start Time", required: false
                 input "sw2EndTime", "time", title: "Allowable End Time", required: false
                 input "sw2Modes", "mode", title: "Only when in Mode(s)", multiple: true, required: false
@@ -218,6 +220,7 @@ def mainPage() {
             input "enableSwitch3", "bool", title: "Enable Switch Trigger 3", submitOnChange: true, defaultValue: false
             if (enableSwitch3) {
                 input "triggerSwitch3", "capability.switch", title: "Switch Trigger 3", required: true, multiple: false
+                input "sw3AutoOff", "bool", title: "Auto-turn off switch after 2 seconds?", defaultValue: false
                 input "sw3StartTime", "time", title: "Allowable Start Time", required: false
                 input "sw3EndTime", "time", title: "Allowable End Time", required: false
                 input "sw3Modes", "mode", title: "Only when in Mode(s)", multiple: true, required: false
@@ -492,18 +495,21 @@ def modeChangeHandler(evt) {
     }
 }
 
-def switchTrigger1Handler(evt) { handleSwitchTrigger(1, triggerSwitch1, sw1StartTime, sw1EndTime, sw1Modes, sw1NotifyTarget, sw1Audio) }
-def switchTrigger2Handler(evt) { handleSwitchTrigger(2, triggerSwitch2, sw2StartTime, sw2EndTime, sw2Modes, sw2NotifyTarget, sw2Audio) }
-def switchTrigger3Handler(evt) { handleSwitchTrigger(3, triggerSwitch3, sw3StartTime, sw3EndTime, sw3Modes, sw3NotifyTarget, sw3Audio) }
+def switchTrigger1Handler(evt) { handleSwitchTrigger(1, triggerSwitch1, sw1StartTime, sw1EndTime, sw1Modes, sw1NotifyTarget, sw1Audio, sw1AutoOff) }
+def switchTrigger2Handler(evt) { handleSwitchTrigger(2, triggerSwitch2, sw2StartTime, sw2EndTime, sw2Modes, sw2NotifyTarget, sw2Audio, sw2AutoOff) }
+def switchTrigger3Handler(evt) { handleSwitchTrigger(3, triggerSwitch3, sw3StartTime, sw3EndTime, sw3Modes, sw3NotifyTarget, sw3Audio, sw3AutoOff) }
 
-def handleSwitchTrigger(num, sw, start, end, modes, target, playAudio) {
+def handleSwitchTrigger(num, sw, start, end, modes, target, playAudio, autoOff) {
     logAction("Virtual Switch ${num} triggered.")
     if (!checkTime(start, end)) { logAction("Trigger ignored: Outside allowed time window."); return }
     if (!checkModes(modes)) { logAction("Trigger ignored: Not in allowed mode."); return }
     
     boolean doAudio = (playAudio != null) ? playAudio : false
     executeTargetedBroadcast(target ?: "All Profiles", doAudio)
-    runIn(2, "turnOffSwitch${num}")
+    
+    if (autoOff) {
+        runIn(2, "turnOffSwitch${num}")
+    }
 }
 
 def turnOffSwitch1() { if (triggerSwitch1) triggerSwitch1.off() }
