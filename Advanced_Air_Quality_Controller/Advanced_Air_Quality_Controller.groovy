@@ -25,6 +25,7 @@ def mainPage() {
             paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Provides a real-time view of your home's air quality, active purifiers, and the current logic state of the AQI engine.</div>"
             
             def statusExplanation = getHumanReadableStatus()
+          
             paragraph "<div style='background-color:#e9ecef; padding:10px; border-radius:5px; border-left:5px solid #007bff;'><b>System Status:</b> ${statusExplanation}</div>"
 
             def masterState = appEnableSwitch ? appEnableSwitch.currentValue("switch")?.toUpperCase() : "ON (NO SWITCH)"
@@ -223,7 +224,7 @@ def mainPage() {
                 
                 input "mainPreventSwitch", "capability.switch", title: "Prevent Switch (e.g., TV - Stops purifier)", required: false, multiple: false
                 if (mainPreventSwitch) input "mainOverrideLevel", "number", title: "Emergency Override AQI", required: false, defaultValue: 100
-                
+            
                 paragraph "<b>Air Mega ProX Default Specs</b>"
                 input "mainPurifierCADR", "number", title: "Purifier CADR (CFM)", required: false, defaultValue: 450
                 input "mainPurifierWatts", "number", title: "Purifier Max Wattage", required: false, defaultValue: 65
@@ -270,7 +271,7 @@ def mainPage() {
                 section("<b>${zName} Configuration</b>", hideable: true, hidden: true) {
                     input "z${i}Name", "text", title: "Zone Name", required: false, defaultValue: "Zone ${i}"
                     input "z${i}AQI", "capability.sensor", title: "AQI Sensor", required: true
-                    
+            
                     if (!isWholeHouse) {
                         input "z${i}Purifier", "capability.switch", title: "Zone Air Purifier Switch", required: false
                         input "z${i}TriggerSwitch", "capability.switch", title: "Trigger Switches (e.g., Vacuum)", required: false, multiple: true
@@ -313,6 +314,7 @@ def initialize() {
     if (!state.filterWearMins) state.filterWearMins = [:]
     if (!state.filterAlertSent) state.filterAlertSent = [:]
     if (!state.scrubEndTimes) state.scrubEndTimes = [:]
+    
     if (!state.emergencyStartTimes) state.emergencyStartTimes = [:]
     if (!state.emergencyAlertSent) state.emergencyAlertSent = [:]
     state.currentReason = "System Initialized"
@@ -399,7 +401,6 @@ String getHumanReadableStatus() {
     
     if (isQuiet) return "<span style='color:purple;'><b>Quiet Mode Active:</b></span> Purifiers are locked OFF unless emergency thresholds are met."
     if (isPollenContinuous) return "<span style='color:blue;'><b>Continuous Mode Active:</b></span> Running 24/7 due to High Local Pollen (${pollenVal})."
-    
     return "Monitoring actively. System is enforcing Target AQI requirements."
 }
 
@@ -420,6 +421,7 @@ def fetchPollenData() {
                 if (pData && pData.Index != null) {
                     state.localPollen = pData.Index.toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
                     logAction("Pollen data updated for ${zipCode}: ${state.localPollen}")
+                
                     if (state.localPollen >= 7.0 && !state.pollenAlertSent) {
                         sendAlert("Outdoor Pollen is High (${state.localPollen}). Adapting system logic automatically.")
                         state.pollenAlertSent = true
@@ -548,11 +550,13 @@ def evaluateSystem(evt = null) {
             def isScrubbing = false
             if (!isWholeHouse && settings["z${i}TriggerSwitch"]) {
                 if (settings["z${i}TriggerSwitch"].any { it.currentValue("switch") == "on" }) {
-                    zNeedsIt = true; isForcedOn = true
+                    zNeedsIt = true;
+                    isForcedOn = true
                     state.scrubEndTimes["z${i}"] = now() + ((settings["z${i}ScrubTime"] ?: 30) * 60000)
                 } else if (state.scrubEndTimes?.get("z${i}") && now() < state.scrubEndTimes.get("z${i}")) {
-                    zNeedsIt = true; isScrubbing = true
-                    runIn((state.scrubEndTimes.get("z${i}") - now()) / 1000, evaluateSystem)
+                    zNeedsIt = true;
+                    isScrubbing = true
+                    runIn(((state.scrubEndTimes.get("z${i}") - now()) / 1000).toInteger(), "evaluateSystem")
                 }
             }
 
@@ -608,8 +612,9 @@ def evaluateSystem(evt = null) {
                 isMainForcedOn = true
                 state.mainScrubEnd = now() + ((mainScrubTime ?: 30) * 60000)
             } else if (state.mainScrubEnd && now() < state.mainScrubEnd) {
-                isMainForcedOn = true; isMainScrubbing = true
-                runIn((state.mainScrubEnd - now()) / 1000, evaluateSystem)
+                isMainForcedOn = true;
+                isMainScrubbing = true
+                runIn(((state.mainScrubEnd - now()) / 1000).toInteger(), "evaluateSystem")
             }
         }
         
