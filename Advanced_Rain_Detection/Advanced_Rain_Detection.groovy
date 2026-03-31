@@ -18,6 +18,109 @@ preferences {
     page(name: "configPage")
 }
 
+def renderChartHTML() {
+    def buildJsArray = { hist ->
+        if (!hist) return "[]"
+        return "[" + hist.collect { "{ x: ${it.time}, y: ${it.value} }" }.join(",") + "]"
+    }
+
+    def tempJs = buildJsArray(state.tempHistory)
+    def pressJs = buildJsArray(state.pressureHistory)
+    def spreadJs = buildJsArray(state.spreadHistory)
+    def probJs = buildJsArray(state.probHistory)
+
+    return """
+    <div style="width: 100%; max-width: 800px; margin: 20px auto; background: #fff; padding: 15px; border: 1px solid #ccc; border-radius: 5px;">
+        <canvas id="weatherChart" height="100"></canvas>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luxon"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon"></script>
+    
+    <script>
+    setTimeout(function() {
+        var ctx = document.getElementById('weatherChart').getContext('2d');
+        var weatherChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                datasets: [
+                    {
+                        label: 'Temperature (°)',
+                        data: ${tempJs},
+                        borderColor: 'rgb(255, 99, 132)',
+                        yAxisID: 'yTemp',
+                        tension: 0.3,
+                        pointRadius: 0
+                    },
+                    {
+                        label: 'Dew Point Spread (°)',
+                        data: ${spreadJs},
+                        borderColor: 'rgb(54, 162, 235)',
+                        yAxisID: 'yTemp',
+                        borderDash: [5, 5],
+                        tension: 0.3,
+                        pointRadius: 0
+                    },
+                    {
+                        label: 'Pressure',
+                        data: ${pressJs},
+                        borderColor: 'rgb(75, 192, 192)',
+                        yAxisID: 'yPress',
+                        tension: 0.3,
+                        pointRadius: 0
+                    },
+                    {
+                        label: 'Rain Probability (%)',
+                        data: ${probJs},
+                        backgroundColor: 'rgba(153, 102, 255, 0.2)',
+                        borderColor: 'rgb(153, 102, 255)',
+                        yAxisID: 'yProb',
+                        fill: true,
+                        stepped: true,
+                        pointRadius: 0
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                interaction: { mode: 'index', intersect: false },
+                scales: {
+                    x: {
+                        type: 'time',
+                        time: { unit: 'hour' },
+                        title: { display: true, text: '24 Hour Timeline' }
+                    },
+                    yTemp: {
+                        type: 'linear',
+                        display: true,
+                        position: 'left',
+                        title: { display: true, text: 'Temp / Spread' }
+                    },
+                    yPress: {
+                        type: 'linear',
+                        display: true,
+                        position: 'right',
+                        title: { display: true, text: 'Pressure' },
+                        grid: { drawOnChartArea: false }
+                    },
+                    yProb: {
+                        type: 'linear',
+                        display: true,
+                        position: 'right',
+                        min: 0,
+                        max: 100,
+                        title: { display: true, text: 'Probability %' },
+                        grid: { drawOnChartArea: false }
+                    }
+                }
+            }
+        });
+    }, 500);
+    </script>
+    """
+}
+
 def mainPage() {
     dynamicPage(name: "mainPage", title: "<b>Advanced Rain Detection</b>", install: true, uninstall: true) {
      
@@ -195,6 +298,18 @@ def mainPage() {
                 
                 statusText += "<tr style='border-top: 1px solid #ccc; background-color: #e6f2ff;'><td colspan='3' style='padding: 15px;'>${historyDisplay}</td></tr>"
                 statusText += "</table>"
+                
+                // --- Predictive Logic & Explanation Panel ---
+                def logicPanel = "<div style='margin-top: 15px; padding: 15px; background: #fff3cd; border-left: 5px solid #ffecb5; font-size: 13px; color: #856404;'>"
+                logicPanel += "<h4 style='margin-top:0; border-bottom:1px solid #ffeeba; padding-bottom:5px;'>Engine Diagnostics: Why is this happening?</h4>"
+                logicPanel += "<b>Active Logic Triggers:</b><br> " + (state.logicReasoning ?: "Gathering sensor data...") + "<br><br>"
+                logicPanel += "<b>Consensus & Confidence:</b><br> " + (state.confidenceReasoning ?: "Waiting for consensus...")
+                logicPanel += "</div>"
+
+                statusText += logicPanel
+
+                // --- 24-Hour Visual Data Trend ---
+                statusText += renderChartHTML()
                 
                 // Switch Status
                 def rainSw = switchRaining?.currentValue("switch") == "on" ? "<span style='color:blue; font-weight:bold;'>ON</span>" : "<span style='color:gray;'>OFF</span>"
@@ -391,6 +506,7 @@ def initialize() {
     if (!state.windDirHistory) state.windDirHistory = []
     if (!state.spreadHistory) state.spreadHistory = []
     if (!state.lightningHistory) state.lightningHistory = []
+    if (!state.probHistory) state.probHistory = []
    
     // Initialize Accumulation Tracking
     if (!state.sevenDayRain) state.sevenDayRain = []
@@ -492,6 +608,7 @@ void appButtonHandler(btn) {
         state.windDirHistory = []
         state.spreadHistory = []
         state.lightningHistory = []
+        state.probHistory = []
         state.sevenDayRain = []
         state.recordRain = [date: "None", amount: 0.0]
         state.currentDayRain = 0.0
@@ -544,20 +661,26 @@ def updateHistory(historyName, val, maxAgeMs) {
     
     def hist = state."${historyName}" ?: []
     hist.add([time: now(), value: cleanVal])
+    
     def cutoff = now() - maxAgeMs
     hist = hist.findAll { it.time >= cutoff }
-    if (hist.size() > 60) hist = hist.drop(hist.size() - 60)
+    
+    if (hist.size() > 300) hist = hist.drop(hist.size() - 300)
     state."${historyName}" = hist
 }
 
 def sensorHandler(evt) { stdHandler(evt) }
 def stdHandler(evt) { markActive(); runIn(2, "evaluateWeather") }
-def tempHandler(evt) { updateHistory("tempHistory", evt.value, 3600000); runIn(2, "evaluateWeather") }
-def pressureHandler(evt) { updateHistory("pressureHistory", evt.value, 10800000); runIn(2, "evaluateWeather") }
-def luxHandler(evt) { updateHistory("luxHistory", evt.value, 3600000); runIn(2, "evaluateWeather") }
-def windHandler(evt) { updateHistory("windHistory", evt.value, 3600000); runIn(2, "evaluateWeather") }
-def windDirHandler(evt) { updateHistory("windDirHistory", evt.value, 3600000); runIn(2, "evaluateWeather") }
-def lightningHandler(evt) { updateHistory("lightningHistory", evt.value, 1800000); runIn(2, "evaluateWeather") }
+def tempHandler(evt) { updateHistory("tempHistory", evt.value, 86400000); runIn(2, "evaluateWeather") }
+def pressureHandler(evt) { updateHistory("pressureHistory", evt.value, 86400000); runIn(2, "evaluateWeather") }
+def luxHandler(evt) { updateHistory("luxHistory", evt.value, 86400000); runIn(2, "evaluateWeather") }
+def windHandler(evt) { updateHistory("windHistory", evt.value, 86400000); runIn(2, "evaluateWeather") }
+def windDirHandler(evt) { updateHistory("windDirHistory", evt.value, 86400000); runIn(2, "evaluateWeather") }
+def lightningHandler(evt) { updateHistory("lightningHistory", evt.value, 86400000); runIn(2, "evaluateWeather") }
+
+def logProbabilityHistory() {
+    updateHistory("probHistory", state.rainProbability ?: 0, 86400000)
+}
 
 // === METEOROLOGICAL CALCULATIONS ===
 def calculateVPD(tF, rh) {
@@ -691,7 +814,7 @@ def evaluateWeather() {
     if (dpSpread < 0) dpSpread = 0.0
     state.dewPointSpread = dpSpread
     
-    updateHistory("spreadHistory", dpSpread, 3600000)
+    updateHistory("spreadHistory", dpSpread, 86400000)
     
     def pTrendData = getTrendData(state.pressureHistory, 0.25)
     def tTrendData = getTrendData(state.tempHistory, 0.16)
@@ -804,7 +927,7 @@ def evaluateWeather() {
         if (settings.enableWindLogic != false && sensorWind) {
             totalModelsEnabled++
             if (wTrendData.diff >= 10.0 && state.windHistory.last()?.value > 15.0) {
-                 probability += 15; reasoning << "Sudden wind gust detected"; activeFactors++; activeFactorNames << "Wind Gust"
+                  probability += 15; reasoning << "Sudden wind gust detected"; activeFactors++; activeFactorNames << "Wind Gust"
             }
         }
 
@@ -1024,6 +1147,9 @@ def evaluateWeather() {
     if (allowTransition || (dataChanged && settings.enableSmartSync != false)) {
         updateChildDevice()
     }
+    
+    // Log the current probability to the new 24-hour timeline
+    logProbabilityHistory()
 }
 
 // === CHILD DEVICE SYNCHRONIZATION ===
@@ -1034,7 +1160,6 @@ def updateChildDevice() {
         child.sendEvent(name: "rainProbability", value: state.rainProbability, unit: "%")
         child.sendEvent(name: "confidenceScore", value: state.confidenceScore, unit: "%")
         child.sendEvent(name: "expectedClearTime", value: state.expectedClearTime)
-      
         child.sendEvent(name: "sprinkling", value: state.weatherState == "Sprinkling" ? "on" : "off")
         child.sendEvent(name: "raining", value: state.weatherState == "Raining" ? "on" : "off")
         
