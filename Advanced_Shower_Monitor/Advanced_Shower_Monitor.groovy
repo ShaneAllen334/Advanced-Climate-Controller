@@ -91,40 +91,36 @@ def mainPage() {
         
         def count = settings["numShowers"] ?: 1
         for (int i = 1; i <= count; i++) {
-            // Dynamically pull the custom shower name, or default to "Shower X"
             def sName = settings["showerName_${i}"] ?: "Shower ${i}"
             
-            // Added hideable and hidden parameters, and dynamic title
             section("<b>${sName} Setup</b>", hideable: true, hidden: true) {
-                // Added submitOnChange: true so the section title updates immediately
                 input "showerName_${i}", "text", title: "Custom Name", required: false, defaultValue: "Shower ${i}", submitOnChange: true
                 input "motion_${i}", "capability.motionSensor", title: "Shower Motion Sensor", required: false
+                
+                // NEW: Optional Out-of-shower sensor
+                input "outMotion_${i}", "capability.motionSensor", title: "Out of Shower Motion Sensor (Optional)", required: false,
+                    description: "If motion is detected here during the grace period, the shower session ends immediately."
+                
                 input "light_${i}", "capability.switch", title: "Bathroom Light to Flash", required: false
                 
                 input "flowRate_${i}", "decimal", title: "Showerhead Flow Rate (GPM)", defaultValue: 2.5, required: true,
-                    description: "Standard US showerheads are 2.5 GPM. Low-flow is usually 1.5 to 2.0."
+                    description: "Standard US showerheads are 2.5 GPM."
                 
-                input "costPerGallon_${i}", "decimal", title: "Est. Cost per Gallon of Hot Water (\$)", defaultValue: 0.03, required: true,
-                    description: "Includes water, sewer, and the energy required to heat it. The US average is roughly \$0.02 to \$0.04."
+                input "costPerGallon_${i}", "decimal", title: "Est. Cost per Gallon of Hot Water (\$)", defaultValue: 0.03, required: true
                 
                 input "warn1_${i}", "number", title: "1st Warning (Minutes)", defaultValue: 5, required: true
                 input "warn2_${i}", "number", title: "2nd Warning (Minutes)", defaultValue: 8, required: true
                 input "warn3_${i}", "number", title: "3rd Warning (Minutes)", defaultValue: 10, required: true
                 
                 input "gracePeriod_${i}", "number", title: "Empty Shower Grace Period (Minutes)", defaultValue: 2, required: true,
-                    description: "Fixes 'chatty' sensors by waiting before resetting timers. This time is automatically subtracted from the final duration."
+                    description: "Fixes 'chatty' sensors. This time is subtracted from final duration unless ended early by an 'Out' sensor."
             }
         }
     }
 }
 
-def installed() {
-    log.info "Shower Monitor Installed."
-    initialize()
-}
-
+def installed() { initialize() }
 def updated() {
-    log.info "Shower Monitor Updated."
     unsubscribe()
     unschedule()
     initialize()
@@ -136,30 +132,36 @@ def initialize() {
     
     for (int i = 1; i <= showerCount; i++) {
         if (settings["motion_${i}"]) subscribe(settings["motion_${i}"], "motion", "motionHandler${i}")
+        
+        // Only subscribe if the optional sensor is selected
+        if (settings["outMotion_${i}"]) {
+            subscribe(settings["outMotion_${i}"], "motion", "outMotionHandler${i}")
+        }
+        
         state["showerActive_${i}"] = state["showerActive_${i}"] ?: false
         state["showerStatus_${i}"] = state["showerStatus_${i}"] ?: "Idle"
         state["sessionLog_${i}"] = state["sessionLog_${i}"] ?: []
     }
 }
 
-// --- UTILITY: HISTORY LOGGER ---
+// --- LOGGING ---
 def addToHistory(String msg) {
     if (!state.historyLog) state.historyLog = []
     def timestamp = new Date().format("MM/dd HH:mm:ss", location.timeZone)
     state.historyLog.add(0, "<b>[${timestamp}]</b> ${msg}")
-    
-    if (state.historyLog.size() > 20) {
-        state.historyLog = state.historyLog.take(20)
-    }
-    def cleanMsg = msg.replaceAll("\\<.*?\\>", "")
-    log.info "HISTORY: [${timestamp}] ${cleanMsg}"
+    if (state.historyLog.size() > 20) state.historyLog = state.historyLog.take(20)
+    log.info "HISTORY: ${msg.replaceAll("\\<.*?\\>", "")}"
 }
 
 // --- DYNAMIC HANDLERS ---
 def motionHandler1(evt) { handleMotion(1, evt.value) }
+def outMotionHandler1(evt) { handleOutMotion(1, evt.value) }
 def motionHandler2(evt) { handleMotion(2, evt.value) }
+def outMotionHandler2(evt) { handleOutMotion(2, evt.value) }
 def motionHandler3(evt) { handleMotion(3, evt.value) }
+def outMotionHandler3(evt) { handleOutMotion(3, evt.value) }
 def motionHandler4(evt) { handleMotion(4, evt.value) }
+def outMotionHandler4(evt) { handleOutMotion(4, evt.value) }
 
 def warnTierOne1() { triggerFlash(1, 1) }
 def warnTierTwo1() { triggerFlash(1, 2) }
@@ -181,12 +183,11 @@ def warnTierTwo4() { triggerFlash(4, 2) }
 def warnTierThree4() { triggerFlash(4, 3) }
 def endShower4() { terminateShower(4) }
 
-// --- UTILITY: SYSTEM CHECKS ---
+// --- SYSTEM CHECKS ---
 def isSystemPaused() {
     if (masterEnableSwitch && masterEnableSwitch.currentValue("switch") == "off") return true
     return false
 }
-
 def isModeAllowed() {
     if (!activeModes) return true
     return activeModes.contains(location.mode)
@@ -199,37 +200,45 @@ def handleMotion(showerId, motionState) {
     
     if (motionState == "active") {
         unschedule("endShower${showerId}")
-        
         if (!state["showerActive_${showerId}"]) {
             if (isSystemPaused() || !isModeAllowed()) return
-            
             state["showerActive_${showerId}"] = true
             state["showerStartTime_${showerId}"] = new Date().time
             state["showerStatus_${showerId}"] = "Active (Timers Running)"
-            addToHistory("${sName}: Shower started. Countdowns armed.")
-            
+            addToHistory("${sName}: Shower started.")
             runIn((settings["warn1_${showerId}"] ?: 5) * 60, "warnTierOne${showerId}", [overwrite: true])
             runIn((settings["warn2_${showerId}"] ?: 8) * 60, "warnTierTwo${showerId}", [overwrite: true])
             runIn((settings["warn3_${showerId}"] ?: 10) * 60, "warnTierThree${showerId}", [overwrite: true])
-        } else if (state["showerStatus_${showerId}"] == "Grace Period") {
+        } else {
             state["showerStatus_${showerId}"] = "Active (Timers Running)"
         }
     } else if (state["showerActive_${showerId}"]) {
         state["showerStatus_${showerId}"] = "Grace Period"
-        addToHistory("${sName}: Motion stopped. Waiting ${grace}m grace period.")
+        state["showerInactiveTime_${showerId}"] = new Date().time 
+        addToHistory("${sName}: Motion stopped. Grace period active.")
         runIn(grace * 60, "endShower${showerId}", [overwrite: true])
     }
 }
 
-def terminateShower(showerId) {
+def handleOutMotion(showerId, motionState) {
+    // Only triggers if the user is in the grace period
+    if (motionState == "active" && state["showerStatus_${showerId}"] == "Grace Period") {
+        def sName = settings["showerName_${showerId}"] ?: "Shower ${showerId}"
+        addToHistory("${sName}: Presence outside shower detected. Terminating session.")
+        unschedule("endShower${showerId}")
+        terminateShower(showerId, true)
+    }
+}
+
+def terminateShower(showerId, earlyTerminate = false) {
     def sName = settings["showerName_${showerId}"] ?: "Shower ${showerId}"
-    
-    // --- ANALYTICS, VOLUMETRIC & FINANCIAL CALCULATOR ---
     def startTime = state["showerStartTime_${showerId}"] ?: new Date().time
-    def endTime = new Date().time
-    def graceSecs = (settings["gracePeriod_${showerId}"] ?: 2) * 60
     
-    // 1. Calculate Duration
+    // Logic: If ended by 'Out' sensor, the end time is when the 'In' sensor stopped.
+    // If ended by timer, the end time is now, minus the grace period.
+    def endTime = earlyTerminate ? (state["showerInactiveTime_${showerId}"] ?: new Date().time) : new Date().time
+    def graceSecs = earlyTerminate ? 0 : ((settings["gracePeriod_${showerId}"] ?: 2) * 60)
+    
     def totalMillis = endTime - startTime - (graceSecs * 1000)
     if (totalMillis < 0) totalMillis = 0 
     
@@ -238,27 +247,20 @@ def terminateShower(showerId) {
     def secs = totalSecs % 60
     def durationStr = "${mins}m ${secs}s"
     
-    // 2. Calculate Volume
     def gpm = settings["flowRate_${showerId}"]?.toBigDecimal() ?: 2.5
     def gallonsUsed = (totalSecs / 60.0) * gpm
     def gallonsStr = "${gallonsUsed.setScale(1, BigDecimal.ROUND_HALF_UP)} gal"
     
-    // 3. Calculate Cost
     def costFactor = settings["costPerGallon_${showerId}"]?.toBigDecimal() ?: 0.03
     def totalCost = gallonsUsed * costFactor
     def costStr = "\$" + totalCost.setScale(2, BigDecimal.ROUND_HALF_UP)
     
-    def startTimeFormatted = new Date(startTime).format("MM/dd hh:mm a", location.timeZone)
-    
-    // Log it to the Analytics Table
-    def entry = [time: startTimeFormatted, duration: durationStr, gallons: gallonsStr, cost: costStr]
+    def entry = [time: new Date(startTime).format("MM/dd hh:mm a", location.timeZone), duration: durationStr, gallons: gallonsStr, cost: costStr]
     def logs = state["sessionLog_${showerId}"] ?: []
     logs.add(0, entry)
-    if (logs.size() > 10) logs = logs.take(10)
-    state["sessionLog_${showerId}"] = logs
-    // ----------------------------------------
+    state["sessionLog_${showerId}"] = logs.take(10)
 
-    addToHistory("${sName}: Empty. Timers reset. Duration: ${durationStr} | ${gallonsStr} | ${costStr}")
+    addToHistory("${sName}: Session Finished. Duration: ${durationStr} | ${gallonsStr} | ${costStr}")
     
     state["showerActive_${showerId}"] = false
     state["showerStatus_${showerId}"] = "Idle"
@@ -272,12 +274,10 @@ def triggerFlash(showerId, flashes) {
     def light = settings["light_${showerId}"]
     if (!light) return
 
-    addToHistory("${settings["showerName_${showerId}"]} limit reached. Flashing ${flashes}x.")
-    def delayMultiplier = 0
+    addToHistory("${settings["showerName_${showerId}"]} warning. Flashing ${flashes}x.")
     for (int i = 0; i < flashes; i++) {
-        runInMillis(delayMultiplier * 2000, "turnLightOff", [data: [showerId: showerId], overwrite: false])
-        runInMillis((delayMultiplier * 2000) + 1000, "turnLightOn", [data: [showerId: showerId], overwrite: false])
-        delayMultiplier++
+        runInMillis(i * 2000, "turnLightOff", [data: [showerId: showerId], overwrite: false])
+        runInMillis((i * 2000) + 1000, "turnLightOn", [data: [showerId: showerId], overwrite: false])
     }
 }
 
