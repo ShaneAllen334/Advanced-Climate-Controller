@@ -70,6 +70,8 @@ def mainPage() {
         // ==============================================================================
         section("<b>Device Control per Mode</b>") {
             paragraph "<div style='font-size:13px; color:#555;'><b>Instant Enforcement:</b> Define what devices should turn on, turn off, or lock the exact moment a specific mode becomes active. <i>Click a rule below to expand it.</i></div>"
+            
+            input "enableColorRefresh", "bool", title: "<b>Enable 30-Minute Constant Color Refresh</b> (Re-applies colors/effects if blockers are off)", defaultValue: true, submitOnChange: true
         }
         
         for (int i = 1; i <= 8; i++) {
@@ -85,10 +87,31 @@ def mainPage() {
                     input "dcLocksLock${i}", "capability.lock", title: "Lock these doors", required: false, multiple: true
                     input "dcGarageClose${i}", "capability.garageDoorControl", title: "Close these garages", required: false, multiple: true
                     
+                    // --- DELAYED ACTIONS ---
+                    paragraph "<div style='background-color:#f4f6f9; padding:8px; border-left:3px solid #34495e; margin-top:10px;'><b>Delayed Actions</b></div>"
+                    input "dcDelayedSwitchesOn${i}", "capability.switch", title: "Turn ON these switches after a delay", required: false, multiple: true
+                    input "dcDelayMins${i}", "number", title: "Delay time (minutes)", required: false, defaultValue: 5
+
+                    // --- WEATHER FORECAST SWITCH ---
+                    paragraph "<div style='background-color:#f4f6f9; padding:8px; border-left:3px solid #1abc9c; margin-top:10px;'><b>Weather Integrations</b></div>"
+                    input "dcWeatherSwitch${i}", "capability.switch", title: "Weather Forecast Switch (Turns ON, waits 5 minutes, then turns OFF)", required: false, multiple: true
+                    input "dcWeatherDelay${i}", "number", title: "Wait this many minutes before turning Weather Switch ON", required: false, defaultValue: 0
+
                     // --- AUDIO NOTIFICATIONS ---
                     paragraph "<div style='background-color:#f4f6f9; padding:8px; border-left:3px solid #f39c12; margin-top:10px;'><b>Audio Announcements</b></div>"
-                    input "dcTtsMessage${i}", "text", title: "TTS Announcement Message", required: false
-                    input "dcZoozSound${i}", "number", title: "Zooz Chime Sound File #", required: false
+                    input "dcTtsSpeakers${i}", "capability.speechSynthesis", title: "Target Smart Speakers (Sonos, etc.)", required: false, multiple: true, submitOnChange: true
+                    input "dcTtsMessage${i}", "text", title: "TTS Announcement Message", required: false, submitOnChange: true
+                    
+                    if (settings["dcTtsSpeakers${i}"] && settings["dcTtsMessage${i}"]) {
+                        input "testTts${i}", "button", title: "Test TTS Announcement"
+                    }
+                    
+                    input "dcZoozChimes${i}", "capability.chime", title: "Target Zooz Chime Devices", required: false, multiple: true, submitOnChange: true
+                    input "dcZoozSound${i}", "number", title: "Zooz Chime Sound File #", required: false, submitOnChange: true
+                    
+                    if (settings["dcZoozChimes${i}"] && settings["dcZoozSound${i}"] != null) {
+                        input "testZooz${i}", "button", title: "Test Zooz Chime"
+                    }
 
                     // --- INOVELLI LED CONTROL ---
                     paragraph "<div style='background-color:#f4f6f9; padding:8px; border-left:3px solid #9b59b6; margin-top:10px;'><b>Inovelli LED Notifications</b></div>"
@@ -151,12 +174,24 @@ def mainPage() {
         }
 
         // ==============================================================================
-        // SECTION 3: GLOBAL AUDIO DEVICES
+        // SECTION 3: INOVELLI SCHEDULED DIMMING
         // ==============================================================================
-        section("<b>Audio Announcements & Notifications</b>") {
-            paragraph "<div style='font-size:13px; color:#555;'><b>Global Audio Devices:</b> Select the devices to use for mode-based audio announcements. You will define the actual message and sound number inside each Device Control rule above.</div>"
-            input "ttsSpeakers", "capability.speechSynthesis", title: "Smart Speakers (TTS)", multiple: true, required: false
-            input "zoozChimes", "capability.chime", title: "Zooz Chime Devices", multiple: true, required: false
+        section("<b>Scheduled Inovelli LED Dimming</b>") {
+            paragraph "<div style='font-size:13px; color:#555;'><b>Daily Timers:</b> Automatically adjust the default brightness of your Inovelli LED light bars at specific times (e.g., dim at night, brighten in morning).</div>"
+            
+            input "ledDimEnable", "bool", title: "<b>Enable Scheduled Dimming</b>", defaultValue: false, submitOnChange: true
+            
+            if (settings["ledDimEnable"]) {
+                input "ledDimSwitches", "capability.configuration", title: "Target Inovelli Switches", required: true, multiple: true
+                
+                paragraph "<b>Timer 1 (e.g., Sunset/Dim)</b>"
+                input "ledTime1", "time", title: "Time", required: true
+                input "ledLevel1", "number", title: "LED Light % (0-100)", required: true, defaultValue: 50
+                
+                paragraph "<b>Timer 2 (e.g., Sunrise/Bright)</b>"
+                input "ledTime2", "time", title: "Time", required: true
+                input "ledLevel2", "number", title: "LED Light % (0-100)", required: true, defaultValue: 100
+            }
         }
     }
 }
@@ -174,6 +209,21 @@ def initialize() {
     
     subscribe(location, "mode", modeChangeHandler)
     
+    // Schedule Inovelli LED Timers
+    if (settings["ledDimEnable"] && settings["ledTime1"]) {
+        schedule(settings["ledTime1"], executeLedTimer1)
+    }
+    if (settings["ledDimEnable"] && settings["ledTime2"]) {
+        schedule(settings["ledTime2"], executeLedTimer2)
+    }
+    
+    // Schedule 30-Minute Refresh for Inovelli Colors
+    if (settings["enableColorRefresh"] != false) {
+        runEvery30Minutes(refreshInovelliColor)
+    } else {
+        unschedule(refreshInovelliColor)
+    }
+   
     for (int i = 1; i <= 8; i++) {
         // Subscribe to Presence Tethers
         if (settings["transEnable${i}"] && settings["transUseTether${i}"] && settings["transTetherPresence${i}"]) {
@@ -183,6 +233,11 @@ def initialize() {
         // Subscribe to LED Blocker Switches
         if (settings["dcEnable${i}"] && settings["dcInovelliBlocker${i}"]) {
             subscribe(settings["dcInovelliBlocker${i}"], "switch.off", blockerSwitchHandler)
+        }
+        
+        // Subscribe to Inovelli switches turning off
+        if (settings["dcEnable${i}"] && settings["dcInovelli${i}"]) {
+            subscribe(settings["dcInovelli${i}"], "switch.off", inovelliSwitchOffHandler)
         }
     }
     
@@ -206,6 +261,24 @@ def appButtonHandler(btn) {
     else if (btn == "sweepModeBtn") { 
         logAction("Sweep Triggered. Enforcing rules for current mode...")
         executeSweep() 
+    }
+    else if (btn.startsWith("testTts")) {
+        def idx = btn.replaceAll("\\D+", "").toInteger()
+        def speakers = settings["dcTtsSpeakers${idx}"]
+        def msg = settings["dcTtsMessage${idx}"]
+        if (speakers && msg) {
+            speakers.speak(msg)
+            logAction("Tested TTS for Rule ${idx}: ${msg}")
+        }
+    }
+    else if (btn.startsWith("testZooz")) {
+        def idx = btn.replaceAll("\\D+", "").toInteger()
+        def chimes = settings["dcZoozChimes${idx}"]
+        def sound = settings["dcZoozSound${idx}"]
+        if (chimes && sound != null) {
+            chimes.each { if (it.hasCommand("playSound")) it.playSound(sound as Integer) }
+            logAction("Tested Zooz Chime for Rule ${idx}: Sound ${sound}")
+        }
     }
 }
 
@@ -247,6 +320,25 @@ def blockerSwitchHandler(evt) {
                         def targetStr = settings["dcInovelliTarget${i}"] == "All" ? "All LEDs" : "LED ${settings["dcInovelliTarget${i}"]}"
                         logAction("Deferred LED Update -> [Inovelli: ${targetStr} ${colorName} at ${levelStr}% (Effect: ${effectStr})]")
                     }
+                }
+            }
+        }
+    }
+}
+
+// This runs when an Inovelli switch itself physically or digitally turns off
+def inovelliSwitchOffHandler(evt) {
+    def currentMode = location.mode
+    for (int i = 1; i <= 8; i++) {
+        if (settings["dcEnable${i}"] && settings["dcMode${i}"] == currentMode) {
+            // Check if the device that triggered the event is used in this rule
+            if (settings["dcInovelli${i}"]?.find { it.id == evt.device.id }) {
+                def blocker = settings["dcInovelliBlocker${i}"]
+                
+                // Only re-apply the mode color if the Mail Switch (Blocker) is OFF
+                if (!blocker || blocker.currentValue("switch") != "on") {
+                    logAction("Switch '${evt.device.displayName}' turned off. Re-applying Mode LED settings.")
+                    enforceInovelliLEDs(i)
                 }
             }
         }
@@ -320,7 +412,7 @@ def executeTransition() {
             def pSens = settings["transConditionPower${ruleIdx}"]
             if (pSens && (pSens.currentValue("power") ?: 0) > (settings["transPowerThreshold${ruleIdx}"] ?: 15)) {
                 logAction("🛑 Aborted: Power threshold exceeded.")
-                clearPendingTransition()
+                 clearPendingTransition()
                 return
             }
         }
@@ -344,16 +436,40 @@ def enforceDevices(ruleIdx) {
     if (settings["dcLocksLock${ruleIdx}"]) { settings["dcLocksLock${ruleIdx}"].lock(); logMsg += "[Locked] " }
     if (settings["dcGarageClose${ruleIdx}"]) { settings["dcGarageClose${ruleIdx}"].close(); logMsg += "[Closed] " }
     
+    // --- Delayed Switches ON Logic ---
+    if (settings["dcDelayedSwitchesOn${ruleIdx}"] && settings["dcDelayMins${ruleIdx}"] != null) {
+        def delaySecs = (settings["dcDelayMins${ruleIdx}"] * 60).toInteger()
+        runIn(delaySecs, "turnOnDelayedSwitches", [data: [ruleIdx: ruleIdx], overwrite: false])
+        logMsg += "[Delayed ON: ${settings["dcDelayMins${ruleIdx}"]}-min timer started] "
+    }
+
+    // --- Weather Forecast Auto Logic ---
+    if (settings["dcWeatherSwitch${ruleIdx}"]) { 
+        def weatherDelayMins = settings["dcWeatherDelay${ruleIdx}"] ?: 0
+        if (weatherDelayMins > 0) {
+            def delaySecs = (weatherDelayMins * 60).toInteger()
+            runIn(delaySecs, "turnOnWeatherSwitch", [data: [ruleIdx: ruleIdx], overwrite: false])
+            logMsg += "[Weather Forecast: Scheduled ON in ${weatherDelayMins} min] "
+        } else {
+            settings["dcWeatherSwitch${ruleIdx}"].on() 
+            logMsg += "[Weather Forecast Switch ON] "
+            runIn(300, "turnOffWeatherSwitch", [data: [ruleIdx: ruleIdx], overwrite: false])
+        }
+    }
+    
     // --- Audio Announcements ---
+    def ruleTtsSpeakers = settings["dcTtsSpeakers${ruleIdx}"]
     def ttsMsg = settings["dcTtsMessage${ruleIdx}"]
+    
+    def ruleZoozChimes = settings["dcZoozChimes${ruleIdx}"]
     def chimeSound = settings["dcZoozSound${ruleIdx}"]
     
-    if (ttsMsg && ttsSpeakers) {
-        ttsSpeakers.speak(ttsMsg)
+    if (ttsMsg && ruleTtsSpeakers) {
+        ruleTtsSpeakers.speak(ttsMsg)
         logMsg += "[TTS: ${ttsMsg}] "
     }
-    if (chimeSound != null && zoozChimes) {
-        zoozChimes.each { if (it.hasCommand("playSound")) it.playSound(chimeSound as Integer) }
+    if (chimeSound != null && ruleZoozChimes) {
+        ruleZoozChimes.each { if (it.hasCommand("playSound")) it.playSound(chimeSound as Integer) }
         logMsg += "[Zooz Chime: File ${chimeSound}] "
     }
 
@@ -383,9 +499,15 @@ def enforceDevices(ruleIdx) {
 
 // Helper function to process native driver commands for Inovelli LEDs
 def enforceInovelliLEDs(ruleIdx) {
-    def colorVal = settings["dcInovelliColor${ruleIdx}"]?.toInteger() ?: 170
-    def levelVal = settings["dcInovelliLevel${ruleIdx}"]?.toInteger() ?: 100
-    def effectVal = settings["dcInovelliEffect${ruleIdx}"]?.toInteger() ?: 1
+    def rawColor = settings["dcInovelliColor${ruleIdx}"]
+    def rawLevel = settings["dcInovelliLevel${ruleIdx}"]
+    def rawEffect = settings["dcInovelliEffect${ruleIdx}"]
+   
+    // Fix: Explicitly check for null instead of using Elvis operator (?:) 
+    // because Groovy treats 0 (Red or Effect Off) as a "false" value.
+    def colorVal = rawColor != null ? rawColor.toInteger() : 170
+    def levelVal = rawLevel != null ? rawLevel.toInteger() : 100
+    def effectVal = rawEffect != null ? rawEffect.toInteger() : 1
     def targetVal = settings["dcInovelliTarget${ruleIdx}"] ?: "All"
     def durationVal = 255 // 255 = Indefinite duration
     
@@ -394,6 +516,7 @@ def enforceInovelliLEDs(ruleIdx) {
         // The driver's setParameter method handles size natively
         dev.setParameter(95, colorVal) // LED Color (When On)
         dev.setParameter(96, colorVal) // LED Color (When Off)
+    
         dev.setParameter(97, levelVal) // LED Intensity (When On)
         dev.setParameter(98, levelVal) // LED Intensity (When Off)
         
@@ -415,9 +538,80 @@ def enforceInovelliLEDs(ruleIdx) {
     }
 }
 
+// Helper function to routinely refresh the colors and effects
+def refreshInovelliColor() {
+    def currentMode = location.mode
+    def refreshCount = 0
+    for (int i = 1; i <= 8; i++) {
+        if (settings["dcEnable${i}"] && settings["dcMode${i}"] == currentMode) {
+            if (settings["dcInovelli${i}"] && settings["dcInovelliColor${i}"] != null) {
+                def blocker = settings["dcInovelliBlocker${i}"]
+                
+                // Ensure no active blocker before reissuing the color/effect
+                if (!blocker || blocker.currentValue("switch") != "on") {
+                    enforceInovelliLEDs(i)
+                    refreshCount++
+                }
+            }
+        }
+    }
+    if (refreshCount > 0) {
+        logAction("30-Min Refresh: Reissued LED settings for current mode '${currentMode}'.")
+    }
+}
+
+// ------------------------------------------------------------------------------
+// SCHEDULED LED TIMERS
+// ------------------------------------------------------------------------------
+
+def executeLedTimer1() {
+    if (!settings["ledDimEnable"] || !settings["ledDimSwitches"]) return
+    def level = settings["ledLevel1"] != null ? settings["ledLevel1"].toInteger() : 50
+    logAction("Scheduled LED Timer 1 triggered. Setting Inovelli LEDs to ${level}%.")
+    settings["ledDimSwitches"].each { dev ->
+        dev.setParameter(97, level, 1) // LED Intensity (When On)
+        dev.setParameter(98, level, 1) // LED Intensity (When Off)
+    }
+}
+
+def executeLedTimer2() {
+    if (!settings["ledDimEnable"] || !settings["ledDimSwitches"]) return
+    def level = settings["ledLevel2"] != null ? settings["ledLevel2"].toInteger() : 100
+    logAction("Scheduled LED Timer 2 triggered. Setting Inovelli LEDs to ${level}%.")
+    settings["ledDimSwitches"].each { dev ->
+        dev.setParameter(97, level, 1) // LED Intensity (When On)
+        dev.setParameter(98, level, 1) // LED Intensity (When Off)
+    }
+}
+
 // ------------------------------------------------------------------------------
 // UTILITY FUNCTIONS
 // ------------------------------------------------------------------------------
+
+def turnOnDelayedSwitches(data) {
+    def ruleIdx = data?.ruleIdx
+    if (ruleIdx && settings["dcDelayedSwitchesOn${ruleIdx}"]) {
+        settings["dcDelayedSwitchesOn${ruleIdx}"].on()
+        logAction("Delayed Switches for Rule ${ruleIdx} turned ON after scheduled delay.")
+    }
+}
+
+def turnOnWeatherSwitch(data) {
+    def ruleIdx = data?.ruleIdx
+    if (ruleIdx && settings["dcWeatherSwitch${ruleIdx}"]) {
+        settings["dcWeatherSwitch${ruleIdx}"].on()
+        logAction("Weather Forecast Switch for Rule ${ruleIdx} turned ON after delay. Scheduling 5-minute auto-off.")
+        runIn(300, "turnOffWeatherSwitch", [data: [ruleIdx: ruleIdx], overwrite: false])
+    }
+}
+
+def turnOffWeatherSwitch(data) {
+    def ruleIdx = data?.ruleIdx
+    if (ruleIdx && settings["dcWeatherSwitch${ruleIdx}"]) {
+        settings["dcWeatherSwitch${ruleIdx}"].off()
+        logAction("Weather Forecast Switch for Rule ${ruleIdx} turned OFF automatically after 5 minutes.")
+    }
+}
 
 def clearPendingTransition() {
     unschedule(executeTransition)
@@ -434,4 +628,5 @@ def logAction(msg) {
     if (h.size() > 30) h = h[0..29]
     state.actionHistory = h
 }
+
 def logInfo(msg) { if(txtEnable) log.info "${app.label}: ${msg}" }
