@@ -21,6 +21,10 @@ preferences {
 def mainPage() {
     dynamicPage(name: "mainPage", title: "Advanced Motion Lighting", install: true, uninstall: true) {
         
+        if (pauseSystem) {
+            paragraph "<div style='background-color: #f8d7da; color: #721c24; padding: 10px; border: 1px solid #f5c6cb; border-radius: 5px; font-weight: bold; font-size: 16px; text-align: center;'>⚠️ GLOBAL SYSTEM PAUSED ⚠️<br>All lighting rules are currently disabled.</div>"
+        }
+
         section("Global System Dashboard") {
             input "btnRefresh", "button", title: "🔄 Refresh Dashboard Data Now"
             
@@ -106,6 +110,7 @@ def mainPage() {
         }
         
         section("Master System Control") {
+            input "pauseSystem", "bool", title: "<b>⏸️ Pause System-Wide (All Rules)?</b>", defaultValue: false, submitOnChange: true
             input "masterEnableSwitch", "capability.switch", title: "Master Disable Switch", required: false
             input "enableGlobalHealth", "bool", title: "Enable Global Battery & Health Watchdog?", defaultValue: false, submitOnChange: true
         }
@@ -136,7 +141,7 @@ def mainPage() {
 }
 
 def installed() { initialize() }
-def updated() { unsubscribe(); unschedule(); initialize() }
+def updated() { unschedule(); unsubscribe(); initialize() }
 
 def initialize() {
     if (arrivalMode) subscribe(location, "mode", modeChangeHandler)
@@ -144,7 +149,12 @@ def initialize() {
     if (globalCTVar) subscribe(location, "variable.${globalCTVar}", globalCTHandler)
 }
 
+def isSystemPaused() {
+    return pauseSystem == true
+}
+
 def globalCTHandler(evt) {
+    if (isSystemPaused()) return
     try {
         def newCT = Math.round(evt.value.toFloat()).toInteger()
         getChildApps().each { it.dynamicCTUpdate(newCT) }
@@ -152,6 +162,7 @@ def globalCTHandler(evt) {
 }
 
 def modeChangeHandler(evt) {
+    if (isSystemPaused()) return
     if (evt.value == arrivalMode) {
         state.arrivalPending = true
         runIn(arrivalTimeout ?: 30, "arrivalTimeoutCheck")
@@ -159,6 +170,7 @@ def modeChangeHandler(evt) {
 }
 
 def shadesContactHandler(evt) {
+    if (isSystemPaused()) return
     if (state.arrivalPending && evt.value == "open") {
         unschedule("arrivalTimeoutCheck")
         state.arrivalPending = false
@@ -167,6 +179,7 @@ def shadesContactHandler(evt) {
 }
 
 def arrivalTimeoutCheck() {
+    if (isSystemPaused()) return
     if (state.arrivalPending) {
         state.arrivalPending = false
         def shadeState = arrivalShadesSensor?.currentValue("contact")
@@ -175,6 +188,7 @@ def arrivalTimeoutCheck() {
 }
 
 def triggerArrivalLights() {
+    if (isSystemPaused()) return
     def children = getChildApps()
     children.each { child ->
         if (child.isArrivalEnabled()) {
@@ -185,7 +199,10 @@ def triggerArrivalLights() {
     runIn((arrivalDuration ?: 10) * 60, "revertArrivalLights")
 }
 
-def revertArrivalLights() { getChildApps().each { if (it.isArrivalEnabled()) it.revertFromArrival() } }
+def revertArrivalLights() { 
+    if (isSystemPaused()) return
+    getChildApps().each { if (it.isArrivalEnabled()) it.revertFromArrival() } 
+}
 
 def appButtonHandler(btn) {
     if (btn == "btnRefresh") {
