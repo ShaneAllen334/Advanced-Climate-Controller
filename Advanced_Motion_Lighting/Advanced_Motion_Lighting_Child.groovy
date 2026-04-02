@@ -20,7 +20,12 @@ preferences {
 
 def mainPage() {
     dynamicPage(name: "mainPage", title: "<b>Advanced Motion Lighting Rule</b>", install: true, uninstall: true) {
-        
+   
+        if (pauseApp || parent?.isSystemPaused()) {
+            def source = parent?.isSystemPaused() ? "System-Wide" : "Rule level"
+            paragraph "<div style='background-color: #f8d7da; color: #721c24; padding: 10px; border: 1px solid #f5c6cb; border-radius: 5px; font-weight: bold;'>⚠️ This rule is currently PAUSED (${source}). Automations will not execute.</div>"
+        }
+
         section("Live System Dashboard") {
             input "btnRefresh", "button", title: "Refresh Data"
             
@@ -35,6 +40,7 @@ def mainPage() {
                 
                 def overrides = []
                 if (atomicState.partyLock) overrides << "<span style='color: magenta; font-weight: bold;'>PARTY LOCK ON</span>"
+            
                 if (disableOnSwitches?.any { it.currentValue("switch") == "on" }) overrides << "<span style='color: red;'>ON Disabled</span>"
                 if (disableOffSwitches?.any { it.currentValue("switch") == "on" }) overrides << "<span style='color: darkred;'>OFF Disabled</span>"
                 if (goodNightSwitch && goodNightSwitch.currentValue("switch") == "on") overrides << "<span style='color: darkblue; font-weight: bold;'>Nap Lock Active</span>"
@@ -50,15 +56,18 @@ def mainPage() {
                     def eTime = resolveTime(endTimeType, endTime, endOffset)
                     if (sTime && eTime) {
                         def isInside = isTimeInWindow(sTime, eTime)
+                       
                         timeBlocked = (timeLogic == "Block execution DURING this window") ? isInside : !isInside
                     }
                 }
                 if (timeBlocked) overrides << "<span style='color: orange;'>Blocked by Time Window</span>"
                 
+          
                 def isOpen = (contactSensors?.any { it.currentValue("contact") == "open" } || shadeSensors?.any { it.currentValue("contact") == "open" })
                 if (isOpen) {
                     def luxOverrideActive = false
                     if (useLuxContactOverride && luxSensor) {
+              
                         def curLux = luxSensor.currentValue("illuminance") ?: 0
                         def targetLux = luxContactThreshold ?: 0
                         if (luxContactVar) {
@@ -66,12 +75,14 @@ def mainPage() {
                             if (hVar != null) targetLux = hVar.value.toInteger()
                         }
                         if (curLux < targetLux) luxOverrideActive = true
+           
                     }
                     
                     if ((overcastSwitch && overcastSwitch.currentValue("switch") == "on") || luxOverrideActive) {
                         overrides << "<span style='color: purple;'>Contact/Shade Override Active (Overcast/Lux)</span>"
                     } else {
                         overrides << "<span style='color: orange;'>Blocked by Open Window/Door/Shades</span>"
+               
                     }
                 }
                 def oText = overrides ? overrides.join(" | ") : "<span style='color: green;'>Clear</span>"
@@ -104,6 +115,7 @@ def mainPage() {
                 
                 if (enableTelemetry) {
                     def liveCalc = calculateLiveSavings()
+              
                     statusText += "<div style='margin-top: 5px; padding: 5px; background: #eef9ee; border: 1px solid #aaddaa; font-size: 12px;'><b>Predictive ROI:</b> Today: &#36;${liveCalc.today} | Total: &#36;${liveCalc.lifetime}</div>"
                 }
                 
@@ -115,6 +127,9 @@ def mainPage() {
 
         section("<div style='background-color:#333; color:white; padding:5px; font-size:16px;'>1. Core Configuration</div>", hideable: true, hidden: false) {
             label title: "Rule Name", required: true
+            
+            input "pauseApp", "bool", title: "<b>⏸️ Pause this Lighting Rule?</b>", defaultValue: false, submitOnChange: true
+            
             input "activeModes", "mode", title: "Active Modes (Allowed to turn ON)", multiple: true, required: false
             
             input "adjustOnModeChange", "bool", title: "Adjust lights dynamically on Mode change?", defaultValue: true
@@ -306,6 +321,7 @@ def mainPage() {
             input "logEnable", "bool", title: "Enable Debug Logging (Auto-disables after 30 min)", defaultValue: false
             input "enableHealthWatchdog", "bool", title: "Report Battery & Health to Parent?", defaultValue: false
             input "enableTelemetry", "bool", title: "Enable Energy Tracking?", defaultValue: false, submitOnChange: true
+ 
             if (enableTelemetry) {
                 input "totalWattage", "decimal", title: 'Total Wattage (e.g. 60.5)', required: true
                 input "kwhRate", "decimal", title: 'Electricity Rate ($ per kWh)', defaultValue: 0.14, required: true
@@ -331,6 +347,11 @@ def installed() { initialize() }
 def updated() { 
     unsubscribe()
     unschedule()
+    
+    if (isPaused()) {
+        log.warn "Rule is currently PAUSED. Schedules cleared."
+    }
+    
     if (logEnable) {
         log.debug "Debug logging enabled for 30 minutes."
         runIn(1800, "logsOff")
@@ -417,8 +438,13 @@ def logsOff() {
     app.updateSetting("logEnable", [value: "false", type: "bool"])
 }
 
+def isPaused() {
+    return (pauseApp == true || parent?.isSystemPaused() == true)
+}
+
 // FULLY RESTORED: DYNAMIC ADJUSTMENT HANDLER
 def dynamicAdjustmentHandler(evt) {
+    if (isPaused()) return
     if (atomicState.appTurnedOn) {
         def randomStagger = new Random().nextInt(2000) + 100
         runInMillis(randomStagger, "applyDynamicSettings")
@@ -426,12 +452,14 @@ def dynamicAdjustmentHandler(evt) {
 }
 
 def applyDynamicSettings() {
+    if (isPaused()) return
     def trans = dynamicTransition != null ? dynamicTransition : (enableSoftStart ? (softStartTime ?: 3) : 5)
     applyLightingSettings(trans)
 }
 
 // --- BUTTON LOGIC ---
 def buttonActionHandler(evt) {
+    if (isPaused()) return
     if (optButtonModes && !optButtonModes.contains(location.mode)) return
     if (evt.value == optButtonNum?.toString()) {
         def anyOn = false
@@ -488,6 +516,7 @@ def bootHandler(evt) { runIn(30, "bootSync", [overwrite: true]) }
 
 // INTELLIGENT BOOT RECOVERY
 def bootSync() {
+    if (isPaused()) return
     def anyOn = (switches?.any { it.currentValue("switch") == "on" } || dimmers?.any { it.currentValue("switch") == "on" } || colorBulbs?.any { it.currentValue("switch") == "on" })
     
     def isOccupied = isPrimaryActive() || isKeepAliveActive()
@@ -524,12 +553,14 @@ def calculateLiveSavings() {
 def midnightReset() {
     atomicState.lifetimeSavings = (atomicState.lifetimeSavings ?: 0.0) + calculateLiveSavings().today.toBigDecimal()
     atomicState.todayOnMillis = 0
+    
     if (atomicState.onTimeStart) {
         atomicState.onTimeStart = now()
     }
 }
 
 def triggerHandler(evt) {
+    if (isPaused()) return
     if (evt.value == "active" || evt.value == "on") {
         if (atomicState.gracePeriodEnd && now() < atomicState.gracePeriodEnd) return
         
@@ -559,12 +590,14 @@ def triggerHandler(evt) {
 }
 
 def evaluatePrimaryOff() {
+    if (isPaused()) return
     if (!isPrimaryActive() && !isKeepAliveActive()) {
         startTurnOffTimer()
     }
 }
 
 def keepAliveHandler(evt) {
+    if (isPaused()) return
     def isActiveEvent = (evt.value == "active" || evt.value == "on" || (evt.name == "power" && evt.value.toFloat() >= (keepAlivePowerThreshold ?: 10)))
     
     if (isActiveEvent) {
@@ -579,12 +612,14 @@ def keepAliveHandler(evt) {
 }
 
 def evaluateKeepAliveOff() {
+    if (isPaused()) return
     if (atomicState.appTurnedOn && !isPrimaryActive() && !isKeepAliveActive()) {
         startTurnOffTimer()
     }
 }
 
 def restrictionHandler(evt) {
+    if (isPaused()) return
     // If a shade closes, overcast turns on, or a contact closes while motion is active, evaluate turning the lights on immediately
     if (isPrimaryActive()) evaluateTurnOn()
 }
@@ -601,6 +636,7 @@ def cancelAllTurnOffTimers() { unschedule("processTurnOff"); atomicState.stdTask
 
 // Background poller for when room is active but lights are off due to Lux
 def pollLuxWhileActive() {
+    if (isPaused()) return
     if (!isPrimaryActive() && !isKeepAliveActive()) return 
     if (atomicState.appTurnedOn) return 
     
@@ -609,7 +645,7 @@ def pollLuxWhileActive() {
         def curLux = luxSensor.currentValue("illuminance") ?: 0
         def targetLux = getModeSetting("lux")
         if (targetLux != null && curLux < targetLux) shouldTurnOn = true
-        
+      
         def isOpen = (contactSensors?.any { it.currentValue("contact") == "open" } || shadeSensors?.any { it.currentValue("contact") == "open" })
         if (useLuxContactOverride && isOpen) {
             def overrideLux = luxContactVar ? getGlobalVar(luxContactVar)?.value?.toInteger() : (luxContactThreshold ?: 0)
@@ -650,6 +686,7 @@ def isTimeInWindow(sTime, eTime) {
 }
 
 def evaluateTurnOn() {
+    if (isPaused()) return
     atomicState.offRetryCount = 0 
     
     if (activeModes && !activeModes.contains(location.mode)) return
@@ -748,6 +785,7 @@ def getTargetColorTemp() {
 
 // The transition parameter is optional. If passed, the bulbs will fade over that duration.
 def applyLightingSettings(transition = null) {
+    if (isPaused()) return
     atomicState.lastAutoCommand = now() 
     def refreshNeeded = false
     def t = (transition != null) ? transition : (enableSoftStart ? (softStartTime ?: 3) : null)
@@ -807,6 +845,8 @@ def applyLightingSettings(transition = null) {
 }
 
 def processTurnOff() {
+    if (isPaused()) return
+    
     // Disable OFF Switches
     if (disableOffSwitches?.any { it.currentValue("switch") == "on" }) return
     
@@ -842,6 +882,7 @@ def processTurnOff() {
 }
 
 def sendOffCommands() {
+    if (isPaused()) return
     atomicState.lastAutoOffCommand = now() 
     def refreshNeeded = false
 
@@ -897,6 +938,7 @@ def executeRefresh() {
 }
 
 def verifyTurnOff() {
+    if (isPaused()) return
     def anyOn = false
     if (isSmartBulbOnRelay && turnOffRelay) {
         anyOn = (relaySwitch?.currentValue("switch") == "on")
@@ -919,6 +961,8 @@ def verifyTurnOff() {
 }
 
 def physicalOnHandler(evt) {
+    if (isPaused()) return
+    
     // THE BRIDGE BYPASS
     if (ignoreOverrideSwitches?.any { it.currentValue("switch") == "on" }) return
 
@@ -927,6 +971,13 @@ def physicalOnHandler(evt) {
     
     // Ignore events immediately following an app command to prevent boot reports from triggering manual mode
     if (!isOutsideAppDebounce) return
+    
+    // BUG FIX: Prevent Hue Bridge / LAN polling from triggering a manual override.
+    // If the app already turned the light ON, ignore redundant digital 'on' events
+    // unless they are explicitly flagged as a physical switch press.
+    if (atomicState.appTurnedOn && !evt.isPhysical()) {
+        return
+    }
     
     // Ignore physical events if a lock switch is active
     if (disableOnSwitches?.any { it.currentValue("switch") == "on" }) return
@@ -946,6 +997,8 @@ def physicalOnHandler(evt) {
 }
 
 def physicalOffHandler(evt) {
+    if (isPaused()) return
+    
     // THE BRIDGE BYPASS
     if (ignoreOverrideSwitches?.any { it.currentValue("switch") == "on" }) return
 
@@ -966,6 +1019,7 @@ def physicalOffHandler(evt) {
 }
 
 def syncManualBulbs() {
+    if (isPaused()) return
     atomicState.lastAutoCommand = now() // Update debounce so the commands below don't re-trigger manual overrides
     
     def t = enableSoftStart ? (softStartTime ?: 3) : null
@@ -1000,6 +1054,7 @@ def syncManualBulbs() {
 }
 
 def modeChangeHandler(evt) {
+    if (isPaused()) return
     def forceOffList = [turnOffOnModes].flatten().findAll { it }
     
     if (forceOffList.contains(evt.value)) {
@@ -1032,6 +1087,7 @@ def isArrivalEnabled() {
 }
 
 def turnOnArrival() {
+    if (isPaused()) return
     atomicState.arrivalActive = true
     atomicState.appTurnedOn = true
     recordTurnOnTime()
@@ -1046,6 +1102,7 @@ def turnOnArrival() {
 }
 
 def revertFromArrival() {
+    if (isPaused()) return
     atomicState.arrivalActive = false
     if (isPrimaryActive() || isKeepAliveActive()) {
         startTurnOffTimer()
@@ -1058,6 +1115,7 @@ def revertFromArrival() {
 }
 
 def executeParentSweep(delayMs = 0) {
+    if (isPaused()) return
     if (!isPrimaryActive() && !isKeepAliveActive()) {
         if (delayMs > 0) {
             runInMillis(delayMs, "processTurnOff")
@@ -1068,6 +1126,7 @@ def executeParentSweep(delayMs = 0) {
 }
 
 def clearManualOverride() {
+    if (isPaused()) return
     if (atomicState.manuallyTurnedOn) {
         atomicState.manuallyTurnedOn = false
         if (!isPrimaryActive() && !isKeepAliveActive()) {
@@ -1084,7 +1143,8 @@ def clearManualOverride() {
 
 def getZoneStatus() {
     def isLightOn = (switches?.any { it.currentValue("switch") == "on" } || 
-                     dimmers?.any { it.currentValue("switch") == "on" } || colorBulbs?.any { it.currentValue("switch") == "on" })
+                     dimmers?.any { it.currentValue("switch") == "on" } ||
+                     colorBulbs?.any { it.currentValue("switch") == "on" })
     
     def primaryActive = isPrimaryActive()
     def keepAliveActive = isKeepAliveActive()
@@ -1114,7 +1174,10 @@ def getZoneStatus() {
     }
 
     def statusText = "Standby"
-    if (atomicState.arrivalActive) statusText = "<span style='color: #800080;'>Arrival Override</span>"
+    
+    if (parent?.isSystemPaused()) statusText = "<span style='color: red; font-weight: bold;'>PAUSED (Global)</span>"
+    else if (pauseApp) statusText = "<span style='color: red; font-weight: bold;'>PAUSED (Rule)</span>"
+    else if (atomicState.arrivalActive) statusText = "<span style='color: #800080;'>Arrival Override</span>"
     else if (enableOccupancyLock && occupancyLockContact?.currentValue("contact") == "closed") statusText = "<span style='color: #a52a2a;'>Locked (Occupied)</span>"
     else if (isLightOn && atomicState.manuallyTurnedOn) statusText = "<span style='color: #0055aa;'>Manual Override</span>"
     else if (activeModes && !activeModes.contains(location.mode)) statusText = "<span style='color: orange;'>Blocked (Mode: ${location.mode})</span>"
@@ -1154,7 +1217,7 @@ def getZoneStatus() {
         def diff = atomicState.stdTaskTime - now()
         timerText = "${(diff / 60000).toInteger()}m ${((diff % 60000) / 1000).toInteger()}s"
     }
-    
+  
     def lightDetails = isLightOn ? "ON" : "OFF"
     
     if (isLightOn) {
@@ -1190,6 +1253,7 @@ def getZoneStatus() {
 }
 
 def dynamicCTUpdate(newCT) {
+    if (isPaused()) return
     if (lightType == "Color / CT Bulb") {
         def lvl = getTargetLevel()
         def refreshNeeded = false
