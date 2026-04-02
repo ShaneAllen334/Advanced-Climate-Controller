@@ -67,7 +67,7 @@ def mainPage() {
             def roiText = "<table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc;'>"
             roiText += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Zone</th><th style='padding: 8px;'>Actual On Cost</th><th style='padding: 8px;'>Off Savings</th></tr>"
 
-            def costRate = settings["kwhCost"] != null ? settings["kwhCost"].toBigDecimal() : 0.15
+            def costRate = settings["kwhCost"] != null ? settings["kwhCost"].toBigDecimal() : 0.13
             def installTime = state.installTime ?: new Date().time
             def daysInstalled = Math.max(1.0, (new Date().time - installTime) / 86400000.0)
             def sysTotalSavings = 0.0
@@ -122,7 +122,7 @@ def mainPage() {
         section("Global Core Settings") {
             input "masterEnableSwitch", "capability.switch", title: "Master System Enable Switch", required: false
             input "numZones", "number", title: "Number of Lighting Zones to Configure (1-10)", required: true, defaultValue: 1, range: "1..10", submitOnChange: true
-            input "kwhCost", "decimal", title: 'Electricity Rate ($ per kWh) for ROI Tracking', defaultValue: 0.15, required: true
+            input "kwhCost", "decimal", title: 'Electricity Rate ($ per kWh) for ROI Tracking', defaultValue: 0.13, required: true
             
             paragraph "<b>Location Fallback:</b> If your hub's GPS coordinates are missing, select your state to auto-configure solar geometry settings."
             input "userState", "enum", title: "Select your US State", required: false, options: [
@@ -151,6 +151,7 @@ def mainPage() {
                     paragraph "<b>Outdoor Motion Triggers</b>"
                     input "motionSensor_${i}", "capability.motionSensor", title: "Outdoor Motion Sensor(s)", multiple: true, required: false
                     input "motionTimeout_${i}", "number", title: "Turn OFF after X minutes of no motion", defaultValue: 5, required: false
+                    input "motionStuckTimeout_${i}", "number", title: "Ignore motion sensor if stuck 'Active' for X minutes", defaultValue: 60, required: false
                     input "motionOverridesMode_${i}", "bool", title: "SECURITY OVERRIDE: Allow Motion/Exit to turn ON lights even if Mode is Blacklisted (e.g., 'Night')?", defaultValue: true
 
                     paragraph "<b>Exit Lighting (Door Open Override)</b>"
@@ -210,6 +211,9 @@ def initialize() {
         if (offTime) {
             schedule(offTime, "executeHardOff", [data: [zoneId: i]])
         }
+
+        def switches = settings["zoneLights_${i}"]
+        if (switches) subscribe(switches, "switch", switchHandler)
 
         def mSensors = settings["motionSensor_${i}"]
         if (mSensors) subscribe(mSensors, "motion", motionHandler)
@@ -288,6 +292,34 @@ def doorContactHandler(evt) {
     }
 }
 
+def switchHandler(evt) {
+    if (isSystemPaused()) return
+    
+    def zoneCount = settings["numZones"] ?: 1
+    for (int i = 1; i <= (zoneCount as Integer); i++) {
+        def switches = settings["zoneLights_${i}"]
+        if (switches && switches.any { it.id.toString() == evt.device.id.toString() }) {
+            def lastCmd = state."appCommandTime_${i}" ?: 0
+            def now = new Date().time
+            
+            // If the app hasn't issued a command to this zone in the last 10 seconds, it's a manual override
+            if ((now - lastCmd) > 10000) {
+                def currentMode = location.mode
+                def disabledModes = settings["disableModes_${i}"]
+                def isRestricted = (disabledModes && disabledModes.contains(currentMode))
+
+                // ONLY apply the override if the hub is currently in a Blacklisted Mode
+                if (evt.value == "off" && isRestricted) {
+                    state."manualOffOverride_${i}" = true
+                    def zName = settings["zoneName_${i}"] ?: "Zone ${i}"
+                    addToHistory("SECURITY SUPPRESSION: ${evt.device.displayName} manually turned OFF in ${zName}. Suppressing motion triggers until next fresh event.")
+                    evaluateSystem()
+                }
+            }
+        }
+    }
+}
+
 def motionHandler(evt) {
     if (isSystemPaused()) return
     
@@ -298,8 +330,26 @@ def motionHandler(evt) {
         if (mSensors && mSensors.any { it.id.toString() == evt.device.id.toString() }) {
             
             if (evt.value == "active") {
+                def deviceId = evt.device.id.toString()
+                
+                // It is considered a "fresh" trigger if the zone was completely inactive OR if a completely different sensor fired
+                def isFreshTrigger = (!state."motionActive_${i}" || state."lastActiveDevice_${i}" != deviceId)
+                
+                if (isFreshTrigger) {
+                    state."motionActiveTime_${i}" = new Date().time 
+                    state."lastActiveDevice_${i}" = deviceId
+                    
+                    // Clear the manual override on a fresh trigger
+                    if (state."manualOffOverride_${i}") {
+                        state.remove("manualOffOverride_${i}")
+                        def zName = settings["zoneName_${i}"] ?: "Zone ${i}"
+                        addToHistory("OVERRIDE CLEARED: Fresh motion detected by ${evt.device.displayName} in ${zName}.")
+                    }
+                }
+                
                 state."motionActive_${i}" = true
                 state.remove("motionOffTime_${i}") 
+
             } else {
                 def anyActive = mSensors.any { it.currentValue("motion") == "active" }
                 if (!anyActive) {
@@ -322,7 +372,21 @@ def executeHardOff(data) {
     addToHistory("SCHEDULE: Hard OFF Time reached for ${zName}. Shutting down zone.")
     state.zoneReason["${zId}"] = "Hard OFF Time Reached"
     
+    state."appCommandTime_${zId}" = new Date().time
     switches?.each { if (it.currentValue("switch") != "off") it.off() }
+    runInMillis(500, "refreshZone", [data: [zoneId: zId]])
+}
+
+def refreshZone(data) {
+    def zId = data.zoneId
+    def switches = settings["zoneLights_${zId}"]
+    switches?.each { light ->
+        try {
+            light.refresh()
+        } catch (e) {
+            // Failsafe: Ignore if device driver does not natively support the refresh() capability
+        }
+    }
 }
 
 // --- CORE SYSTEM LOOP ---
@@ -342,6 +406,14 @@ def evaluateSystem() {
         def switches = settings["zoneLights_${i}"]
         if (!switches) continue
         
+        // Failsafe: Automatically clear the manual override if the hub is no longer in a Blacklisted mode
+        def disabledModes = settings["disableModes_${i}"]
+        def isRestricted = (disabledModes && disabledModes.contains(currentMode))
+        if (!isRestricted && state."manualOffOverride_${i}") {
+             state.remove("manualOffOverride_${i}")
+             addToHistory("OVERRIDE CLEARED: Mode restriction lifted for ${zName}.")
+        }
+
         def shouldBeOn = false
         def triggerReason = ""
 
@@ -351,9 +423,23 @@ def evaluateSystem() {
         
         // A. Outdoor Motion Evaluation
         if (settings["motionSensor_${i}"] && isDark) {
-            if (state."motionActive_${i}") {
-                motionWantsOn = true
-                triggerReason = "Motion Detected (Security Override)"
+            if (state."manualOffOverride_${i}") {
+                motionWantsOn = false // Suppress motion trigger due to security manual override
+            }
+            else if (state."motionActive_${i}") {
+                def activeSince = state."motionActiveTime_${i}" ?: now.time
+                def stuckMin = settings["motionStuckTimeout_${i}"] ?: 60
+                
+                // Check if sensor has been active longer than the user-defined stuck timeout
+                if (stuckMin > 0 && (now.time - activeSince) >= (stuckMin * 60000)) {
+                    if (state.zoneReason["${i}"] != "Motion Sensor Stuck") {
+                        addToHistory("WARNING: Motion sensor in ${zName} stuck active for ${stuckMin}+ mins. Ignoring.")
+                    }
+                    motionWantsOn = false // Ignore the motion trigger
+                } else {
+                    motionWantsOn = true
+                    triggerReason = "Motion Detected (Security Override)"
+                }
             } else {
                 def offTime = state."motionOffTime_${i}"
                 if (offTime) {
@@ -394,11 +480,9 @@ def evaluateSystem() {
 
         // --- 2. Mode Check (Whitelist & Blacklist) ---
         def allowedModes = settings["zoneModes_${i}"]
-        def disabledModes = settings["disableModes_${i}"]
-        def isRestricted = false
         
         if (allowedModes && !allowedModes.contains(currentMode)) isRestricted = true
-        if (disabledModes && disabledModes.contains(currentMode)) isRestricted = true
+        // isRestricted already evaluated earlier for the failsafe clear logic
         
         if (isRestricted) {
             def overrideAllowed = settings["motionOverridesMode_${i}"] != false
@@ -409,7 +493,9 @@ def evaluateSystem() {
                 if (switches.any { it.currentValue("switch") == "on" } || state.zoneReason["${i}"] != restReason) {
                     addToHistory("MODE RESTRICTION: Turning off ${zName} (Hub in restricted mode).")
                     state.zoneReason["${i}"] = restReason
+                    state."appCommandTime_${i}" = now.time
                     switches.each { it.off() }
+                    runInMillis(500, "refreshZone", [data: [zoneId: i]])
                 }
                 
                 // Ensure tracker captures the turn off event if it was on
@@ -458,7 +544,7 @@ def evaluateSystem() {
             }
         }
         
-        // --- 4. Safety Check: Hard OFF Time Override ---
+        // --- 4. Safety Check ---
         def hardOff = settings["hardOffTime_${i}"]
         if (shouldBeOn && hardOff && !motionWantsOn) { 
             def offDate = timeToday(hardOff, location.timeZone)
@@ -479,10 +565,16 @@ def evaluateSystem() {
             
             addToHistory("LIGHTING: Activating ${zName}. Reason: ${triggerReason}")
             state.zoneReason["${i}"] = triggerReason
+            state."appCommandTime_${i}" = now.time
             switches.each { it.on() }
+            
+            // Wait 500ms then request hardware status refresh
+            runInMillis(500, "refreshZone", [data: [zoneId: i]])
         } 
         else if (!shouldBeOn) {
             def offReason = isNight ? "Hard OFF / Timeout Enforced" : "Daylight / Clear Requirements Met"
+            if (state.zoneReason["${i}"] == "Motion Sensor Stuck") offReason = "Motion Sensor Stuck"
+            
             def offReasonChanged = (state.zoneReason["${i}"] != offReason)
             
             if (currentlyOn || offReasonChanged) {
@@ -494,7 +586,11 @@ def evaluateSystem() {
                 
                 addToHistory("LIGHTING: Deactivating ${zName}. Reason: ${offReason}")
                 state.zoneReason["${i}"] = offReason
+                state."appCommandTime_${i}" = now.time
                 switches.each { it.off() }
+                
+                // Wait 500ms then request hardware status refresh
+                runInMillis(500, "refreshZone", [data: [zoneId: i]])
             }
         }
     }
