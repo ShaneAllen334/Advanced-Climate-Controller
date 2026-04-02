@@ -20,7 +20,8 @@ preferences {
 def mainPage() {
     dynamicPage(name: "mainPage", title: "Advanced Overcast Detector", install: true, uninstall: true) {
         
-        // --- EXPOSED SECTIONS ---
+      
+  // --- EXPOSED SECTIONS ---
         
         section("Live System Dashboard") {
             input name: "refreshBtn", type: "button", title: "🔄 Refresh Data"
@@ -52,11 +53,13 @@ def mainPage() {
             def epcsbReason = ""
             if (useSmartLearning) {
                 def learnedDays = state.peakLuxHistory ? state.peakLuxHistory.size() : 0
-                if (learnedDays >= 30) {
+ 
+               if (learnedDays >= 30) {
                     epcsbReason = "Learning Active (30-day Avg)"
                 } else {
                     epcsbReason = "Collecting Data (${learnedDays}/30)"
-                }
+              
+  }
             } else {
                 epcsbReason = "Manual User Setting"
             }
@@ -111,7 +114,7 @@ def mainPage() {
                 statusText += "</table>"
                 
                 // INJECT ROOM BAR GRAPH HERE
-                statusText += generateRoomBarGraph()
+                 statusText += generateRoomBarGraph()
             }
             
             // System Status Evaluation
@@ -131,17 +134,19 @@ def mainPage() {
                     if (now.before(actualSunset) && now.after(sunInfo.sunrise)) {
                         def diffMillis = actualSunset.time - now.time
                         def h = (diffMillis / 3600000).toInteger()
-                        def m = ((diffMillis % 3600000) / 60000).toInteger()
+                  
+       def m = ((diffMillis % 3600000) / 60000).toInteger()
                         astroMsg = "<b>Sunset Hard-Lock in:</b> <span style='color: #d2691e;'>${h}h ${m}m</span>"
                     } else {
                         astroMsg = "<b>Astro Status:</b> <span style='color: purple;'>Currently Nighttime</span>"
-                    }
+  
+                   }
                 }
             } else {
                 astroMsg = "<b>Astro Status:</b> Disabled"
             }
             
-            statusText += "<div style='margin-top: 10px; padding: 10px; background: #e9e9e9; border-radius: 4px; font-size: 13px; display: flex; flex-wrap: wrap; gap: 15px; border: 1px solid #ccc;'>"
+             statusText += "<div style='margin-top: 10px; padding: 10px; background: #e9e9e9; border-radius: 4px; font-size: 13px; display: flex; flex-wrap: wrap; gap: 15px; border: 1px solid #ccc;'>"
             statusText += "<div><b>System:</b> ${sysStatus}</div>"
             statusText += "<div style='border-left: 1px solid #ccc; padding-left: 15px;'>${astroMsg}</div>"
             statusText += "</div>"
@@ -157,7 +162,8 @@ def mainPage() {
                 state.cloudHistory.each { event ->
                     tableHtml += "<tr style='border-bottom: 1px solid #eee;'>"
                     tableHtml += "<td style='padding: 6px;'>${event.time}</td>"
-                    tableHtml += "<td style='padding: 6px;'><b>${event.duration}</b></td>"
+    
+                 tableHtml += "<td style='padding: 6px;'><b>${event.duration}</b></td>"
                     tableHtml += "<td style='padding: 6px; color: #d2691e;'>-${event.drop}</td>"
                     tableHtml += "<td style='padding: 6px; color: #555;'>${event.minLux}</td>"
                     tableHtml += "</tr>"
@@ -165,20 +171,23 @@ def mainPage() {
                 tableHtml += "</table>"
                 
                 if (state.activeCloudEvent) {
-                    tableHtml += "<div style='margin-top: 8px; font-size: 12px; color: blue; font-weight: bold;'>☁️ Potential Clouding in progress...</div>"
+         
+            tableHtml += "<div style='margin-top: 8px; font-size: 12px; color: blue; font-weight: bold;'>☁️ Potential Clouding in progress...</div>"
                 }
                 
                 paragraph tableHtml
             } else {
                 paragraph "<i>No passing clouds or sudden drops recorded yet.</i>"
-            }
+        
+     }
         }
         
         section("24-Hour Lux Trend vs. Expected Solar Baseline") {
             if (state.luxHistory && state.luxHistory.size() > 2) {
                 if (chartSource == "SVG/HTML (Local)") {
                     paragraph generateLocalLineChart()
-                } else {
+     
+            } else {
                     def chartUrl = generateChartUrl()
                     paragraph "<div style='text-align:center;'><img src='${chartUrl}' width='100%' style='max-width:600px; border: 1px solid #ccc; border-radius: 5px;' /></div>"
                 }
@@ -210,7 +219,8 @@ def mainPage() {
                     input "roomShades_${rmNum}", "capability.contactSensor", title: "Shade Contact Sensor(s) (Closed = Ignored)", multiple: true
                     input "roomLights_${rmNum}", "capability.switch", title: "Room Lights (ON = Ignored)", multiple: true
                     
-                    input "roomPeakLux_${rmNum}", "number", title: "Expected Peak Brightness (Lux)", 
+                  
+  input "roomPeakLux_${rmNum}", "number", title: "Expected Peak Brightness (Lux)", 
                         description: "What does this room's sensor typically read at peak daylight on a clear day?"
                     input "roomBaseLux_${rmNum}", "number", title: "Base Darkness Threshold (Lux)", 
                         description: "The brightness level at which you consider this room 'dark' (The app will scale this ratio automatically)."
@@ -223,7 +233,8 @@ def mainPage() {
         
         section("Application History (Last 20 Events)", hideable: true, hidden: true) {
             if (state.historyLog && state.historyLog.size() > 0) {
-                def logText = state.historyLog.join("<br>")
+             
+    def logText = state.historyLog.join("<br>")
                 paragraph "<div style='font-size: 13px; font-family: monospace; background-color: #f4f4f4; padding: 10px; border-radius: 5px; border: 1px solid #ccc;'>${logText}</div>"
             } else {
                 paragraph "<i>No history available yet. The log will populate as the app takes action.</i>"
@@ -237,7 +248,8 @@ def mainPage() {
             paragraph "<b>Outdoor Sensor Array:</b> Provide at least a Primary Sensor."
             input "primaryLuxSensor", "capability.illuminanceMeasurement", title: "Primary Outdoor Lux Sensor", required: true
             input "auxLuxSensor1", "capability.illuminanceMeasurement", title: "Auxiliary Outdoor Lux Sensor 1", required: false
-            input "auxLuxSensor2", "capability.illuminanceMeasurement", title: "Auxiliary Outdoor Lux Sensor 2", required: false
+           
+ input "auxLuxSensor2", "capability.illuminanceMeasurement", title: "Auxiliary Outdoor Lux Sensor 2", required: false
             input "auxLuxSensor3", "capability.illuminanceMeasurement", title: "Auxiliary Outdoor Lux Sensor 3", required: false
             
             input "averageSensors", "bool", title: "Average all active outdoor sensors? (Smarter detection)", defaultValue: true,
@@ -257,7 +269,8 @@ def mainPage() {
         section("Proportional Dimming Setup", hideable: true, hidden: true) {
             paragraph "Maps the virtual dimmer level using a logarithmic curve for natural eye perception."
             input "heavyStormLux", "number", title: "Heavy Storm Limit (Lux)", defaultValue: 500,
-                description: "If lux drops to this level, the dimmer hits Max Brightness."
+              
+  description: "If lux drops to this level, the dimmer hits Max Brightness."
             input "maxDimLevel", "number", title: "Max Brightness Level (%)", defaultValue: 100, range: "1..100"
             input "minDimLevel", "number", title: "Min Brightness Level (%)", defaultValue: 20, range: "1..100",
                 description: "The starting brightness when it just barely crosses the Overcast threshold."
@@ -277,7 +290,8 @@ def mainPage() {
             input "debounceTime", "number", title: "Anti-Yo-Yo Debounce Time (Minutes)", defaultValue: 10,
                 description: "How long the sky must stay below/above the threshold before flipping the virtual outputs."
                 
-            input "useDynamicClear", "bool", title: "Enable Automatic Time-of-Year & Time-of-Day Adjustments?", defaultValue: true, submitOnChange: true,
+        
+     input "useDynamicClear", "bool", title: "Enable Automatic Time-of-Year & Time-of-Day Adjustments?", defaultValue: true, submitOnChange: true,
                 description: "If enabled, the Clear Sky Recovery Threshold dynamically curves based on solar position and season to prevent evening/winter yo-yoing."
         }
         
@@ -300,7 +314,8 @@ def installed() {
 }
 
 def updated() {
-    log.info "Advanced Overcast Detector Updated."
+  
+  log.info "Advanced Overcast Detector Updated."
     unsubscribe()
     unschedule()
     initialize()
@@ -318,7 +333,8 @@ def initialize() {
     state.pendingClear = false
     state.isNight = false
     state.lastLuxCheckTime = now()
-    state.lastLuxValue = null
+   
+ state.lastLuxValue = null
     state.dipReason = null
     
     // Reset peak trackers on boot
@@ -339,7 +355,8 @@ def initialize() {
     if (primaryLuxSensor) subscribe(primaryLuxSensor, "illuminance", luxHandler)
     if (auxLuxSensor1) subscribe(auxLuxSensor1, "illuminance", luxHandler)
     if (auxLuxSensor2) subscribe(auxLuxSensor2, "illuminance", luxHandler)
-    if (auxLuxSensor3) subscribe(auxLuxSensor3, "illuminance", luxHandler)
+  
+  if (auxLuxSensor3) subscribe(auxLuxSensor3, "illuminance", luxHandler)
 
     subscribe(location, "mode", modeHandler)
    
@@ -358,8 +375,9 @@ def initialize() {
 // --- BUTTON HANDLER ---
 def appButtonHandler(btn) {
     if (btn == "refreshBtn") {
-        log.info "Manual Data Refresh Requested."
-    }
+   
+     log.info "Manual Data Refresh Requested."
+}
 }
 
 // --- UTILITY: SMART LEARNING HELPER ---
@@ -381,7 +399,8 @@ def getSmartOvercastThreshold() {
 }
 
 def getSmartClearThreshold() {
-    def baseClear = clearThreshold ?: 4000
+ 
+   def baseClear = clearThreshold ?: 4000
     if (!useSmartThresholds) return baseClear
     def basePeak = peakClearLux ?: 10000
     def currentPeak = getExpectedPeakLux()
@@ -409,7 +428,8 @@ def closeActiveCloudEvent() {
     def eventTime = new Date(state.activeCloudEvent.startTime).format("MM/dd HH:mm", location.timeZone)
     
     def newEvent = [
-        time: eventTime,
+     
+   time: eventTime,
         duration: durationStr,
         drop: "${maxDrop} lx",
         minLux: "${state.activeCloudEvent.minLux} lx"
@@ -426,7 +446,8 @@ def closeActiveCloudEvent() {
 def addToHistory(String msg) {
     if (!state.historyLog) state.historyLog = []
     def timestamp = new Date().format("MM/dd HH:mm", location.timeZone)
-    state.historyLog.add(0, "<b>[${timestamp}]</b> ${msg}")
+ 
+   state.historyLog.add(0, "<b>[${timestamp}]</b> ${msg}")
     
     if (state.historyLog.size() > 20) state.historyLog = state.historyLog.take(20)
     
@@ -458,12 +479,14 @@ def roomLuxHandler(evt) {
                 def rData = state.roomData["${i}"]
                 if (rData) {
                     if (lux > (rData.dailyMax ?: 0)) {
-                        rData.dailyMax = lux
+  
+                       rData.dailyMax = lux
                     }
                 }
             }
             break // Found the sensor, no need to loop further
-        }
+       
+ }
     }
 }
 
@@ -479,7 +502,8 @@ def getAggregateLux() {
     if (values.size() == 1) return values[0]
     if (values.size() > 2) {
         values.sort()
-        values = values[1..-2] // Drop highest and lowest to filter outliers
+ 
+       values = values[1..-2] // Drop highest and lowest to filter outliers
     }
     return (values.sum() / values.size()).toInteger()
 }
@@ -505,7 +529,8 @@ def getDynamicClearThreshold() {
     def totalDaylightMillis = sunset - sunrise
     def currentDaylightMillis = nowTime - sunrise
     def dayPercentage = currentDaylightMillis / totalDaylightMillis
-    def timeMultiplier = Math.sin(dayPercentage * Math.PI)
+  
+ def timeMultiplier = Math.sin(dayPercentage * Math.PI)
     
     // 2. Calculate Seasonal Arc (Day of Year)
     def cal = Calendar.getInstance()
@@ -544,7 +569,8 @@ def logGraphData() {
         def sr = sunInfo.sunrise.time
         def ss = sunInfo.sunset.time
         
-        if (nowTime >= sr && nowTime <= ss) {
+    
+     if (nowTime >= sr && nowTime <= ss) {
             def fraction = (nowTime - sr) / (ss - sr)
             def peak = getExpectedPeakLux()
             expectedLux = (peak * Math.sin(fraction * Math.PI)).toInteger()
@@ -569,7 +595,8 @@ def generateChartUrl() {
     
     def datasets = []
     if (primaryLuxSensor) {
-        def d = state.luxHistory.collect { it.s1 ?: (it.lux ?: 0) } // Backwards compatible with old logs
+        
+def d = state.luxHistory.collect { it.s1 ?: (it.lux ?: 0) } // Backwards compatible with old logs
         datasets << "{label:'Primary Lux',data:[${d.join(',')}],fill:false,borderColor:'rgba(54,162,235,1)',borderWidth:2,pointRadius:0}"
     }
     if (auxLuxSensor1) {
@@ -592,7 +619,8 @@ def generateChartUrl() {
     def chartConfig = "{type:'line',data:{labels:[${labels.join(',')}],datasets:[${datasets.join(',')}]},options:{legend:{display:true,position:'bottom'},scales:{xAxes:[{ticks:{autoSkip:true,maxTicksLimit:8}}]}}}"
     
     def encodedConfig = java.net.URLEncoder.encode(chartConfig, "UTF-8")
-    return "https://quickchart.io/chart?c=${encodedConfig}&w=600&h=300"
+   
+ return "https://quickchart.io/chart?c=${encodedConfig}&w=600&h=300"
 }
 
 def generateLocalLineChart() {
@@ -607,7 +635,8 @@ def generateLocalLineChart() {
     if (maxLux < 1000) maxLux = 1000
 
     def svg = "<svg width='100%' viewBox='0 0 ${width} ${height}' style='background:#fcfcfc; border:1px solid #ccc; border-radius:5px;'>"
-    
+   
+ 
     // Background Grid & Y-Axis
     svg += "<line x1='0' y1='${height/2}' x2='${width}' y2='${height/2}' stroke='#eee' stroke-width='1'/>"
     svg += "<text x='5' y='15' font-size='11' fill='#888' font-family='sans-serif'>${maxLux} lx</text>"
@@ -619,7 +648,8 @@ def generateLocalLineChart() {
     def makePolyline = { dataKey, color, strokeDash ->
         def pts = []
         state.luxHistory.eachWithIndex { pt, i ->
-            def x = (i * xStep).toInteger()
+  
+          def x = (i * xStep).toInteger()
             // Backwards compatibility included for old 'lux' tag
             def val = pt[dataKey] ?: (dataKey == 's1' ? (pt.lux ?: 0) : 0)
             def y = height - ((val / maxLux) * height).toInteger()
@@ -631,7 +661,8 @@ def generateLocalLineChart() {
     if (primaryLuxSensor) svg += makePolyline("s1", "rgba(54,162,235,1)", "none")
     if (auxLuxSensor1) svg += makePolyline("s2", "rgba(255,99,132,1)", "none")
     if (auxLuxSensor2) svg += makePolyline("s3", "rgba(75,192,192,1)", "none")
-    if (auxLuxSensor3) svg += makePolyline("s4", "rgba(153,102,255,1)", "none")
+   
+ if (auxLuxSensor3) svg += makePolyline("s4", "rgba(153,102,255,1)", "none")
     svg += makePolyline("expected", "rgba(255,159,64,0.8)", "5,5")
 
     svg += "</svg>"
@@ -663,7 +694,8 @@ def generateRoomBarGraph() {
 
     for (int i = 1; i <= configuredRooms; i++) {
         def rName = settings["roomName_${i}"] ?: "Room ${i}"
-        def rData = state.roomData["${i}"]
+     
+   def rData = state.roomData["${i}"]
         def dMax = rData?.dailyMax ?: 0
         def pct = (dMax / maxGlobal) * 100
         
@@ -690,7 +722,8 @@ def isModeAllowed() {
 def modeHandler(evt) {
     if (!isModeAllowed()) {
         addToHistory("GLOBAL: Hub entered restricted mode (${evt.value}). Pausing detector.")
-        unschedule("triggerOvercast")
+     
+   unschedule("triggerOvercast")
         unschedule("triggerClear")
         state.pendingOvercast = false
         state.pendingClear = false
@@ -706,7 +739,8 @@ def updateDimmerLevel(currentLux) {
 
     def overLimit = getSmartOvercastThreshold()
     def stormLimit = heavyStormLux ?: 500
-    def maxLvl = maxDimLevel ?: 100
+ 
+   def maxLvl = maxDimLevel ?: 100
     def minLvl = minDimLevel ?: 20
 
     def targetLevel = minLvl
@@ -723,13 +757,14 @@ def updateDimmerLevel(currentLux) {
         
         def curve = Math.log10(1 + 9 * (luxDrop / luxRange))
         def calcLevel = minLvl + (curve * levelRange)
-        targetLevel = calcLevel.setScale(0, BigDecimal.ROUND_HALF_UP).toInteger()
+        targetLevel = Math.round(calcLevel).toInteger()
     }
 
     def currentDimmerLevel = targetDimmer.currentValue("level")?.toInteger() ?: 0
     def currentDimmerState = targetDimmer.currentValue("switch")
 
-    // Mesh Protection
+   
+ // Mesh Protection
     if (currentDimmerState != "on" || Math.abs(currentDimmerLevel - targetLevel) > 2) {
         addToHistory("DIMMER: Dynamic adjustment to ${targetLevel}% (Lux: ${currentLux}).")
         targetDimmer.setLevel(targetLevel)
@@ -749,7 +784,8 @@ def forceImmediateEvaluation() {
     def clearLimit = getDynamicClearThreshold()
     
     if (lux <= overLimit) {
-        state.currentCondition = "Overcast"
+     
+   state.currentCondition = "Overcast"
         if (targetSwitch && targetSwitch.currentValue("switch") != "on") targetSwitch.on()
         if (targetDimmer) updateDimmerLevel(lux)
     } else if (lux >= clearLimit) {
@@ -758,7 +794,8 @@ def forceImmediateEvaluation() {
         if (targetDimmer && targetDimmer.currentValue("switch") != "off") targetDimmer.off()
     } else {
         // Fallback baseline for deadband boot up
-        state.currentCondition = "Assumed Clear (Boot)"
+   
+     state.currentCondition = "Assumed Clear (Boot)"
         addToHistory("SYSTEM BOOT: Booted inside deadband (${lux} lx). Assuming clear state to prevent stuck lights.")
         if (targetSwitch && targetSwitch.currentValue("switch") != "off") targetSwitch.off()
         if (targetDimmer && targetDimmer.currentValue("switch") != "off") targetDimmer.off()
@@ -812,7 +849,8 @@ def evaluateLuxCondition() {
             state.activeCloudEvent = [startTime: timeNow, startLux: state.recentPeakLux, minLux: lux]
             state.dipReason = "Potential Clouding"
             addToHistory("ANALYSIS: Potential Clouding detected. Tracking as active weather event.")
-        } else if (lux < state.activeCloudEvent.minLux) {
+     
+   } else if (lux < state.activeCloudEvent.minLux) {
             state.activeCloudEvent.minLux = lux 
         }
     } else if (luxDrop > 0 && timeDeltaMins > intervalMins && lux <= overLimit && !state.pendingOvercast) {
@@ -860,13 +898,15 @@ def evaluateLuxCondition() {
         if (state.pendingOvercast) {
             unschedule("triggerOvercast")
             state.pendingOvercast = false
-            if (state.dipReason == "Potential Clouding") {
+     
+       if (state.dipReason == "Potential Clouding") {
                 addToHistory("Sky brightened to ${lux} lx rapidly. Logged as POTENTIAL CLOUDING. Canceled Overcast Verification.")
             } else {
                 addToHistory("Sky brightened back to ${lux} lx. Canceled Overcast Verification.")
             }
         }
-        
+  
+       
         if (!state.pendingClear) {
             state.pendingClear = true
             runIn(debounceSecs, "triggerClear", [overwrite: true])
@@ -890,7 +930,8 @@ def evaluateLuxCondition() {
 def triggerOvercast() {
     if (isSystemPaused() || !isModeAllowed() || (state.isNight && useAstro)) return
     
-    state.pendingOvercast = false
+    
+state.pendingOvercast = false
     state.currentCondition = "Overcast"
     
     if (state.dipReason == "Potential Clouding") {
@@ -905,7 +946,8 @@ def triggerOvercast() {
 
 def triggerClear() {
     if (isSystemPaused() || !isModeAllowed() || (state.isNight && useAstro)) return
-    
+ 
+   
     state.pendingClear = false
     state.currentCondition = "Clear"
     
@@ -964,9 +1006,9 @@ def executeSunset() {
             state.peakLuxHistory.add(state.dailyMaxLux)
             if (state.peakLuxHistory.size() > 30) state.peakLuxHistory = state.peakLuxHistory.drop(1)
             log.info "SMART LEARNING (OUTDOOR): Daily max of ${state.dailyMaxLux} lx added."
-        } else {
+} else {
             log.info "SMART LEARNING (OUTDOOR): Daily max of ${state.dailyMaxLux} lx rejected (20% bad weather rule)."
-        }
+}
     }
     state.dailyMaxLux = 0
     
@@ -988,9 +1030,9 @@ def executeSunset() {
                
                 if (rData.peakHistory.size() > 30) rData.peakHistory = rData.peakHistory.drop(1)
                 log.info "SMART LEARNING (ROOM ${i}): Daily max of ${rData.dailyMax} lx added."
-            } else {
+} else {
                 log.info "SMART LEARNING (ROOM ${i}): Daily max of ${rData.dailyMax} lx rejected (20% rule)."
-            }
+}
             
             // Calculate proportional setpoint
             def currentPeak = rData.peakHistory.size() >= 30 ? (rData.peakHistory.sum() / rData.peakHistory.size()) : basePeak
@@ -1000,13 +1042,14 @@ def executeSunset() {
             
             // Write to Hub Variable
             def varName = settings["roomVar_${i}"]
-            if (varName) {
+     
+       if (varName) {
                 try {
                     setGlobalVar(varName, newSetpoint)
                     log.info "ROOM ${i}: Exported new setpoint (${newSetpoint}) to Hub Variable: ${varName}."
-                } catch (e) {
+} catch (e) {
                     log.error "ROOM ${i}: Failed to set Hub Variable '${varName}'. Ensure it is created and spelled correctly in your hub settings."
-                }
+}
             }
         }
         // Reset room max for tomorrow
@@ -1031,13 +1074,15 @@ def enforceNightAction() {
         if (action == "Turn OFF (Clear/Night)") {
             if (targetSwitch && targetSwitch.currentValue("switch") != "off") targetSwitch.off()
             if (targetDimmer && targetDimmer.currentValue("switch") != "off") targetDimmer.off()
-            addToHistory("ASTRO: Forced Virtual Targets OFF for nighttime.")
+          
+  addToHistory("ASTRO: Forced Virtual Targets OFF for nighttime.")
         } 
         else if (action == "Turn ON (Dark/Overcast)") {
             if (targetSwitch && targetSwitch.currentValue("switch") != "on") targetSwitch.on()
             if (targetDimmer) {
                 def nLevel = nightDimLevel ?: 100
-                targetDimmer.setLevel(nLevel)
+               
+ targetDimmer.setLevel(nLevel)
             }
             addToHistory("ASTRO: Forced Virtual Targets ON for nighttime.")
         }
