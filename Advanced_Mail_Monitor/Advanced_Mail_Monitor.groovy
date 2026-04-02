@@ -107,6 +107,15 @@ def mainPage() {
             input "deliveryLockout", "number", title: "State Change Lockout (Minutes)", defaultValue: 2, required: true
         }
 
+        section("Delivery Time Restrictions") {
+            input "enableDeliveryWindow", "bool", title: "Restrict Delivery Detection to a Time Window?", defaultValue: false, submitOnChange: true
+            if (enableDeliveryWindow) {
+                paragraph "Only allow 'Mail Delivered' events between these times. This prevents false deliveries when you drop off outgoing mail in the morning or evening."
+                input "deliveryStartTime", "time", title: "Delivery Window Start Time", required: true
+                input "deliveryEndTime", "time", title: "Delivery Window End Time", required: true
+            }
+        }
+
         section("Home Activity Tracking (Doors & Arrivals)") {
             paragraph "These sensors are used to calculate your 'Retrieval Trip Time' and are optional. They can also be used to prevent false mail deliveries."
             input "exteriorDoors", "capability.contactSensor", title: "Exterior Doors (Front, Garage, etc.)", multiple: true, required: false
@@ -369,6 +378,17 @@ def sensorOpenHandler(evt) {
  
     } else {
         // --- MAIL DELIVERY LOGIC ---
+        
+        // Check Delivery Window if enabled
+        if (enableDeliveryWindow && deliveryStartTime && deliveryEndTime) {
+            def isWithinWindow = timeOfDayIsBetween(deliveryStartTime, deliveryEndTime, new Date(), tz)
+            if (!isWithinWindow) {
+                log.info "Mailbox opened outside delivery window. Ignoring delivery event."
+                addToHistory("IGNORED: Opened outside of delivery window.")
+                return 
+            }
+        }
+        
         mailSwitch.on()
         
         state.lastValidStateChange = now
