@@ -1,546 +1,696 @@
 /**
- * Advanced Bathroom Dehumidifier Controller
+ * Advanced Air Quality Controller
  */
+
 definition(
-    name: "Advanced Bathroom Dehumidifier Controller",
+    name: "Advanced Air Quality Controller",
     namespace: "ShaneAllen",
     author: "ShaneAllen",
-    description: "Intelligent climate control for up to 4 bathrooms with predictive tracking, cost analysis, and automated moisture management.",
-    category: "Green Living",
+    description: "Advanced AQI control for up to 12 rooms, integrating Ecowitt sensors, ROI tracking, Smart Filters, Post-Scrubbing, and Alerting.",
+    category: "Health & Wellness",
     iconUrl: "",
-    iconX2Url: ""
+    iconX2Url: "",
+    iconX3Url: ""
 )
 
 preferences {
     page(name: "mainPage")
-    page(name: "bathroomPage")
 }
 
 def mainPage() {
-    dynamicPage(name: "mainPage", title: "Advanced Dehumidifier Controls", install: true, uninstall: true) {
+    dynamicPage(name: "mainPage", title: "<b>Advanced Air Quality Controller</b>", install: true, uninstall: true) {
         
-        section("Live Climate Dashboard") {
-            // Refresh Button
-            href(name: "refreshDash", title: "🔄 Refresh Data", description: "Tap to update live charts and timers", page: "mainPage")
+        // Dashboard remains open by default for quick viewing
+        section("<b>Live System Dashboard</b>") {
+            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Provides a real-time view of your home's air quality, active purifiers, and the current logic state of the AQI engine.</div>"
             
-            // TABLE 1: Current Status
-            def statusText = "<b>Live Space Status</b><br><table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc; margin-bottom: 15px;'>"
-            statusText += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Zone</th><th style='padding: 8px;'>Humidity<br><span style='font-size:10px; font-weight:normal;'>Now (Avg) / Target</span></th><th style='padding: 8px;'>Motion</th><th style='padding: 8px;'>Dehumidifier State</th><th style='padding: 8px;'>Run Time<br><span style='font-size:10px; font-weight:normal;'>Today (Yest)</span></th></tr>"
+            def statusExplanation = getHumanReadableStatus()
+          
+            paragraph "<div style='background-color:#e9ecef; padding:10px; border-radius:5px; border-left:5px solid #007bff;'><b>System Status:</b> ${statusExplanation}</div>"
+
+            def masterState = appEnableSwitch ? appEnableSwitch.currentValue("switch")?.toUpperCase() : "ON (NO SWITCH)"
+            def purifierState = isWholeHouse && mainPurifier ? mainPurifier.currentValue("switch")?.toUpperCase() : "N/A"
             
-            def configuredCount = 0
-            def numBaths = settings["numBathrooms"] ?: 1
-            def now = new Date().time
+            def outAQIStr = getAQI(outdoorAQI) != null ? getAQI(outdoorAQI) : "--"
+            def inAQIStr = isWholeHouse && indoorAQI ? (getAQI(indoorAQI) != null ? getAQI(indoorAQI) : "--") : "N/A (Multi-Zone)"
             
-            for (int i = 1; i <= (numBaths as Integer); i++) {
-                def bName = settings["bathName_${i}"]
-                def bSwitch = settings["bathSwitch_${i}"]
+            def pollenStr = state.localPollen != null ? state.localPollen : "Waiting for data..."
+            def currentLocMode = location.mode ?: "Unknown"
+
+            def effectivenessStr = "Requires Indoor and Outdoor Sensors"
+            def outVal = getAQI(outdoorAQI)
+       
+            if (isWholeHouse && indoorAQI && outdoorAQI) {
+                def inVal = getAQI(indoorAQI)
+                if (inVal != null && outVal != null) {
+                    if (inVal < outVal) effectivenessStr = "<span style='color:green;'><b>Working Effectively</b> (Indoor is ${outVal - inVal} points cleaner)</span>"
+                    else if (inVal == outVal) effectivenessStr = "<span style='color:orange;'><b>Neutral</b> (Indoor equals Outdoor)</span>"
+                    else effectivenessStr = "<span style='color:red;'><b>Poor</b> (Indoor is ${inVal - outVal} points worse)</span>"
+                }
+            }
+            
+            // Generate exact switch states for Main Configuration
+            def mTriggerNames = "None Setup"
+            if (isWholeHouse && mainTriggerSwitch) {
+                mTriggerNames = mainTriggerSwitch.collect { "${it.displayName}: <b>${it.currentValue('switch')?.toUpperCase()}</b>" }.join("<br>")
+                if (state.mainScrubEnd && now() < state.mainScrubEnd) mTriggerNames += "<br><span style='color:blue;'><i>(Post-Scrubbing Active)</i></span>"
+            }
+            
+            def mPreventName = "None Setup"
+            if (isWholeHouse && mainPreventSwitch) {
+                mPreventName = "${mainPreventSwitch.displayName}: <b>${mainPreventSwitch.currentValue('switch')?.toUpperCase()}</b>"
+            }
+
+            def dashHTML = """
+            <style>
+                .dash-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top:10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+                .dash-table th, .dash-table td { border: 1px solid #ccc; padding: 8px; text-align: center; }
+                .dash-table th { background-color: #343a40; color: white; }
+                .dash-hl { background-color: #f8f9fa; font-weight:bold; text-align: left !important; padding-left: 15px !important; width: 28%; }
+                .dash-subhead { background-color: #e9ecef; font-weight: bold; text-align: left !important; padding-left: 15px !important; text-transform: uppercase; font-size: 12px; color: #495057; }
+                .dash-val { text-align: left !important; padding-left: 15px !important; }
+            </style>
+            <table class="dash-table">
+                <thead><tr><th>Metric</th><th colspan="3">Current Value</th></tr></thead>
+                <tbody>
+                    <tr><td class="dash-hl">Master App Switch</td><td colspan="3" class="dash-val"><b>${masterState}</b></td></tr>
+                    <tr><td class="dash-hl">Main Purifier State</td><td colspan="3" class="dash-val" style="color:${purifierState == 'ON' ? 'green' : 'black'};"><b>${purifierState}</b></td></tr>
+                    <tr><td class="dash-hl">Current Reason</td><td colspan="3" class="dash-val"><i>${state.currentReason ?: "System Idle"}</i></td></tr>
+                    
+                    <tr><td colspan="4" class="dash-subhead">Air Quality Data</td></tr>
+                    <tr><td class="dash-hl">Outdoor AQI</td><td colspan="3" class="dash-val">${outAQIStr}</td></tr>
+                    <tr><td class="dash-hl">Indoor AQI</td><td colspan="3" class="dash-val">${inAQIStr}</td></tr>
+                    <tr><td class="dash-hl">System Effectiveness</td><td colspan="3" class="dash-val">${effectivenessStr}</td></tr>
+                    
+                    ${isWholeHouse ? """
+                    <tr><td colspan="4" class="dash-subhead">Main Logic Switches</td></tr>
+                    <tr><td class="dash-hl">Trigger Switches</td><td colspan="3" class="dash-val">${mTriggerNames}</td></tr>
+                    <tr><td class="dash-hl">Prevent Switch</td><td colspan="3" class="dash-val">${mPreventName}</td></tr>
+                    """ : ""}
+                    
+                    <tr><td colspan="4" class="dash-subhead">External Variables</td></tr>
+                    <tr><td class="dash-hl">Local Pollen Count</td><td colspan="3" class="dash-val">${pollenStr}</td></tr>
+                    <tr><td class="dash-hl">Location Mode</td><td colspan="3" class="dash-val">${currentLocMode}</td></tr>
+                </tbody>
+            </table>
+            """
+            paragraph dashHTML
+        }
+
+        section("<b>Performance, ROI & Filter Tracking</b>", hideable: true, hidden: true) {
+            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Estimates daily run costs, verifies Air Changes per Hour (ACH), and tracks filter degradation (with a 1.5x wear penalty during severe AQI events).</div>"
+            
+            def perfHTML = "<table class='dash-table' style='margin-top:0px;'><thead><tr><th>Purifier Zone</th><th>Filter Life</th><th>ACH</th><th>Run Time (Today)</th><th>Est. Cost</th></tr></thead><tbody>"
+            def totalDayCost = 0.0
+            def today = new Date().format("yyyy-MM-dd", location.timeZone)
+
+            if (isWholeHouse && mainPurifier) {
+                def cadr = mainPurifierCADR ?: 450.0
+                def sqft = houseSqFt ?: 500.0
+                def ceiling = houseCeiling ?: 8.0
+                def vol = sqft * ceiling
+                def ach = vol > 0 ? String.format("%.1f", (cadr * 60.0) / vol) : "0.0"
                 
-                if (bName && bSwitch) {
-                    configuredCount++
-                    def hSensor = settings["bathHumidity_${i}"]
-                    def mSensor = settings["bathMotion_${i}"]
-                    def swId = bSwitch.id.toString()
-                    
-                    def humVal = hSensor ? "${hSensor.currentValue('humidity')}%" : "N/A"
-                    def motVal = mSensor ? mSensor.currentValue('motion')?.toUpperCase() : "N/A"
-                    def swVal = bSwitch.currentValue('switch')?.toUpperCase() ?: "UNKNOWN"
-                    
-                    def motColor = (motVal == "ACTIVE") ? "blue" : "#888"
-                    def swColor = (swVal == "ON") ? "green" : "black"
-                    def humColor = "black"
-                    
-                    if (hSensor && settings["bathHumHigh_${i}"]) {
-                        def currentH = hSensor.currentValue('humidity') as Number
-                        def highH = settings["bathHumHigh_${i}"] as Number
-                        if (currentH >= highH) humColor = "red"
-                    }
-                    
-                    // Humidity Math & Target Setpoint
-                    def humSum = state.dailyHumSum?."bath_${i}" ?: 0.0
-                    def humCount = state.dailyHumCount?."bath_${i}" ?: 0
-                    def avgHumStr = humCount > 0 ? "${Math.round(humSum / humCount)}%" : "--"
-                    
-                    def targetH = settings["globalBaselineSensor"] ? settings["globalBaselineSensor"].currentValue("humidity") : settings["bathHumTarget_${i}"]
-                    def targetHumStr = targetH ? "${targetH}%" : "N/A"
-                    
-                    def humDisplay = "<span style='color: ${humColor}; font-weight: bold;'>${humVal}</span><br><span style='font-size:11px; color:#555;'>Avg: ${avgHumStr} / Tgt: ${targetHumStr}</span>"
-
-                    // Live Timers & Run Time Logic
-                    def pendingMsg = ""
-                    def runSecondsToday = state.dailyDuration?."${swId}" ?: 0
-                    def runSecondsYesterday = state.yesterdayDuration?."${swId}" ?: 0
-                    
-                    if (swVal == "ON") {
-                        def startTime = state.switchEpoch?."${swId}"
-                        def minRunMins = settings["bathMinRun_${i}"] ?: 15
+                def histMins = state.runHistory?.get(today)?.get(mainPurifier.id) ?: 0.0
+                def totalMins = histMins + liveRunMins(mainPurifier.id)
+                def cost = (totalMins / 60.0) * ((mainPurifierWatts ?: 65.0) / 1000.0) * (costPerKwh ?: 0.15)
+                totalDayCost += cost
+                
+                def fMins = (state.filterWearMins?.get(mainPurifier.id) ?: 0.0) + totalMins
+                def fMax = (mainFilterHours ?: 4380) * 60.0
+                def fPct = Math.max(0.0, 100.0 - ((fMins / fMax) * 100.0))
+                def fStr = fPct < 10 ? "<span style='color:red;'><b>${String.format("%.1f", fPct)}%</b></span>" : "${String.format("%.1f", fPct)}%"
+                
+                perfHTML += "<tr><td><b>Main House</b></td><td>${fStr}</td><td>${ach}</td><td>${String.format("%.1f", totalMins / 60.0)}h</td><td>&#36;${String.format("%.3f", cost)}</td></tr>"
+            } else if (!isWholeHouse) {
+                def hasActiveZones = false
+                for (int i = 1; i <= 12; i++) {
+                    def purif = settings["z${i}Purifier"]
+                    if (settings["enableZ${i}"] && purif) {
+                        hasActiveZones = true
+                        def cadr = settings["z${i}CADR"] ?: 100.0
+                        def sqft = settings["z${i}SqFt"] ?: 150.0
+                        def ceiling = settings["z${i}Ceiling"] ?: 8.0
+                        def vol = sqft * ceiling
+                        def ach = vol > 0 ? String.format("%.1f", (cadr * 60.0) / vol) : "0.0"
                         
-                        if (startTime) {
-                            def elapsedMs = now - startTime
-                            runSecondsToday += Math.round(elapsedMs / 1000).toInteger() // Live run time addition
-                            
-                            def minRunMs = minRunMins * 60000
-                            if (elapsedMs < minRunMs) {
-                                def remainMs = minRunMs - elapsedMs
-                                pendingMsg += "<br><span style='color:purple; font-size:11px;'>Min Run Lock: ${formatTime(remainMs)}</span>"
-                            }
-                        }
-
-                        def maxEpoch = state["maxRunEpoch_${i}"]
-                        def maxMins = settings["bathMaxRun_${i}"] ?: 120
-                        if (maxEpoch) {
-                            def diffMs = (maxEpoch + (maxMins * 60000)) - now
-                            if (diffMs > 0) pendingMsg += "<br><span style='color:red; font-size:11px;'>Max Cutoff: ${formatTime(diffMs)}</span>"
-                        }
-            
-                        def timerEpoch = state["timerEpoch_${i}"]
-                        def delayMins = settings["bathMotionDelay_${i}"] ?: 60
-                        if (timerEpoch) {
-                            def diffMs = (timerEpoch + (delayMins * 60000)) - now
-                            if (diffMs > 0) pendingMsg += "<br><span style='color:blue; font-size:11px;'>Motion Off In: ${formatTime(diffMs)}</span>"
-                        }
-                    }
-                    
-                    // Format Run Times
-                    def tMins = Math.floor(runSecondsToday / 60).toInteger()
-                    def tHours = Math.floor(tMins / 60).toInteger()
-                    tMins = tMins % 60
-                    def tStr = tHours > 0 ? "${tHours}h ${tMins}m" : "${tMins}m"
-
-                    def yMins = Math.floor(runSecondsYesterday / 60).toInteger()
-                    def yHours = Math.floor(yMins / 60).toInteger()
-                    yMins = yMins % 60
-                    def yStr = yHours > 0 ? "${yHours}h ${yMins}m" : "${yMins}m"
-                    
-                    def runDisplay = "<b>${tStr}</b><br><span style='font-size:11px; color:#666;'>Yest: ${yStr}</span>"
-                    
-                    // Grace Period formatting
-                    def graceEpoch = state["graceEpoch_${i}"]
-                    def graceMins = settings["bathGracePeriod_${i}"] ?: 2
-                    if (graceEpoch && !state["motionActive_${i}"] && !state["timerEpoch_${i}"]) {
-                        def diffMs = (graceEpoch + (graceMins * 60000)) - now
-                        if (diffMs > 0) pendingMsg += "<br><span style='color:orange; font-size:11px;'>Grace Period: ${formatTime(diffMs)}</span>"
-                    }
-                    
-                    statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${bName}</b></td><td style='padding: 8px;'>${humDisplay}</td><td style='padding: 8px; color: ${motColor};'>${motVal}</td><td style='padding: 8px; color: ${swColor}; font-weight: bold;'>${swVal}${pendingMsg}</td><td style='padding: 8px;'>${runDisplay}</td></tr>"
-                }
-            }
-            
-            if (configuredCount == 0) {
-                statusText += "<tr><td colspan='5' style='padding: 8px; color: #888;'>No bathrooms fully configured.</td></tr>"
-            }
-            statusText += "</table>"
-            
-            // TABLE 2: 7-Day Analytics
-            statusText += "<b>7-Day Efficiency & Cost Analytics</b><br><table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc;'>"
-            statusText += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Zone</th><th style='padding: 8px;'>Total Cycles</th><th style='padding: 8px;'>Run Time</th><th style='padding: 8px;'>Est. Cost</th></tr>"
-            
-            if (configuredCount > 0) {
-                for (int i = 1; i <= (numBaths as Integer); i++) {
-                    def bName = settings["bathName_${i}"]
-                    def bSwitch = settings["bathSwitch_${i}"]
-                    
-                    if (bName && bSwitch) {
-                        def swId = bSwitch.id.toString()
-                        def cycles = state.weeklyCycles?."${swId}" ?: 0
-                        def runSeconds = state.weeklyDuration?."${swId}" ?: 0
+                        def histMins = state.runHistory?.get(today)?.get(purif.id) ?: 0.0
+                        def totalMins = histMins + liveRunMins(purif.id)
+                        def cost = (totalMins / 60.0) * ((settings["z${i}Watts"] ?: 20.0) / 1000.0) * (costPerKwh ?: 0.15)
+                        totalDayCost += cost
                         
-                        if (bSwitch.currentValue("switch") == "on") {
-                            def epoch = state.switchEpoch?."${swId}"
-                            if (epoch) {
-                                runSeconds += Math.round((now - epoch) / 1000).toInteger()
-                            }
-                        }
+                        def fMins = (state.filterWearMins?.get(purif.id) ?: 0.0) + totalMins
+                        def fMax = (settings["z${i}FilterHours"] ?: 4380) * 60.0
+                        def fPct = Math.max(0.0, 100.0 - ((fMins / fMax) * 100.0))
+                        def fStr = fPct < 10 ? "<span style='color:red;'><b>${String.format("%.1f", fPct)}%</b></span>" : "${String.format("%.1f", fPct)}%"
                         
-                        def rHours = Math.floor(runSeconds / 3600).toInteger()
-                        def rMins = Math.round((runSeconds % 3600) / 60).toInteger()
-                        def timeStr = "${rHours}h ${rMins}m"
-                        
-                        def costStr = "\$0.00"
-                        def kwhRate = settings["costPerKwh"] ?: 0.15
-                        def watts = settings["bathWatts_${i}"] ?: 30
-                        if (runSeconds > 0) {
-                            def totalHours = runSeconds / 3600
-                            def kw = watts / 1000
-                            def estCost = totalHours * kw * kwhRate
-                            costStr = String.format("\$%.2f", estCost)
-                        }
-                        
-                        statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${bName}</b></td><td style='padding: 8px;'>${cycles}</td><td style='padding: 8px;'>${timeStr}</td><td style='padding: 8px; color: red;'>${costStr}</td></tr>"
+                        def zName = settings["z${i}Name"] ?: "Zone ${i}"
+                        perfHTML += "<tr><td>${zName}</td><td>${fStr}</td><td>${ach}</td><td>${String.format("%.1f", totalMins / 60.0)}h</td><td>&#36;${String.format("%.3f", cost)}</td></tr>"
                     }
                 }
-            } else {
-                statusText += "<tr><td colspan='4' style='padding: 8px; color: #888;'>No data available.</td></tr>"
+                if (!hasActiveZones) perfHTML += "<tr><td colspan='5'><i>No Zone Purifiers Configured</i></td></tr>"
             }
-            statusText += "</table>"
             
-            def globalStatus = isSystemPaused() ? "<span style='color: red; font-weight: bold;'>PAUSED (Master Switch Off)</span>" : "<span style='color: green; font-weight: bold;'>ACTIVE</span>"
-            statusText += "<div style='margin-top: 10px; padding: 8px; background: #e9e9e9; border-radius: 4px; font-size: 13px;'><b>System Core:</b> ${globalStatus}</div>"
-
-            paragraph statusText
+            perfHTML += "<tr><td colspan='4' style='text-align:right;'><b>Total Daily Energy Cost:</b></td><td><b style='color:green;'>&#36;${String.format("%.3f", totalDayCost)}</b></td></tr>"
+            perfHTML += "</tbody></table>"
+            
+            paragraph perfHTML
+            input "resetMainFilter", "button", title: "Reset Main Filter to 100%"
+            input "resetHistory", "button", title: "Clear Tracking History"
         }
 
-        section("Application History Log") {
-            if (state.historyLog && state.historyLog.size() > 0) {
-                def logText = state.historyLog.join("<br>")
-                paragraph "<div style='font-size: 13px; font-family: monospace; background-color: #f4f4f4; padding: 10px; border-radius: 5px; border: 1px solid #ccc;'>${logText}</div>"
-            } else {
-                paragraph "<i>No events logged yet.</i>"
+        section("<b>Zone Breakdown</b>", hideable: true, hidden: true) {
+            def zoneHTML = "<table class='dash-table' style='margin-top:0px;'><thead><tr><th>Zone Name</th><th>AQI</th><th>Trigger Switches</th><th>Prevent Switch</th><th>Zone Purifier</th></tr></thead><tbody>"
+            def hasZones = false
+            
+            for (int i = 1; i <= 12; i++) {
+                if (settings["enableZ${i}"] && settings["z${i}AQI"]) {
+                    hasZones = true
+                    def zName = settings["z${i}Name"] ?: "Zone ${i}"
+                    def zAQI = getAQI(settings["z${i}AQI"]) ?: "--"
+                    
+                    def zTriggerNames = "None Setup"
+                    if (!isWholeHouse && settings["z${i}TriggerSwitch"]) {
+                        zTriggerNames = settings["z${i}TriggerSwitch"].collect { "${it.displayName}: <b>${it.currentValue('switch')?.toUpperCase()}</b>" }.join("<br>")
+                        def isScrubbing = state.scrubEndTimes?.get("z${i}") && now() < state.scrubEndTimes.get("z${i}")
+                        if (isScrubbing) zTriggerNames += "<br><span style='color:blue;'><i>(Post-Scrubbing Active)</i></span>"
+                    }
+
+                    def zPreventName = "None Setup"
+                    if (settings["z${i}PreventSwitch"]) {
+                        def pState = settings["z${i}PreventSwitch"].currentValue("switch")
+                        zPreventName = "${settings["z${i}PreventSwitch"].displayName}: <b>${pState?.toUpperCase()}</b>"
+                        
+                        if (pState == "on") {
+                            def overrideThresh = settings["z${i}OverrideLevel"] ?: 100
+                            if (zAQI != "--" && zAQI.toInteger() >= overrideThresh) {
+                                zPreventName += "<br><span style='color:orange;'><i>(Bypassed: AQI > ${overrideThresh})</i></span>"
+                            } else {
+                                zPreventName += "<br><span style='color:red;'><i>(Blocking Purifier)</i></span>"
+                            }
+                        }
+                    }
+                    
+                    def zPurifierState = isWholeHouse ? "Handled by Main" : (settings["z${i}Purifier"] ? settings["z${i}Purifier"].currentValue("switch")?.toUpperCase() : "No Device")
+                    
+                    zoneHTML += "<tr><td><b>${zName}</b></td><td>${zAQI}</td><td>${zTriggerNames}</td><td>${zPreventName}</td><td>${zPurifierState}</td></tr>"
+                }
+            }
+            zoneHTML += "</tbody></table>"
+            if (hasZones) paragraph zoneHTML else paragraph "<i>No zones configured. Running on Main Sensor only.</i>"
+        }
+
+        section("<b>Recent Action History</b>", hideable: true, hidden: true) {
+            input "txtEnable", "bool", title: "Enable Description Text Logging", defaultValue: true
+            if (state.actionHistory) {
+                def historyStr = state.actionHistory.join("<br>")
+                paragraph "<span style='font-size: 13px; font-family: monospace;'>${historyStr}</span>"
+            }
+        }
+
+        section("<b>App Control & Main Hardware</b>", hideable: true, hidden: true) {
+            input "appEnableSwitch", "capability.switch", title: "Master Enable/Disable Switch (Optional)", required: false, multiple: false
+            input "notifyDevice", "capability.notification", title: "Notification Device for Alerts", required: false, multiple: true
+            input "costPerKwh", "decimal", title: "Utility Rate (&#36; per kWh)", required: false, defaultValue: 0.15
+            
+            paragraph "<hr>"
+            input "isWholeHouse", "bool", title: "<b>Use Single Full House Air Purifier?</b>", defaultValue: true, submitOnChange: true
+            
+            if (isWholeHouse) {
+                input "indoorAQI", "capability.sensor", title: "Select Main Indoor AQI Sensor", required: false
+                input "mainPurifier", "capability.switch", title: "Select Main House Air Purifier", required: false, multiple: false
+                
+                input "mainTriggerSwitch", "capability.switch", title: "Trigger Switches (e.g., Vacuum - Forces ON)", required: false, multiple: true
+                input "mainScrubTime", "number", title: "Post-Cleaning Scrub Time (Minutes to run after trigger turns off)", required: false, defaultValue: 30
+                
+                input "mainPreventSwitch", "capability.switch", title: "Prevent Switch (e.g., TV - Stops purifier)", required: false, multiple: false
+                if (mainPreventSwitch) input "mainOverrideLevel", "number", title: "Emergency Override AQI", required: false, defaultValue: 100
+            
+                paragraph "<b>Air Mega ProX Default Specs</b>"
+                input "mainPurifierCADR", "number", title: "Purifier CADR (CFM)", required: false, defaultValue: 450
+                input "mainPurifierWatts", "number", title: "Purifier Max Wattage", required: false, defaultValue: 65
+                input "houseSqFt", "number", title: "Total Treated House Square Footage", required: false, defaultValue: 500
+                input "houseCeiling", "decimal", title: "Ceiling Height (Feet)", required: false, defaultValue: 8.0
+                input "mainFilterHours", "number", title: "Filter Lifespan (Hours)", required: false, defaultValue: 4380
+            }
+            input "targetAQI", "number", title: "Target AQI (Turn ON if any room goes above this)", required: false, defaultValue: 50
+        }
+
+        section("<b>Operating Modes & Alerts</b>", hideable: true, hidden: true) {
+            input "allowedModes", "mode", title: "Allowed Modes (Leave blank to run 24/7)", multiple: true, required: false
+            input "quietModes", "mode", title: "Quiet Modes (Prevents purifiers from turning on UNLESS emergency override is met)", multiple: true, required: false
+            input "quietOverrideAQI", "number", title: "Emergency AQI Threshold during Quiet Modes", required: false, defaultValue: 150
+            input "emergencyAlertDelay", "number", title: "Minutes sustained in Emergency AQI before sending push alert", required: false, defaultValue: 60
+        }
+
+        section("<b>External Monitoring & Pollen</b>", hideable: true, hidden: true) {
+            input "outdoorAQI", "capability.sensor", title: "Outdoor AQI Sensor (Supports Ecowitt)", required: false
+            input "enablePollen", "bool", title: "Enable Local Pollen.com Tracking", defaultValue: false, submitOnChange: true
+            if (enablePollen) {
+                input "zipCode", "text", title: "Zip Code for Pollen Data", required: false
+                input "pollenThresholdDrop", "number", title: "Drop Target AQI by this much if Pollen is High (> 7.0)", required: false, defaultValue: 10
+                
+                paragraph "<b>Continuous Pollen Mode</b>"
+                input "continuousPollen", "bool", title: "Run Purifiers 24/7 if Pollen is High?", defaultValue: false, submitOnChange: true
+                if (continuousPollen) {
+                    input "continuousPollenThreshold", "decimal", title: "Pollen Threshold to Trigger 24/7 Run", defaultValue: 7.0
+                }
+                
+                input "testPollen", "button", title: "Fetch Pollen Data Now"
+            }
+        }
+
+        section("<b>Zone Enable / Disable</b>", hideable: true, hidden: true) {
+            for (int i = 1; i <= 12; i++) {
+                input "enableZ${i}", "bool", title: "Enable Zone ${i}", submitOnChange: true
             }
         }
         
-        section("Global Core Settings") {
-            input "masterEnableSwitch", "capability.switch", title: "Master System Enable Switch", required: false, description: "Pausing this stops all automatic dehumidifier actions."
-            input "numBathrooms", "number", title: "Number of Bathrooms to Manage (1-4)", required: true, defaultValue: 1, range: "1..4", submitOnChange: true
-            input "costPerKwh", "decimal", title: "Electricity Cost (\$ per kWh)", required: true, defaultValue: 0.15, description: "Used to calculate the 7-Day estimated cost. National average is \$0.15."
-            input "globalBaselineSensor", "capability.relativeHumidityMeasurement", title: "Dynamic Baseline Humidity Sensor (Optional)", required: false, description: "Select a hallway or living room sensor. If set, bathrooms will dry until they match THIS sensor's humidity, overriding hardcoded targets."
-            input "pushNotification", "capability.notification", title: "Push Notification Device (For Danger Alerts)", required: false, multiple: true
-        }
-        
-        def numBaths = settings["numBathrooms"] ?: 1
-        if (numBaths > 0 && numBaths <= 4) {
-            for (int i = 1; i <= (numBaths as Integer); i++) {
-                def bName = settings["bathName_${i}"] ?: "Bathroom ${i}"
-                section("${bName} Configuration") {
-                    href(name: "bathHref${i}", page: "bathroomPage", params: [bathNum: i], title: "Configure ${bName}")
+        for (int i = 1; i <= 12; i++) {
+            if (settings["enableZ${i}"]) {
+                def zName = settings["z${i}Name"] ?: "Zone ${i}"
+                section("<b>${zName} Configuration</b>", hideable: true, hidden: true) {
+                    input "z${i}Name", "text", title: "Zone Name", required: false, defaultValue: "Zone ${i}"
+                    input "z${i}AQI", "capability.sensor", title: "AQI Sensor", required: true
+            
+                    if (!isWholeHouse) {
+                        input "z${i}Purifier", "capability.switch", title: "Zone Air Purifier Switch", required: false
+                        input "z${i}TriggerSwitch", "capability.switch", title: "Trigger Switches (e.g., Vacuum)", required: false, multiple: true
+                        input "z${i}ScrubTime", "number", title: "Post-Cleaning Scrub Time (Mins)", required: false, defaultValue: 30
+                        
+                        paragraph "<b>Zone Purifier Specs</b>"
+                        input "z${i}CADR", "number", title: "Purifier CADR (CFM)", required: false, defaultValue: 100
+                        input "z${i}Watts", "number", title: "Purifier Max Wattage", required: false, defaultValue: 20
+                        input "z${i}SqFt", "number", title: "Room Square Footage", required: false, defaultValue: 150
+                        input "z${i}Ceiling", "decimal", title: "Ceiling Height (Feet)", required: false, defaultValue: 8.0
+                        input "z${i}FilterHours", "number", title: "Filter Lifespan (Hours)", required: false, defaultValue: 4380
+                        input "resetZ${i}Filter", "button", title: "Reset Zone ${i} Filter"
+                    }
+                    
+                    input "z${i}PreventSwitch", "capability.switch", title: "Prevent Switch (e.g., TV - Stops purifier)", required: false
+                    if (settings["z${i}PreventSwitch"]) {
+                        input "z${i}OverrideLevel", "number", title: "Emergency Override AQI", required: false, defaultValue: 100
+                    }
                 }
             }
+        }
+        
+        section("<b>Disclaimer</b>") {
+            paragraph "<div style='font-size:12px; color:#888;'><b>Legal Disclaimer:</b> ShaneAllen is not responsible for any damage or liability with the use of this application.</div>"
         }
     }
 }
 
-def bathroomPage(params) {
-    def bNum = params?.bathNum ?: state.currentBath ?: 1
-    state.currentBath = bNum
-    def currentName = settings["bathName_${bNum}"] ?: "Bathroom ${bNum}"
-    
-    dynamicPage(name: "bathroomPage", title: "${currentName} Setup", install: false, uninstall: false, previousPage: "mainPage") {
-        
-        section("Zone Identification") {
-            input "bathName_${bNum}", "text", title: "Zone Name (e.g., Master Bath, Guest Bath)", required: true, defaultValue: "Bathroom ${bNum}", submitOnChange: true
-        }
-        
-        section("Hardware Devices") {
-            input "bathSwitch_${bNum}", "capability.switch", title: "Dehumidifier / Exhaust Fan Switch", required: true
-            input "bathWatts_${bNum}", "number", title: "Device Wattage (For Cost Math)", required: true, defaultValue: 30, description: "Standard exhaust fans are 30-50W. Standalone dehumidifiers are 300-700W."
-            input "bathMotion_${bNum}", "capability.motionSensor", title: "Motion Sensor", required: false
-            input "bathHumidity_${bNum}", "capability.relativeHumidityMeasurement", title: "Humidity Sensor", required: false
-        }
-        
-        section("Energy Efficiency & Failsafes") {
-            paragraph "If a sensor breaks or gets stuck, this setting ensures your fan won't run forever and drain your electricity."
-            input "bathMaxRun_${bNum}", "number", title: "Absolute Maximum Run Time (Minutes)", required: true, defaultValue: 120, description: "Emergency shutoff. Forcefully cuts power if the fan runs this long continuously, regardless of motion or humidity."
-            input "bathMinRun_${bNum}", "number", title: "Compressor Minimum Run Time (Minutes)", required: true, defaultValue: 15, description: "Prevents short-cycling by keeping the unit on for at least this long once started."
-        }
+// ==============================================================================
+// INTERNAL LOGIC ENGINE
+// ==============================================================================
 
-        section("Automation Rules (Motion)") {
-            paragraph "Configure motion-based triggers and the 'Quiet Hours' bypass to prevent fans from waking you up at night."
-            input "bathQuietStart_${bNum}", "time", title: "Quiet Hours Start Time (Optional)", required: false
-            input "bathQuietEnd_${bNum}", "time", title: "Quiet Hours End Time (Optional)", required: false
-            input "bathGracePeriod_${bNum}", "number", title: "Motion Grace Period (Minutes)", required: true, defaultValue: 2, description: "Wait this long after motion stops BEFORE starting the final Turn-Off Delay timer."
-            input "bathMotionDelay_${bNum}", "number", title: "Turn-Off Delay Timer (Minutes)", required: true, defaultValue: 60, description: "Once the grace period ends, count down this many minutes before shutting off the fan."
-        }
-        
-        section("Automation Rules (Humidity)") {
-            paragraph "Overrides motion. If humidity spikes above the Turn-On threshold, the fan turns on. It ignores Quiet Hours."
-            input "bathHumHigh_${bNum}", "number", title: "Turn-On Threshold (%)", required: false, defaultValue: 65
-            input "bathHumTarget_${bNum}", "number", title: "Target Turn-Off Threshold (%)", required: false, defaultValue: 50, description: "NOTE: Ignored if you selected a Dynamic Baseline Sensor on the main page."
-            input "bathDangerHum_${bNum}", "number", title: "Danger Push Alert Threshold (%)", required: true, defaultValue: 75, description: "If the fan turns off but the room remains above this level for 30 minutes, push an alert to your phone."
-        }
-    }
-}
-
-def installed() { initialize() }
-def updated() { unsubscribe(); unschedule(); initialize() }
+def installed() { logInfo("Installed"); initialize() }
+def updated() { logInfo("Updated"); unsubscribe(); unschedule(); initialize() }
 
 def initialize() {
-    state.historyLog = state.historyLog ?: []
-    state.weeklyCycles = state.weeklyCycles ?: [:]
-    state.weeklyDuration = state.weeklyDuration ?: [:]
-    state.dailyDuration = state.dailyDuration ?: [:]
-    state.yesterdayDuration = state.yesterdayDuration ?: [:]
-    state.dailyHumSum = state.dailyHumSum ?: [:]
-    state.dailyHumCount = state.dailyHumCount ?: [:]
-    state.switchEpoch = state.switchEpoch ?: [:]
+    if (!state.actionHistory) state.actionHistory = []
+    if (!state.purifierStarts) state.purifierStarts = [:]
+    if (!state.runHistory) state.runHistory = [:]
+    if (!state.filterWearMins) state.filterWearMins = [:]
+    if (!state.filterAlertSent) state.filterAlertSent = [:]
+    if (!state.scrubEndTimes) state.scrubEndTimes = [:]
     
-    def numBaths = settings["numBathrooms"] ?: 1
+    if (!state.emergencyStartTimes) state.emergencyStartTimes = [:]
+    if (!state.emergencyAlertSent) state.emergencyAlertSent = [:]
+    state.currentReason = "System Initialized"
     
-    for (int i = 1; i <= (numBaths as Integer); i++) {
-        def bSwitch = settings["bathSwitch_${i}"]
-        def mSensor = settings["bathMotion_${i}"]
-        def hSensor = settings["bathHumidity_${i}"]
-        
-        state["motionActive_${i}"] = false
-        state["graceEpoch_${i}"] = null
-        state["timerEpoch_${i}"] = null
-        state["ownsCycle_${i}"] = false // Ownership state initialization
-        
-        if (bSwitch) subscribe(bSwitch, "switch", switchHandler)
-        if (mSensor) subscribe(mSensor, "motion", motionHandler)
-        if (hSensor) subscribe(hSensor, "humidity", humidityHandler)
+    if (appEnableSwitch) subscribe(appEnableSwitch, "switch", evaluateSystem)
+    subscribe(location, "mode", modeChangeHandler)
+    
+    if (outdoorAQI) {
+        subscribe(outdoorAQI, "airQualityIndex", evaluateSystem)
+        subscribe(outdoorAQI, "aqi", evaluateSystem)
+        subscribe(outdoorAQI, "pm25", evaluateSystem)
     }
     
-    subscribe(location, "systemStart", hubRebootHandler)
-    schedule("0 0 0 ? * SUN", resetWeeklyCounters)
-    schedule("0 0 0 * * ?", resetDailyCounters)
-    runIn(5, "sweepOrphanedFans")
+    if (isWholeHouse) {
+        if (indoorAQI) {
+            subscribe(indoorAQI, "airQualityIndex", evaluateSystem)
+            subscribe(indoorAQI, "aqi", evaluateSystem)
+            subscribe(indoorAQI, "pm25", evaluateSystem)
+        }
+        if (mainTriggerSwitch) subscribe(mainTriggerSwitch, "switch", evaluateSystem)
+        if (mainPreventSwitch) subscribe(mainPreventSwitch, "switch", evaluateSystem)
+    }
+    
+    for (int i = 1; i <= 12; i++) {
+        if (settings["enableZ${i}"]) {
+            if (settings["z${i}AQI"]) {
+                subscribe(settings["z${i}AQI"], "airQualityIndex", evaluateSystem)
+                subscribe(settings["z${i}AQI"], "aqi", evaluateSystem)
+                subscribe(settings["z${i}AQI"], "pm25", evaluateSystem)
+            }
+            if (settings["z${i}PreventSwitch"]) subscribe(settings["z${i}PreventSwitch"], "switch", evaluateSystem)
+            if (!isWholeHouse && settings["z${i}TriggerSwitch"]) subscribe(settings["z${i}TriggerSwitch"], "switch", evaluateSystem)
+        }
+    }
+    
+    if (enablePollen && zipCode) {
+        schedule("0 0 8 * * ?", fetchPollenData) 
+        fetchPollenData()
+    }
+    
+    logAction("App Initialized. Logic Engine Ready.")
+    evaluateSystem()
 }
 
-def formatTime(ms) {
-    if (ms < 0) return "0s"
-    def totalSecs = Math.round(ms / 1000).toInteger()
-    def mins = Math.floor(totalSecs / 60).toInteger()
-    def secs = totalSecs % 60
-    return mins > 0 ? "${mins}m ${secs}s" : "${secs}s"
+def appButtonHandler(btn) {
+    if (btn == "testPollen") {
+        logAction("Manual Pollen Fetch requested.")
+        fetchPollenData()
+        evaluateSystem()
+    } else if (btn == "resetHistory") {
+        state.runHistory = [:]
+        state.purifierStarts = [:]
+        logAction("Performance Tracking history cleared.")
+    } else if (btn == "resetMainFilter") {
+        if (mainPurifier) state.filterWearMins?.remove(mainPurifier.id)
+        state.filterAlertSent?.remove(mainPurifier?.id)
+        logAction("Main Purifier Filter reset to 100%.")
+    } else if (btn.startsWith("resetZ")) {
+        def zNum = btn.replace("resetZ", "").replace("Filter", "")
+        def dev = settings["z${zNum}Purifier"]
+        if (dev) {
+            state.filterWearMins?.remove(dev.id)
+            state.filterAlertSent?.remove(dev.id)
+            logAction("Zone ${zNum} Filter reset to 100%.")
+        }
+    }
 }
 
-def addToHistory(String msg) {
-    if (!state.historyLog) state.historyLog = []
-    def timestamp = new Date().format("MM/dd HH:mm", location.timeZone)
-    state.historyLog.add(0, "<b>[${timestamp}]</b> ${msg}")
-    if (state.historyLog.size() > 20) state.historyLog = state.historyLog.take(20)
+def getAQI(device) {
+    if (!device) return null
+    def aqi = device.currentValue("airQualityIndex")
+    if (aqi == null) aqi = device.currentValue("aqi")
+    if (aqi == null) aqi = device.currentValue("pm25")
+    return aqi != null ? aqi.toInteger() : null
 }
 
-def isSystemPaused() {
-    return (masterEnableSwitch && masterEnableSwitch.currentValue("switch") == "off")
+String getHumanReadableStatus() {
+    if (appEnableSwitch && appEnableSwitch.currentValue("switch") == "off") return "The application is disabled via the Master Switch."
+    if (allowedModes && !(allowedModes as List).contains(location.mode)) return "<span style='color:orange;'><b>App Disabled by Mode</b></span>"
+    
+    def isQuiet = quietModes ? (quietModes as List).contains(location.mode) : false
+    def pollenVal = (state.localPollen != null && state.localPollen != "Error/Unavailable") ? state.localPollen.toBigDecimal() : 0.0
+    def isPollenContinuous = (enablePollen && continuousPollen && pollenVal >= (continuousPollenThreshold ?: 7.0))
+    
+    if (isQuiet) return "<span style='color:purple;'><b>Quiet Mode Active:</b></span> Purifiers are locked OFF unless emergency thresholds are met."
+    if (isPollenContinuous) return "<span style='color:blue;'><b>Continuous Mode Active:</b></span> Running 24/7 due to High Local Pollen (${pollenVal})."
+    return "Monitoring actively. System is enforcing Target AQI requirements."
 }
 
-def resetDailyCounters() {
-    def now = new Date().time
-    def numBaths = settings["numBathrooms"] ?: 1
+def modeChangeHandler(evt) { evaluateSystem() }
 
-    if (!state.yesterdayDuration) state.yesterdayDuration = [:]
-    if (!state.dailyDuration) state.dailyDuration = [:]
-    if (!state.weeklyDuration) state.weeklyDuration = [:]
+def sendAlert(msg) {
+    if (notifyDevice) notifyDevice.deviceNotification("AQI Alert: ${msg}")
+    logAction("ALERT SENT: ${msg}")
+}
 
-    // Pre-process currently running fans to "bank" their time up to midnight
-    for (int i = 1; i <= (numBaths as Integer); i++) {
-        def bSwitch = settings["bathSwitch_${i}"]
-        if (bSwitch && bSwitch.currentValue("switch") == "on") {
-            def swId = bSwitch.id.toString()
-            if (state.switchEpoch && state.switchEpoch["${swId}"]) {
-                def durationSeconds = Math.round((now - state.switchEpoch["${swId}"]) / 1000).toInteger()
-                state.dailyDuration["${swId}"] = (state.dailyDuration["${swId}"] ?: 0) + durationSeconds
-                state.weeklyDuration["${swId}"] = (state.weeklyDuration["${swId}"] ?: 0) + durationSeconds
+def fetchPollenData() {
+    if (!zipCode) return
+    try {
+        def params = [uri: "https://www.pollen.com/api/forecast/current/pollen/${zipCode}", headers: ["Referer": "https://www.pollen.com", "Accept": "application/json"]]
+        httpGet(params) { resp ->
+            if (resp.status == 200 && resp.data) {
+                def pData = resp.data.Location.periods.find { it.Type == "Today" } ?: resp.data.Location.periods[1]
+                if (pData && pData.Index != null) {
+                    state.localPollen = pData.Index.toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
+                    logAction("Pollen data updated for ${zipCode}: ${state.localPollen}")
                 
-                // Reset epoch to midnight for the new day's math
-                state.switchEpoch["${swId}"] = now
+                    if (state.localPollen >= 7.0 && !state.pollenAlertSent) {
+                        sendAlert("Outdoor Pollen is High (${state.localPollen}). Adapting system logic automatically.")
+                        state.pollenAlertSent = true
+                    } else if (state.localPollen < 7.0) state.pollenAlertSent = false
+                }
+            }
+        }
+    } catch (e) { logInfo("Pollen fetch failed. Error: ${e}"); state.localPollen = "Error/Unavailable" }
+}
+
+def liveRunMins(deviceId) { 
+    return (state.purifierStarts && state.purifierStarts[deviceId]) ? (now() - state.purifierStarts[deviceId]) / 60000.0 : 0.0 
+}
+
+def saveRunTime(deviceId, runMins, currentAQI = 50) {
+    def today = new Date().format("yyyy-MM-dd", location.timeZone)
+    if (!state.runHistory) state.runHistory = [:]
+    if (!state.runHistory[today]) state.runHistory[today] = [:]
+    
+    state.runHistory[today][deviceId] = (state.runHistory[today][deviceId] ?: 0.0) + runMins
+    
+    // Apply Wear Multiplier if AQI is poor (> 100)
+    def wearMultiplier = currentAQI > 100 ? 1.5 : 1.0
+    if (!state.filterWearMins) state.filterWearMins = [:]
+    state.filterWearMins[deviceId] = (state.filterWearMins[deviceId] ?: 0.0) + (runMins * wearMultiplier)
+    
+    def keys = state.runHistory.keySet().sort().reverse()
+    if (keys.size() > 7) state.runHistory = state.runHistory.subMap(keys[0..6])
+}
+
+def controlPurifier(device, command, currentAQI = 50) {
+    if (!device) return
+    def currentState = device.currentValue("switch")
+    
+    if (command == "on" && currentState != "on") {
+        device.on()
+        if (!state.purifierStarts) state.purifierStarts = [:]
+        state.purifierStarts[device.id] = now()
+    } else if (command == "off" && currentState != "off") {
+        device.off()
+        if (state.purifierStarts && state.purifierStarts[device.id]) {
+            def runMins = (now() - state.purifierStarts[device.id]) / 60000.0
+            saveRunTime(device.id, runMins, currentAQI)
+            state.purifierStarts.remove(device.id)
+            checkFilterHealth(device.id)
+        }
+    }
+}
+
+def checkFilterHealth(deviceId) {
+    def fMins = state.filterWearMins?.get(deviceId) ?: 0.0
+    def fMax = 4380 * 60.0 // Default 6 months
+    
+    if (isWholeHouse && mainPurifier && mainPurifier.id == deviceId) fMax = (mainFilterHours ?: 4380) * 60.0
+    else {
+        for (int i = 1; i <= 12; i++) {
+            if (settings["enableZ${i}"] && settings["z${i}Purifier"]?.id == deviceId) {
+                fMax = (settings["z${i}FilterHours"] ?: 4380) * 60.0
+                break
             }
         }
     }
-
-    // Move today to yesterday, then clear trackers
-    state.yesterdayDuration = state.dailyDuration.clone()
-    state.dailyDuration = [:]
-    state.dailyHumSum = [:]
-    state.dailyHumCount = [:]
-}
-
-def resetWeeklyCounters() {
-    state.weeklyCycles = [:]; state.weeklyDuration = [:]; state.switchEpoch = [:]
-}
-
-def hubRebootHandler(evt) { sweepOrphanedFans() }
-
-def sweepOrphanedFans() {
-    if (isSystemPaused()) return
-    def numBaths = settings["numBathrooms"] ?: 1
-    for (int i = 1; i <= (numBaths as Integer); i++) {
-        def bSwitch = settings["bathSwitch_${i}"]
-        if (bSwitch && bSwitch.currentValue("switch") == "on") {
-            evaluateTurnOff([bathNum: i, source: "reboot"])
-        }
-    }
-}
-
-def switchHandler(evt) {
-    def swId = evt.device.id.toString()
-    def swName = evt.device.displayName
-    def action = evt.value
-    def targetBathNum = 0
-    def numBaths = settings["numBathrooms"] ?: 1
-    for (int i = 1; i <= (numBaths as Integer); i++) {
-        if (settings["bathSwitch_${i}"]?.id == swId) targetBathNum = i
-    }
     
-    if (action == "on") {
-        if (!state.switchEpoch) state.switchEpoch = [:]
-        def currentEpoch = new Date().time
-        state.switchEpoch["${swId}"] = currentEpoch
-        if (!state.weeklyCycles) state.weeklyCycles = [:]
-        state.weeklyCycles["${swId}"] = (state.weeklyCycles["${swId}"] ?: 0) + 1
-        addToHistory("HARDWARE: ${swName} turned ON.")
-        
-        if (targetBathNum > 0) {
-            // ONLY start the guillotine timer if THIS app owns the current run cycle
-            if (state["ownsCycle_${targetBathNum}"]) {
-                def maxRunMins = settings["bathMaxRun_${targetBathNum}"] ?: 120
-                state["maxRunEpoch_${targetBathNum}"] = currentEpoch 
-                runIn(maxRunMins * 60, "executeEmergencyShutoff", [data: [bathNum: targetBathNum, epoch: currentEpoch], overwrite: false])
+    def fPct = Math.max(0.0, 100.0 - ((fMins / fMax) * 100.0))
+    if (fPct < 5.0 && !state.filterAlertSent?.get(deviceId)) {
+        sendAlert("Filter for device requires replacement (Below 5% Life Remaining).")
+        if (!state.filterAlertSent) state.filterAlertSent = [:]
+        state.filterAlertSent[deviceId] = true
+    }
+}
+
+// --- MAIN LOGIC ENGINE ---
+def evaluateSystem(evt = null) {
+    // 1. HARD OVERRIDES (Master Switch & Modes)
+    if (appEnableSwitch && appEnableSwitch.currentValue("switch") == "off") {
+        turnOffAll()
+        state.currentReason = "OFF: Master Switch is Disabled."
+        return
+    }
+    if (allowedModes && !(allowedModes as List).contains(location.mode)) {
+        turnOffAll()
+        state.currentReason = "OFF: Current Location Mode is not allowed."
+        return
+    }
+
+    // 2. BASELINE CALCULATIONS
+    def isQuiet = quietModes ? (quietModes as List).contains(location.mode) : false
+    def baseTarget = targetAQI ?: 50
+    def pollenVal = (state.localPollen != null && state.localPollen != "Error/Unavailable") ? state.localPollen.toBigDecimal() : 0.0
+    
+    def isPollenContinuous = false
+    if (enablePollen && pollenVal >= 7.0) {
+        baseTarget -= (pollenThresholdDrop ?: 10)
+    }
+    if (enablePollen && continuousPollen && pollenVal >= (continuousPollenThreshold ?: 7.0)) {
+        isPollenContinuous = true
+    }
+
+    def anyZoneNeedsPurification = false
+    def highestZoneAQI = 0
+    def activeZoneReasons = [] // Collect all reasons instead of overwriting
+    def hasConfiguredZones = false
+    
+    if (!state.scrubEndTimes) state.scrubEndTimes = [:]
+    if (!state.emergencyStartTimes) state.emergencyStartTimes = [:]
+    if (!state.emergencyAlertSent) state.emergencyAlertSent = [:]
+
+    // 3. ZONE EVALUATIONS
+    for (int i = 1; i <= 12; i++) {
+        if (settings["enableZ${i}"] && settings["z${i}AQI"]) {
+            hasConfiguredZones = true
+            def aqiVal = getAQI(settings["z${i}AQI"])
+            if (aqiVal == null) continue
+            if (aqiVal > highestZoneAQI) highestZoneAQI = aqiVal
+            
+            def zNeedsIt = false
+            def zName = settings["z${i}Name"] ?: "Zone ${i}"
+            def emergencyQ = settings["z${i}OverrideLevel"] ?: 100
+            
+            // Core Need Check
+            if (isQuiet) { if (aqiVal >= (quietOverrideAQI ?: 150)) zNeedsIt = true } 
+            else if (aqiVal > baseTarget || isPollenContinuous) zNeedsIt = true
+
+            // Trigger & Scrub Check
+            def isForcedOn = false
+            def isScrubbing = false
+            if (!isWholeHouse && settings["z${i}TriggerSwitch"]) {
+                if (settings["z${i}TriggerSwitch"].any { it.currentValue("switch") == "on" }) {
+                    zNeedsIt = true; isForcedOn = true
+                    state.scrubEndTimes["z${i}"] = now() + ((settings["z${i}ScrubTime"] ?: 30) * 60000)
+                } else if (state.scrubEndTimes?.get("z${i}") && now() < state.scrubEndTimes.get("z${i}")) {
+                    zNeedsIt = true; isScrubbing = true
+                    runIn(((state.scrubEndTimes.get("z${i}") - now()) / 1000).toInteger(), "evaluateSystem")
+                }
             }
-        }
-    } else if (action == "off") {
-        if (state.switchEpoch && state.switchEpoch["${swId}"]) {
-            def durationSeconds = Math.round((new Date().time - state.switchEpoch["${swId}"]) / 1000).toInteger()
-            
-            if (!state.weeklyDuration) state.weeklyDuration = [:]
-            state.weeklyDuration["${swId}"] = (state.weeklyDuration["${swId}"] ?: 0) + durationSeconds
-            
-            if (!state.dailyDuration) state.dailyDuration = [:]
-            state.dailyDuration["${swId}"] = (state.dailyDuration["${swId}"] ?: 0) + durationSeconds
-            
-            state.switchEpoch["${swId}"] = null
-            
-            if (targetBathNum > 0) {
-                state["ownsCycle_${targetBathNum}"] = false // CLEAR the cycle ownership flag
-                state["maxRunEpoch_${targetBathNum}"] = null
-                state["timerEpoch_${targetBathNum}"] = null
-                state["graceEpoch_${targetBathNum}"] = null
-                runIn(30 * 60, "dangerCheck", [data: [bathNum: targetBathNum]])
+
+            // Prevent Switch Check
+            if (zNeedsIt && !isForcedOn && !isScrubbing && settings["z${i}PreventSwitch"]) {
+                if (settings["z${i}PreventSwitch"].currentValue("switch") == "on") {
+                    if (aqiVal < emergencyQ) zNeedsIt = false // Blocked
+                }
             }
-        }
-        addToHistory("HARDWARE: ${swName} turned OFF.")
-    }
-}
-
-def dangerCheck(data) {
-    def hSensor = settings["bathHumidity_${data.bathNum}"]
-    if (hSensor) {
-        def dangerT = settings["bathDangerHum_${data.bathNum}"] ?: 75
-        def currentH = hSensor.currentValue("humidity") as Number
-        if (currentH >= dangerT) {
-            def msg = "🚨 WARNING: ${settings["bathName_${data.bathNum}"]} is failing to dry (${currentH}%)."
-            if (settings["pushNotification"]) settings["pushNotification"].deviceNotification(msg)
-        }
-    }
-}
-
-def executeEmergencyShutoff(data) {
-    if (!state["ownsCycle_${data.bathNum}"]) return // Verify cycle ownership
-    if (state["maxRunEpoch_${data.bathNum}"] != data.epoch || isSystemPaused()) return
-    
-    def bSwitch = settings["bathSwitch_${data.bathNum}"]
-    if (bSwitch && bSwitch.currentValue("switch") == "on") {
-        bSwitch.off()
-        runIn(60, "executeDoubleTap", [data: [bathNum: data.bathNum], overwrite: false])
-    }
-}
-
-def executeDoubleTap(data) {
-    if (!state["ownsCycle_${data.bathNum}"]) return // Verify cycle ownership
-    
-    def bSwitch = settings["bathSwitch_${data.bathNum}"]
-    if (bSwitch && bSwitch.currentValue("switch") == "on" && !state["motionActive_${data.bathNum}"]) {
-        bSwitch.off()
-    }
-}
-
-def motionHandler(evt) {
-    if (isSystemPaused()) return
-    def mId = evt.device.id
-    def action = evt.value
-    def numBaths = settings["numBathrooms"] ?: 1
-    for (int i = 1; i <= (numBaths as Integer); i++) {
-        if (settings["bathMotion_${i}"]?.id == mId) {
-            def bSwitch = settings["bathSwitch_${i}"]
-            if (!bSwitch) continue
-           
-            if (action == "active") {
-                state["motionActive_${i}"] = true
-                state["graceEpoch_${i}"] = null
-                state["timerEpoch_${i}"] = null
-                def qStart = settings["bathQuietStart_${i}"], qEnd = settings["bathQuietEnd_${i}"]
-                if (!(qStart && qEnd && timeOfDayIsBetween(qStart, qEnd, new Date(), location.timeZone))) {
-                    if (bSwitch.currentValue("switch") != "on") {
-                        state["ownsCycle_${i}"] = true // CLAIM the cycle
-                        bSwitch.on()
-                    }
+            
+            // Alerting Logic
+            if (zNeedsIt && aqiVal >= emergencyQ) {
+                if (!state.emergencyStartTimes?.get("z${i}")) state.emergencyStartTimes["z${i}"] = now()
+                def elapsedMins = (now() - state.emergencyStartTimes.get("z${i}")) / 60000.0
+                if (elapsedMins >= (emergencyAlertDelay ?: 60) && !state.emergencyAlertSent?.get("z${i}")) {
+                    sendAlert("⚠️ High AQI: ${zName} has been at ${aqiVal} for over ${emergencyAlertDelay} minutes.")
+                    state.emergencyAlertSent["z${i}"] = true
                 }
             } else {
-                state["motionActive_${i}"] = false
-                def graceMins = settings["bathGracePeriod_${i}"] ?: 2
-                def epoch = new Date().time
-                state["graceEpoch_${i}"] = epoch 
-                runIn(graceMins * 60, "startDehumidifierTimer", [data: [bathNum: i, epoch: epoch], overwrite: false])
+                state.emergencyStartTimes?.remove("z${i}")
+                state.emergencyAlertSent?.remove("z${i}")
             }
+
+            // Local Execution (if not Whole House)
+            if (!isWholeHouse && settings["z${i}Purifier"]) {
+                def pState = settings["z${i}Purifier"].currentValue("switch")
+                if (zNeedsIt && pState != "on") {
+                    controlPurifier(settings["z${i}Purifier"], "on", aqiVal)
+                    logAction("BMS Command -> Turned ON ${zName} Purifier (AQI: ${aqiVal}${isScrubbing ? ' | Scrubbing' : ''})")
+                } else if (!zNeedsIt && pState != "off") {
+                    controlPurifier(settings["z${i}Purifier"], "off", aqiVal)
+                    logAction("BMS Command -> Turned OFF ${zName} Purifier (AQI: ${aqiVal})")
+                }
+            }
+
+            if (zNeedsIt) {
+                anyZoneNeedsPurification = true
+                // Add specific reason to the list
+                if (isScrubbing) activeZoneReasons << "${zName} (Scrubbing)"
+                else if (isForcedOn) activeZoneReasons << "${zName} (Trigger Switch)"
+                else activeZoneReasons << "${zName} (AQI: ${aqiVal})"
+            }
+        }
+    }
+
+    // 4. MAIN WHOLE HOUSE EVALUATION
+    if (isWholeHouse && mainPurifier) {
+        def mainIndoorAQIVal = getAQI(indoorAQI) ?: 0
+        def isMainForcedOn = false
+        def isMainScrubbing = false
+        def mainHouseNeedsIt = false
+        
+        // Main Trigger Check
+        if (mainTriggerSwitch) {
+            if (mainTriggerSwitch.any { it.currentValue("switch") == "on" }) {
+                isMainForcedOn = true
+                state.mainScrubEnd = now() + ((mainScrubTime ?: 30) * 60000)
+            } else if (state.mainScrubEnd && now() < state.mainScrubEnd) {
+                isMainForcedOn = true; isMainScrubbing = true
+                runIn(((state.mainScrubEnd - now()) / 1000).toInteger(), "evaluateSystem")
+            }
+        }
+        
+        // Core Main House Need Check
+        if (isQuiet) { 
+            if (mainIndoorAQIVal >= (mainOverrideLevel ?: 100)) mainHouseNeedsIt = true 
+        } else if (mainIndoorAQIVal > baseTarget || isPollenContinuous) {
+            mainHouseNeedsIt = true
+        }
+        
+        // Final Need Calculation
+        def mainNeedsIt = anyZoneNeedsPurification || isMainForcedOn || mainHouseNeedsIt
+        
+        // Prevent Switch Check
+        if (mainNeedsIt && !isMainForcedOn && !isMainScrubbing && mainPreventSwitch) {
+            if (mainPreventSwitch.currentValue("switch") == "on") {
+                def mOverride = mainOverrideLevel ?: 100
+                if (mainIndoorAQIVal < mOverride && highestZoneAQI < mOverride) mainNeedsIt = false // Blocked
+            }
+        }
+
+        // Generate Specific Reason String
+        def currentActionReason = "Idle"
+        if (mainNeedsIt) {
+            if (isMainScrubbing) currentActionReason = "ON: Main Post-Cleaning Scrubbing Active"
+            else if (isMainForcedOn) currentActionReason = "ON: Forced by Main Trigger Switch"
+            else if (isQuiet) currentActionReason = "ON: Emergency AQI Override during Quiet Mode"
+            else if (isPollenContinuous) currentActionReason = "ON: Continuous Run for High Pollen (${pollenVal})"
+            else if (mainHouseNeedsIt) currentActionReason = "ON: Main Indoor AQI (${mainIndoorAQIVal}) > Target (${baseTarget})"
+            else if (anyZoneNeedsPurification) currentActionReason = "ON: Triggered by " + activeZoneReasons.join(", ")
+        } else {
+            if (mainPreventSwitch && mainPreventSwitch.currentValue("switch") == "on") {
+                currentActionReason = "OFF: Blocked by Prevent Switch (AQI: ${mainIndoorAQIVal})"
+            } else if (isQuiet) {
+                currentActionReason = "OFF: Quiet Mode Active (AQI: ${mainIndoorAQIVal} < Emergency Level)"
+            } else {
+                def maxCurrent = Math.max(mainIndoorAQIVal, highestZoneAQI)
+                currentActionReason = hasConfiguredZones ? "OFF: All zones and Main satisfied (Max AQI: ${maxCurrent} < Target ${baseTarget})" : "OFF: Indoor AQI Satisfied (${mainIndoorAQIVal} < Target ${baseTarget})"
+            }
+        }
+
+        // Execute Hardware Command
+        def mState = mainPurifier.currentValue("switch")
+        if (mainNeedsIt && mState != "on") {
+            controlPurifier(mainPurifier, "on", Math.max(mainIndoorAQIVal, highestZoneAQI))
+            logAction("BMS Command -> Main Purifier ON. Reason: ${currentActionReason}")
+            state.currentReason = currentActionReason
+        } else if (!mainNeedsIt && mState != "off") {
+            controlPurifier(mainPurifier, "off", Math.max(mainIndoorAQIVal, highestZoneAQI))
+            logAction("BMS Command -> Main Purifier OFF. Reason: ${currentActionReason}")
+            state.currentReason = currentActionReason
+        } else {
+            state.currentReason = currentActionReason 
+        }
+    } else if (!isWholeHouse) {
+        // Detailed Multi-Zone Output
+        state.currentReason = anyZoneNeedsPurification ? "MIXED: Active Zones -> " + activeZoneReasons.join(" | ") : "OFF: All zones satisfied (AQI < Target)."
+    }
+}
+
+def turnOffAll() {
+    if (isWholeHouse && mainPurifier) controlPurifier(mainPurifier, "off")
+    else {
+        for (int i = 1; i <= 12; i++) {
+            if (settings["enableZ${i}"] && settings["z${i}Purifier"]) controlPurifier(settings["z${i}Purifier"], "off")
         }
     }
 }
 
-def startDehumidifierTimer(data) {
-    if (state["graceEpoch_${data.bathNum}"] != data.epoch || state["motionActive_${data.bathNum}"]) return 
-    state["graceEpoch_${data.bathNum}"] = null
-    state["timerEpoch_${data.bathNum}"] = new Date().time
-    def delayMins = settings["bathMotionDelay_${data.bathNum}"] ?: 60
-    runIn(delayMins * 60, "evaluateTurnOff", [data: [bathNum: data.bathNum, source: "timer"]])
+def logAction(msg) { 
+    if(txtEnable) log.info "${app.label}: ${msg}"
+    def h = state.actionHistory ?: []
+    h.add(0, "[${new Date().format("MM/dd hh:mm a", location.timeZone)}] ${msg}")
+    if(h.size() > 30) h = h[0..29]
+    state.actionHistory = h 
 }
 
-def humidityHandler(evt) {
-    if (isSystemPaused()) return
-    def hId = evt.device.id
-    def currentHum = evt.value.toDouble() 
-    def numBaths = settings["numBathrooms"] ?: 1
-    
-    for (int i = 1; i <= (numBaths as Integer); i++) {
-        if (settings["bathHumidity_${i}"]?.id == hId) {
-            
-            // Add to the daily rolling average map
-            if (!state.dailyHumSum) state.dailyHumSum = [:]
-            if (!state.dailyHumCount) state.dailyHumCount = [:]
-            def sum = state.dailyHumSum["bath_${i}"] ?: 0.0
-            def count = state.dailyHumCount["bath_${i}"] ?: 0
-            state.dailyHumSum["bath_${i}"] = sum + currentHum
-            state.dailyHumCount["bath_${i}"] = count + 1
-
-            def bSwitch = settings["bathSwitch_${i}"]
-            def highT = settings["bathHumHigh_${i}"]?.toString()?.toDouble() 
-            def targetT = settings["globalBaselineSensor"] ? settings["globalBaselineSensor"].currentValue("humidity") : settings["bathHumTarget_${i}"]
-            
-            if (!bSwitch) continue
-            
-            if (highT && currentHum >= highT && bSwitch.currentValue("switch") != "on") {
-                state["ownsCycle_${i}"] = true // CLAIM the cycle
-                bSwitch.on()
-            }
-            
-            if (targetT && currentHum <= targetT.toString().toDouble()) {
-                state["timerEpoch_${i}"] = null
-                state["graceEpoch_${i}"] = null
-                evaluateTurnOff([bathNum: i, source: "humidity"])
-            }
-        }
-    }
-}
-
-def evaluateTurnOff(data) {
-    if (isSystemPaused()) return
-    def bNum = data.bathNum
-    
-    if (!state["ownsCycle_${bNum}"]) return // IMMEDIATELY YIELD if we don't own the run cycle
-    
-    def bSwitch = settings["bathSwitch_${bNum}"]
-    def mSensor = settings["bathMotion_${bNum}"]
-    def hSensor = settings["bathHumidity_${bNum}"]
-    if (!bSwitch || bSwitch.currentValue("switch") == "off") return
-    if (mSensor && (mSensor.currentValue("motion") == "active" || state["motionActive_${bNum}"])) return
-    
-    def targetT = settings["globalBaselineSensor"] ? settings["globalBaselineSensor"].currentValue("humidity") : settings["bathHumTarget_${bNum}"]
-    if (hSensor && targetT && hSensor.currentValue("humidity") > (targetT as Number)) return
-
-    // --- Compressor Minimum Run Time Check ---
-    def swId = bSwitch.id.toString()
-    def startTime = state.switchEpoch?."${swId}"
-    def minRunMins = settings["bathMinRun_${bNum}"] ?: 15
-    
-    if (startTime) {
-        def elapsedMs = new Date().time - startTime
-        def minRunMs = minRunMins * 60000
-        if (elapsedMs < minRunMs) {
-            def remainingSecs = Math.round((minRunMs - elapsedMs) / 1000).toInteger()
-            runIn(remainingSecs, "evaluateTurnOff", [data: [bathNum: bNum, source: "minRunCheck"], overwrite: true])
-            return
-        }
-    }
-
-    bSwitch.off()
-    runIn(60, "executeDoubleTap", [data: [bathNum: bNum], overwrite: false])
-}
+def logInfo(msg) { if(txtEnable) log.info "${app.label}: ${msg}" }
