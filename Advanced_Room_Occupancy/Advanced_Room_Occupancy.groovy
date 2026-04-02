@@ -26,6 +26,7 @@ def mainPage() {
             paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Provides a real-time view of your configured rooms, active triggers, power profiles, and exact financial savings.</div>"
             
             def hasZones = false
+           
             def rate = kwhCost ?: 0.13
             def totalAppSavings = 0.0
 
@@ -93,10 +94,12 @@ def mainPage() {
                             if (mLeft > maxRemainingMs) maxRemainingMs = mLeft
                         }
                         
-                        // Hit Counter Window Timer
-                        if (settings["z${i}TurnOnTriggers"]?.contains("Motion Hit Count") && mReqHits > 1 && mHits > 0 && mLast) {
-                            def windowMs = (settings["z${i}MotionActivationWindow"] ?: 1) * 60000
-                            def windowLeft = (mLast + windowMs) - now()
+                        // Hit Counter Window Timer (FIXED LOGIC)
+                        if (settings["z${i}TurnOnTriggers"]?.contains("Motion Hit Count") && mReqHits > 1 && mHits > 0) {
+                            def windowMs = (settings["z${i}MotionActivationWindow"] ?: 3) * 60000
+                            def hitStart = state."motionHitStartTime_z${i}" ?: (mLast ?: now())
+                            def windowLeft = (hitStart + windowMs) - now()
+                            
                             if (windowLeft > 0) {
                                 def secsLeft = Math.ceil(windowLeft / 1000).toInteger()
                                 statusAdditions << "<span style='color:purple; font-size:11px;'>Motion Hits: ${mHits}/${mReqHits} (Resets in ${secsLeft}s)</span>"
@@ -140,10 +143,11 @@ def mainPage() {
                             if (vLeft > maxRemainingMs) maxRemainingMs = vLeft
                         }
                         
-                        // Hit Counter Window Timer
-                        if (settings["z${i}TurnOnTriggers"]?.contains("Vibration") && vReqHits > 1 && vHits > 0 && vLast) {
-                            def windowMs = (settings["z${i}VibeActivationWindow"] ?: 1) * 60000
-                            def windowLeft = (vLast + windowMs) - now()
+                        // Hit Counter Window Timer (FIXED LOGIC)
+                        if (settings["z${i}TurnOnTriggers"]?.contains("Vibration") && vReqHits > 1 && vHits > 0) {
+                            def windowMs = (settings["z${i}VibeActivationWindow"] ?: 3) * 60000
+                            def hitStart = state."vibeHitStartTime_z${i}" ?: (vLast ?: now())
+                            def windowLeft = (hitStart + windowMs) - now()
                             if (windowLeft > 0) {
                                 def secsLeft = Math.ceil(windowLeft / 1000).toInteger()
                                 statusAdditions << "<span style='color:purple; font-size:11px;'>Vibe Hits: ${vHits}/${vReqHits} (Resets in ${secsLeft}s)</span>"
@@ -261,10 +265,40 @@ def mainPage() {
                          statusAdditions << "<span style='color:orange; font-size:11px;'>Safe Shutdown Sequence...</span>"
                     }
 
-                    def remainingMinsDisplay = statusAdditions ? "<br>" + statusAdditions.join("<br>") : ""
+                    // --- Occupancy Tracking UI Calculation ---
+                    def dailyStats = state."dailyStats_z${i}" ?: [:]
+                    def todayStr = getTodayDateString()
+                    def tStats = dailyStats[todayStr] ?: [occTime: 0, unoccTime: 0, count: 0]
+                    
+                    // Add purely visual active delta for smooth dashboard refreshing
+                    def lastUpd = state."lastStatUpdate_z${i}" ?: now()
+                    def liveDelta = ((now() - lastUpd) / 1000).toLong()
+                    if (liveDelta > 600) liveDelta = 0 // Cap visual runaway if hub stalled
+                    
+                    def liveTodayOcc = tStats.occTime + (isOccupied ? liveDelta : 0)
+                    def liveTodayUnocc = tStats.unoccTime + (!isOccupied ? liveDelta : 0)
+
+                    def weeklyOcc = isOccupied ? liveDelta : 0
+                    def weeklyUnocc = !isOccupied ? liveDelta : 0
+                    def weeklyCount = 0
+
+                    dailyStats.each { k, v ->
+                        weeklyOcc += v.occTime
+                        weeklyUnocc += v.unoccTime
+                        weeklyCount += v.count
+                    }
+
+                    def statHtml = "<div style='margin-top: 8px; padding-top: 5px; border-top: 1px dotted #ccc; font-size:11px; color:#444;'>"
+                    statHtml += "<table style='width:100%; border:none; font-size:11px; line-height:1.2;'>"
+                    // CHANGED FROM "Hits" TO "Visits" HERE
+                    statHtml += "<tr><td style='width: 30%;'></td><td style='width: 25%;'><b>Occupied</b></td><td style='width: 25%;'><b>Empty</b></td><td style='width: 20%;'><b>Visits</b></td></tr>"
+                    statHtml += "<tr><td><b>Today:</b></td><td>${formatDuration(liveTodayOcc)}</td><td>${formatDuration(liveTodayUnocc)}</td><td>${tStats.count}x</td></tr>"
+                    statHtml += "<tr><td><b>7-Day:</b></td><td>${formatDuration(weeklyOcc)}</td><td>${formatDuration(weeklyUnocc)}</td><td>${weeklyCount}x</td></tr>"
+                    statHtml += "</table></div>"
+
                     def stateColor = restrictionReason ? "orange" : (isOccupied ? "green" : "black")
                     def stateLabel = restrictionReason ? "PAUSED (${restrictionReason})" : (isOccupied ? "OCCUPIED" : "EMPTY")
-                    def isOccupiedDisplay = "<b><span style='color:${stateColor};'>${stateLabel}</span></b>${remainingMinsDisplay}"
+                    def isOccupiedDisplay = "<b><span style='color:${stateColor};'>${stateLabel}</span></b>${statHtml}"
                     
                     def sensorListDisplay = sensorDetails ? sensorDetails.join("<br>") : "<span style='color:gray; font-size:11px;'>None Monitored</span>"
 
@@ -297,11 +331,8 @@ def mainPage() {
                     def fullDeviceColumn = "${devListDisplay}<br><br>${powerDisplay}"
 
                     // --- Savings Calculation ---
-                    def secondsOff = state."roomStatsTotalSecs_z${i}" ?: 0
-                    def unoccSince = state."roomStatsUnoccupiedSince_z${i}"
-                    if (unoccSince != null && !restrictionReason) {
-                        secondsOff += ((now() - unoccSince) / 1000).toLong()
-                    }
+                    def secondsOff = state."lifetimeUnoccSecs_z${i}" ?: 0
+                    secondsOff += (!isOccupied && !restrictionReason ? liveDelta : 0)
                     
                     def savedHours = secondsOff / 3600.0
                     def wastedKw = (totalActive + totalStandby) / 1000.0
@@ -310,7 +341,25 @@ def mainPage() {
                     
                     def formattedSavings = String.format('$%.2f', roomSavings)
 
-                    statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${zName}</b></td><td style='padding: 8px;'>${isOccupiedDisplay}</td><td style='padding: 8px;'>${sensorListDisplay}</td><td style='padding: 8px;'>${fullDeviceColumn}</td><td style='padding: 8px; color:#008800; font-weight:bold;'>${formattedSavings}</td></tr>"
+                    def rowBorder = statusAdditions ? "none" : "2px solid #ccc"
+                    
+                    statusText += "<tr style='border-bottom: ${rowBorder};'>"
+                    statusText += "<td style='padding: 8px; vertical-align: top;'><b>${zName}</b></td>"
+                    statusText += "<td style='padding: 8px; vertical-align: top;'>${isOccupiedDisplay}</td>"
+                    statusText += "<td style='padding: 8px; vertical-align: top;'>${sensorListDisplay}</td>"
+                    statusText += "<td style='padding: 8px; vertical-align: top;'>${fullDeviceColumn}</td>"
+                    statusText += "<td style='padding: 8px; vertical-align: top; color:#008800; font-weight:bold;'>${formattedSavings}</td>"
+                    statusText += "</tr>"
+
+                    if (statusAdditions) {
+                        statusText += "<tr style='border-bottom: 2px solid #ccc; background-color: #f9f9f9;'>"
+                        statusText += "<td colspan='5' style='padding: 6px 8px;'>"
+                        statusText += "<table style='width:100%; border:none; font-size:11px;'><tr><td style='padding:4px;'>"
+                        statusText += "<b>Active Conditions & Timers:</b><br>"
+                        statusText += statusAdditions.join(" &nbsp;|&nbsp; ")
+                        statusText += "</td></tr></table>"
+                        statusText += "</td></tr>"
+                    }
                 }
             }
             
@@ -371,7 +420,7 @@ def mainPage() {
             input "clearAllStatesBtn", "button", title: "⚠ EMERGENCY: Clear All States & Reset App"
             
             paragraph "<b>Data Management</b>"
-            input "resetSavings", "bool", title: "Reset All Savings Data to Zero", defaultValue: false, submitOnChange: true
+            input "resetSavings", "bool", title: "Reset All Savings & Occupancy Data to Zero", defaultValue: false, submitOnChange: true
             if (settings["resetSavings"]) {
                 resetAllSavings()
                 app.updateSetting("resetSavings", false)
@@ -408,7 +457,7 @@ def roomConfigPage(params) {
     dynamicPage(name: "roomConfigPage", title: "<b>Configuration: ${zName}</b>", install: false, uninstall: false) {
         section("<b>▶ Setup</b>") {
             input "enableZ${i}", "bool", title: "<b>Enable this Room</b>", submitOnChange: true
-            
+             
             if (settings["enableZ${i}"]) {
                 input "z${i}Name", "text", title: "Room Name", required: false, defaultValue: "Room ${i}", submitOnChange: true
                 
@@ -435,7 +484,7 @@ def roomConfigPage(params) {
                     input "z${i}MotionGracePeriod", "number", title: "↳ Motion Inactive Grace Period (Seconds before officially confirming empty)", required: true, defaultValue: 15
                     
                     if (settings["z${i}TurnOnTriggers"]?.contains("Motion Hit Count")) {
-                        input "z${i}MotionActivationWindow", "number", title: "↳ Hit Count Window (Minutes)", required: true, defaultValue: 1
+                        input "z${i}MotionActivationWindow", "number", title: "↳ Hit Count Window (Minutes)", required: true, defaultValue: 3
                         input "z${i}MotionActivationHits", "number", title: "↳ Required Active Hits", required: true, defaultValue: 1
                     }
                     if (settings["z${i}TurnOnTriggers"]?.contains("Continuous Motion")) {
@@ -449,7 +498,7 @@ def roomConfigPage(params) {
                 input "z${i}Vibration", "capability.accelerationSensor", title: "Vibration Sensors (e.g. Chair/Bed)", multiple: true, required: false, submitOnChange: true
                 if (settings["z${i}Vibration"]) {
                     if (settings["z${i}TurnOnTriggers"]?.contains("Vibration")) {
-                        input "z${i}VibeActivationWindow", "number", title: "↳ Activation Window (Minutes to count hits)", required: true, defaultValue: 1
+                        input "z${i}VibeActivationWindow", "number", title: "↳ Activation Window (Minutes to count hits)", required: true, defaultValue: 3
                         input "z${i}VibeActivationHits", "number", title: "↳ Required Active Hits to trigger Occupied", required: true, defaultValue: 1
                     }
                     if (settings["z${i}TurnOffTriggers"]?.contains("Motion/Vibe Timeout")) {
@@ -458,7 +507,7 @@ def roomConfigPage(params) {
                 }
                 
                 input "z${i}Presence", "capability.presenceSensor", title: "mmWave / Presence Sensors (Instant Occupied)", multiple: true, required: false
-                
+               
                 paragraph "<b>Actuators & Device Power Profiles</b>"
                 input "z${i}Switches", "capability.switch", title: "Hard Power Relays (Smart Plugs, Wall Switches)", multiple: true, required: false, submitOnChange: true
                 if (settings["z${i}Switches"]) {
@@ -484,7 +533,7 @@ def roomConfigPage(params) {
                 if (settings["z${i}Sweeper"]) {
                     input "z${i}SweeperTimeout", "number", title: "↳ Sweeper Timeout (Minutes of NO motion before turning OFF)", required: true, defaultValue: 60
                 }
-                
+                 
                 input "z${i}AbsoluteSweeper", "bool", title: "Enable Absolute Sweeper (Works even when room rules are PAUSED/Restricted)", defaultValue: false, submitOnChange: true
                 if (settings["z${i}AbsoluteSweeper"]) {
                     input "z${i}AbsoluteSweeperTimeout", "number", title: "↳ Absolute Sweeper Timeout (Minutes of NO motion/vibe/presence before turning OFF)", required: true, defaultValue: 120
@@ -521,9 +570,24 @@ def initialize() {
     
     for (int i = 1; i <= 12; i++) {
         if (!state."currentRoomStates_z${i}") state."currentRoomStates_z${i}" = "unknown"
-        if (!state."roomStatsTotalSecs_z${i}") state."roomStatsTotalSecs_z${i}" = 0
+        if (!state."dailyStats_z${i}") state."dailyStats_z${i}" = [:]
+        
+        // Migrate legacy ROI trackers
+        if (state."roomStatsTotalSecs_z${i}" != null && state."lifetimeUnoccSecs_z${i}" == null) {
+            state."lifetimeUnoccSecs_z${i}" = state."roomStatsTotalSecs_z${i}"
+        } else if (!state."lifetimeUnoccSecs_z${i}") {
+            state."lifetimeUnoccSecs_z${i}" = 0
+        }
+        
+        state."lastStatUpdate_z${i}" = now()
         state."motionHitCount_z${i}" = 0
         state."vibeHitCount_z${i}" = 0
+        
+        // Clean up legacy stat properties
+        state.remove("occStats_z${i}")
+        state.remove("roomStatsOccupiedSince_z${i}")
+        state.remove("roomStatsUnoccupiedSince_z${i}")
+        state.remove("roomStatsTotalSecs_z${i}")
     }
     
     // Core Subscriptions
@@ -611,6 +675,8 @@ def appButtonHandler(btn) {
         
         state."motionHitCount_z${i}" = 0
         state."vibeHitCount_z${i}" = 0
+        state."motionHitStartTime_z${i}" = null
+        state."vibeHitStartTime_z${i}" = null
         state."zoneLastActive_z${i}" = null
         state."vibeLastActive_z${i}" = null
         state."motionActiveSince_z${i}" = null
@@ -624,7 +690,6 @@ def appButtonHandler(btn) {
         return
     }
  
-    
     if (btn.startsWith("forceOccBtn_")) {
         def i = btn.split("_")[1].toInteger()
         def zName = settings["z${i}Name"] ?: "Room ${i}"
@@ -662,7 +727,7 @@ def appButtonHandler(btn) {
                 
                 state."switchIsManual_z${i}" = true
                 state."zoneLastActive_z${i}" = now()
-                
+             
                 // BRUTE FORCE HARDWARE ON
                 def hardDevs = settings["z${i}Switches"]
                 if (hardDevs) hardDevs.each { safeOn(it) }
@@ -688,6 +753,8 @@ def appButtonHandler(btn) {
 
                 state."motionHitCount_z${i}" = 0
                 state."vibeHitCount_z${i}" = 0
+                state."motionHitStartTime_z${i}" = null
+                state."vibeHitStartTime_z${i}" = null
                 state."zoneLastActive_z${i}" = null
                 state."vibeLastActive_z${i}" = null
                 state."motionActiveSince_z${i}" = null
@@ -716,7 +783,7 @@ def hubRestartHandler(evt) {
             def zName = settings["z${i}Name"] ?: "Room ${i}"
             
             if (lastKnownState == "occupied") {
-                logAction("RECOVERY: ${zName} was OCCUPIED before outage. Restoring ON state.")
+                 logAction("RECOVERY: ${zName} was OCCUPIED before outage. Restoring ON state.")
                 
                 def oSwitch = settings["z${i}OverrideSwitch"]
                 if (oSwitch && state."switchIsManual_z${i}") {
@@ -784,7 +851,7 @@ def buttonHandler(evt) {
             def targetAction = settings["z${i}OverrideButtonAction"] ?: "pushed"
             
             if (btnVal == targetBtn && evt.name == targetAction) {
-                def oSwitch = settings["z${i}OverrideSwitch"]
+                 def oSwitch = settings["z${i}OverrideSwitch"]
                 if (oSwitch) {
                     if (oSwitch.currentValue("switch") == "on") {
                         logAction("${settings["z${i}Name"]}: Override Button ${targetAction}. Turning Virtual Switch OFF.")
@@ -797,6 +864,8 @@ def buttonHandler(evt) {
                         state."waitForClear_z${i}" = true
                         state."motionHitCount_z${i}" = 0
                         state."vibeHitCount_z${i}" = 0
+                        state."motionHitStartTime_z${i}" = null
+                        state."vibeHitStartTime_z${i}" = null
                         state."zoneLastActive_z${i}" = null
                         state."motionActiveSince_z${i}" = null
                         
@@ -862,8 +931,9 @@ def motionHandler(evt) {
                     def count = (state."motionHitCount_z${i}" ?: 0) + 1
                     state."motionHitCount_z${i}" = count
                     
-                    def windowMs = (settings["z${i}MotionActivationWindow"] ?: 1) * 60000
+                    def windowMs = (settings["z${i}MotionActivationWindow"] ?: 3) * 60000
                     if (count == 1 && windowMs > 0) {
+                        state."motionHitStartTime_z${i}" = now() // Track exact window start
                         def windowSecs = (windowMs / 1000).toInteger()
                         runIn(windowSecs, "resetMotionZ${i}")
                     }
@@ -926,8 +996,9 @@ def vibrationHandler(evt) {
                     def count = (state."vibeHitCount_z${i}" ?: 0) + 1
                     state."vibeHitCount_z${i}" = count
          
-                    def windowMs = (settings["z${i}VibeActivationWindow"] ?: 1) * 60000
+                    def windowMs = (settings["z${i}VibeActivationWindow"] ?: 3) * 60000
                     if (count == 1 && windowMs > 0) {
+                        state."vibeHitStartTime_z${i}" = now() // Track exact window start
                         def windowSecs = (windowMs / 1000).toInteger()
                         runIn(windowSecs, "resetVibeZ${i}")
                     }
@@ -1008,6 +1079,8 @@ def sensorHandler(evt) {
                             // Clear motion history to ensure immediate empty state
                             state."motionHitCount_z${i}" = 0
                             state."vibeHitCount_z${i}" = 0
+                            state."motionHitStartTime_z${i}" = null
+                            state."vibeHitStartTime_z${i}" = null
                             state."zoneLastActive_z${i}" = null
                             state."motionActiveSince_z${i}" = null
                         }
@@ -1293,9 +1366,10 @@ def evaluateRooms(boolean forceSync = false) {
             def restriction = getRoomRestrictionReason(i)
             
             if (restriction) {
-                stopSavingsTimer(i)
+                // If restricted, track it mathematically as unoccupied
+                updateRoomStats(i, false)
                 state."currentRoomStates_z${i}" = "restricted"
-                
+ 
                 // --- ABSOLUTE SWEEPER LOGIC ---
                 if (settings["z${i}AbsoluteSweeper"]) {
                     def hardDevs = settings["z${i}Switches"]
@@ -1304,11 +1378,11 @@ def evaluateRooms(boolean forceSync = false) {
  
                     if (hardDevs?.any { it.currentValue("switch") == "on" }) anyOn = true
                     if (softDevs?.any { it.currentValue("switch") == "on" }) anyOn = true
-                    
+                  
                     if (anyOn) {
                         def pDevs = settings["z${i}Presence"]
                         def pActive = pDevs && pDevs.any { it.currentValue("presence") == "present" }
-                  
+               
                         if (!pActive) {
                             def lastM = state."zoneLastActive_z${i}" ?: 0
                             def lastV = state."vibeLastActive_z${i}" ?: 0
@@ -1318,7 +1392,7 @@ def evaluateRooms(boolean forceSync = false) {
                                 state."zoneLastActive_z${i}" = now() // Initialize baseline if missing
                             } else {
                                 def timeoutMs = (settings["z${i}AbsoluteSweeperTimeout"] ?: 120) * 60000
-                              
+ 
                                 if ((now() - lastAct) >= timeoutMs) {
                                     logAction("${zName}: 🚨 ABSOLUTE SWEEPER activated! Devices left ON in paused room with no motion/presence for ${(settings["z${i}AbsoluteSweeperTimeout"] ?: 120)} minutes. Forcing shutdown.")
                                     initiateRoomShutdown(i)
@@ -1335,6 +1409,8 @@ def evaluateRooms(boolean forceSync = false) {
                 // Deep-Clean Reset on Restricted Mode
                 state."motionHitCount_z${i}" = 0
                 state."vibeHitCount_z${i}" = 0
+                state."motionHitStartTime_z${i}" = null
+                state."vibeHitStartTime_z${i}" = null
                 state."motionActiveSince_z${i}" = null 
                 
                 // We only clear the activity trackers if the Absolute Sweeper is NOT relying on them
@@ -1355,12 +1431,26 @@ def evaluateRooms(boolean forceSync = false) {
 
             def isOccupied = getRoomOccupancyState(i)
             def currentState = state."currentRoomStates_z${i}"
-            def targetState = isOccupied ? "occupied" : "empty"
             
-            if (currentState != targetState || forceSync) {
+            // Append time dynamically to the buckets BEFORE registering any state changes
+            updateRoomStats(i, currentState == "occupied")
+            
+            def targetState = isOccupied ? "occupied" : "empty"
+            def stateChanged = (currentState != targetState)
+
+            if (stateChanged || forceSync) {
                 state."currentRoomStates_z${i}" = targetState
                 
                 if (targetState == "occupied") {
+                    if (stateChanged) {
+                        def today = getTodayDateString()
+                        def stats = state."dailyStats_z${i}" ?: [:]
+                        def daily = stats[today] ?: [occTime: 0, unoccTime: 0, count: 0]
+                        daily.count += 1
+                        stats[today] = daily
+                        state."dailyStats_z${i}" = stats
+                    }
+
                     if (!forceSync) logAction("${zName} is now OCCUPIED. Powering ON devices.")
                     state."shutdownDelayActive_z${i}" = false
                     
@@ -1373,7 +1463,6 @@ def evaluateRooms(boolean forceSync = false) {
                     }
                     
                     turnRoomDevicesOn(i)
-                    stopSavingsTimer(i)
                 } else {
                     if (!forceSync) logAction("${zName} is now EMPTY. Initiating shutdown sequence.")
                     
@@ -1384,7 +1473,7 @@ def evaluateRooms(boolean forceSync = false) {
                     if (state."motionActiveSince_z${i}") {
                         state."motionActiveSince_z${i}" = null
                     }
-                    
+               
                     // Auto-sync the virtual switch off if the room goes empty via timeouts
                     def oSwitch = settings["z${i}OverrideSwitch"]
                     if (oSwitch && oSwitch.currentValue("switch") == "on") {
@@ -1392,7 +1481,7 @@ def evaluateRooms(boolean forceSync = false) {
                         state."expectedSwitchBehaviorTime_z${i}" = now()
                         runIn(1, "syncVirtualSwitchOff", [data: [room: i]])
                     }
-                  
+              
                     initiateRoomShutdown(i)
                 }
             } else if (currentState == "empty" && settings["z${i}Sweeper"]) {
@@ -1402,7 +1491,7 @@ def evaluateRooms(boolean forceSync = false) {
                 def anyOn = false
                 if (hardDevs?.any { it.currentValue("switch") == "on" }) anyOn = true
                 if (softDevs?.any { it.currentValue("switch") == "on" }) anyOn = true
-              
+            
                 if (anyOn) {
                     def lastAct = state."zoneLastActive_z${i}" ?: now()
                     def timeoutMs = (settings["z${i}SweeperTimeout"] ?: 60) * 60000
@@ -1486,32 +1575,15 @@ def executeHardKill(data) {
         logAction("Cutting hard power to managed relays in Room ${roomId}.")
         hardDevs.each { safeOff(it) }
     }
-    
-    startSavingsTimer(roomId)
 }
 
 // === ROI SAVINGS TRACKING ===
-def startSavingsTimer(roomId) {
-    if (state."roomStatsUnoccupiedSince_z${roomId}" == null) {
-        state."roomStatsUnoccupiedSince_z${roomId}" = now()
-    }
-}
-
-def stopSavingsTimer(roomId) {
-    if (state."roomStatsUnoccupiedSince_z${roomId}" != null) {
-        def since = state."roomStatsUnoccupiedSince_z${roomId}"
-        def elapsedSecs = ((now() - since) / 1000).toLong()
-        
-        state."roomStatsTotalSecs_z${roomId}" = (state."roomStatsTotalSecs_z${roomId}" ?: 0) + elapsedSecs
-        state."roomStatsUnoccupiedSince_z${roomId}" = null
-    }
-}
-
 def resetAllSavings() {
-    logAction("MANUAL OVERRIDE: Resetting all ROI Savings Data to zero.")
+    logAction("MANUAL OVERRIDE: Resetting all ROI Savings Data and Occupancy Stats to zero.")
     for (int i = 1; i <= 12; i++) {
-        state."roomStatsTotalSecs_z${i}" = 0
-        state."roomStatsUnoccupiedSince_z${i}" = (state."currentRoomStates_z${i}" == "empty" ? now() : null)
+        state."lifetimeUnoccSecs_z${i}" = 0
+        state."dailyStats_z${i}" = [:]
+        state."lastStatUpdate_z${i}" = now()
     }
 }
 
@@ -1546,6 +1618,62 @@ def disableDebugLog() {
 
 def logDebug(msg) {
     if (debugEnable) log.debug "${app.label}: ${msg}"
+}
+
+// ==============================================================================
+// OCCUPANCY STATS & TRACKING WRAPPERS
+// ==============================================================================
+
+def getTodayDateString() {
+    def df = new java.text.SimpleDateFormat("yyyy-MM-dd")
+    df.setTimeZone(location.timeZone)
+    return df.format(new Date())
+}
+
+def formatDuration(long secs) {
+    if (secs < 60) return "${secs}s"
+    def mins = (secs / 60).toInteger()
+    if (mins < 60) return "${mins}m"
+    def hrs = (mins / 60).toInteger()
+    def remMins = mins % 60
+    return "${hrs}h ${remMins}m"
+}
+
+def updateRoomStats(roomId, isOccupied) {
+    def lastUpdate = state."lastStatUpdate_z${roomId}" ?: now()
+    def nowMs = now()
+    def deltaSecs = ((nowMs - lastUpdate) / 1000).toLong()
+    
+    // If delta is huge (e.g. hub was offline or paused), cap it to 5 mins to prevent skewed/runaway data
+    if (deltaSecs > 300) deltaSecs = 300 
+    if (deltaSecs < 0) deltaSecs = 0
+
+    def today = getTodayDateString()
+    def stats = state."dailyStats_z${roomId}" ?: [:]
+    def daily = stats[today] ?: [occTime: 0, unoccTime: 0, count: 0]
+
+    if (isOccupied) {
+        daily.occTime += deltaSecs
+    } else {
+        daily.unoccTime += deltaSecs
+        state."lifetimeUnoccSecs_z${roomId}" = (state."lifetimeUnoccSecs_z${roomId}" ?: 0) + deltaSecs
+    }
+
+    stats[today] = daily
+    
+    // Purge records older than 7 days
+    def keysToRemove = []
+    def cal = Calendar.getInstance(location.timeZone)
+    cal.add(Calendar.DAY_OF_YEAR, -7)
+    def sevenDaysAgoStr = new java.text.SimpleDateFormat("yyyy-MM-dd").format(cal.getTime())
+    
+    stats.each { k, v ->
+        if (k < sevenDaysAgoStr) keysToRemove << k
+    }
+    keysToRemove.each { stats.remove(it) }
+  
+    state."dailyStats_z${roomId}" = stats
+    state."lastStatUpdate_z${roomId}" = nowMs
 }
 
 // ==============================================================================
