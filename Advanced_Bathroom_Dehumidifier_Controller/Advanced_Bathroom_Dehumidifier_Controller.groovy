@@ -20,9 +20,12 @@ def mainPage() {
     dynamicPage(name: "mainPage", title: "Advanced Dehumidifier Controls", install: true, uninstall: true) {
         
         section("Live Climate Dashboard") {
+            // Refresh Button
+            href(name: "refreshDash", title: "🔄 Refresh Data", description: "Tap to update live charts and timers", page: "mainPage")
+            
             // TABLE 1: Current Status
             def statusText = "<b>Live Space Status</b><br><table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc; margin-bottom: 15px;'>"
-            statusText += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Zone</th><th style='padding: 8px;'>Humidity<br><span style='font-size:10px; font-weight:normal;'>Now (Avg)</span></th><th style='padding: 8px;'>Motion</th><th style='padding: 8px;'>Dehumidifier State</th><th style='padding: 8px;'>Run Time<br><span style='font-size:10px; font-weight:normal;'>Today (Yest)</span></th></tr>"
+            statusText += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Zone</th><th style='padding: 8px;'>Humidity<br><span style='font-size:10px; font-weight:normal;'>Now (Avg) / Target</span></th><th style='padding: 8px;'>Motion</th><th style='padding: 8px;'>Dehumidifier State</th><th style='padding: 8px;'>Run Time<br><span style='font-size:10px; font-weight:normal;'>Today (Yest)</span></th></tr>"
             
             def configuredCount = 0
             def numBaths = settings["numBathrooms"] ?: 1
@@ -52,11 +55,15 @@ def mainPage() {
                         if (currentH >= highH) humColor = "red"
                     }
                     
-                    // Humidity Math
+                    // Humidity Math & Target Setpoint
                     def humSum = state.dailyHumSum?."bath_${i}" ?: 0.0
                     def humCount = state.dailyHumCount?."bath_${i}" ?: 0
                     def avgHumStr = humCount > 0 ? "${Math.round(humSum / humCount)}%" : "--"
-                    def humDisplay = "<span style='color: ${humColor}; font-weight: bold;'>${humVal}</span><br><span style='font-size:11px; color:#555;'>Avg: ${avgHumStr}</span>"
+                    
+                    def targetH = settings["globalBaselineSensor"] ? settings["globalBaselineSensor"].currentValue("humidity") : settings["bathHumTarget_${i}"]
+                    def targetHumStr = targetH ? "${targetH}%" : "N/A"
+                    
+                    def humDisplay = "<span style='color: ${humColor}; font-weight: bold;'>${humVal}</span><br><span style='font-size:11px; color:#555;'>Avg: ${avgHumStr} / Tgt: ${targetHumStr}</span>"
 
                     // Live Timers & Run Time Logic
                     def pendingMsg = ""
