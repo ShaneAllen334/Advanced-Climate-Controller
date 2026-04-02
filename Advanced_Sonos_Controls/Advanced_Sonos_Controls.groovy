@@ -253,6 +253,7 @@ def mainPage() {
             paragraph "<hr>"
             input "enableControlPanel", "bool", title: "Enable Active Control Panel & TTS", defaultValue: true, submitOnChange: true
             input "enablePowerManagement", "bool", title: "Enable Smart Power Automation", defaultValue: true, submitOnChange: true
+            input "enableSelfHealing", "bool", title: "Enable Self-Healing on Hub Reboot", defaultValue: true, submitOnChange: true
             input "enableCostTracker", "bool", title: "Enable Energy Cost Tracking", defaultValue: true, submitOnChange: true
             input "enableFavorites", "bool", title: "Enable Virtual Switch Favorites", defaultValue: true, submitOnChange: true
             
@@ -396,6 +397,11 @@ def initialize() {
     
     if (settings.enablePowerManagement != false) {
         subscribe(location, "mode", modeChangeHandler)
+        runEvery1Hour(hourlyStateEnforcement)
+    }
+
+    if (settings.enableSelfHealing != false) {
+        subscribe(location, "systemStart", systemStartHandler)
     }
     
     if (settings.enableFavorites != false) {
@@ -569,6 +575,10 @@ def restoreVolumeAndContinueTTS(data) {
 }
 
 // --- VOLUME FADING ENGINE ---
+
+def startVolumeFadeWrapper(data) {
+    startVolumeFade(data.spkId, data.targetVol, data.durationSec, data.isFadeOut)
+}
 
 def startVolumeFade(spkId, targetVol, durationSec, isFadeOut = false) {
     def spk = getSpeakerById(spkId)
@@ -908,12 +918,71 @@ def purgeOldFavorites() {
     }
 }
 
-// --- POWER MANAGEMENT LOGIC ---
+// --- POWER MANAGEMENT LOGIC & SELF-HEALING ENGINE ---
+
+def hourlyStateEnforcement() {
+    if (!isAppEnabled() || settings.enablePowerManagement == false) return
+    def currentMode = location.mode
+    def delayMult = 0
+    def zonesFixed = false
+    
+    for (int i = 1; i <= 10; i++) {
+        if (settings["enableZ${i}"] && settings["z${i}Switch"]) {
+            if (isZoneLocked(i)) continue
+            
+            def sw = settings["z${i}Switch"]
+            def onModes = settings["z${i}TurnOnModes"] as List
+            def offModes = settings["z${i}TurnOffModes"] as List
+            def currentState = sw.currentValue("switch")
+            
+            if (onModes && onModes.contains(currentMode) && currentState != "on") {
+                def delay = delayMult * 6 + 1
+                runIn(delay, enforcePowerState, [data: [zNum: i, state: "on"]])
+                delayMult++
+                zonesFixed = true
+            } else if (offModes && offModes.contains(currentMode) && currentState != "off") {
+                def delay = delayMult * 6 + 1
+                runIn(delay, enforcePowerState, [data: [zNum: i, state: "off"]])
+                delayMult++
+                zonesFixed = true
+            }
+        }
+    }
+    if (zonesFixed) {
+        logAction("Hourly Enforcement: Correcting missing power states...")
+    }
+}
+
+def enforcePowerState(data) {
+    def sw = settings["z${data.zNum}Switch"]
+    if (sw) {
+        if (data.state == "on") {
+            sw.on()
+            logAction("Hourly Enforcement: Turned ON Zone ${data.zNum}.")
+        } else {
+            sw.off()
+            logAction("Hourly Enforcement: Turned OFF Zone ${data.zNum}.")
+        }
+    }
+}
 
 def modeChangeHandler(evt) {
     if (!isAppEnabled() || settings.enablePowerManagement == false) return
+    syncSystemToMode(evt.value, "Mode Change")
+}
 
-    def currentMode = evt.value
+def systemStartHandler(evt) {
+    if (!isAppEnabled() || settings.enablePowerManagement == false || settings.enableSelfHealing == false) return
+    logAction("🔄 Hub Reboot/Power Outage Detected. Waiting 60s for mesh networks to settle before Self-Healing Sync...")
+    runIn(60, executeSelfHealingSync)
+}
+
+def executeSelfHealingSync() {
+    logAction("🔄 Initiating Self-Healing Sync now...")
+    syncSystemToMode(location.mode, "Self-Healing")
+}
+
+def syncSystemToMode(currentMode, triggerSource) {
     def zonesToTurnOn = []
     def zonesToTurnOff = []
     def zonesToRunRoutine = []
@@ -921,7 +990,7 @@ def modeChangeHandler(evt) {
     for (int i = 1; i <= 10; i++) {
         if (settings["enableZ${i}"]) {
             if (isZoneLocked(i)) {
-                logAction("Mode Engine skipping Zone ${i} (Good Night Override Active).")
+                logAction("${triggerSource} Engine skipping Zone ${i} (Good Night Override Active).")
                 continue
             }
             
@@ -938,44 +1007,61 @@ def modeChangeHandler(evt) {
     }
 
     if (zonesToTurnOn) {
-        logAction("Mode changed to ${currentMode}. Initiating Startup sequence for active zones.")
+        logAction("${triggerSource}: Mode is ${currentMode}. Initiating Startup sequence for active zones.")
         powerUpSpecificZones(zonesToTurnOn, zonesToRunRoutine)
     } 
     
     if (zonesToTurnOff) {
-        logAction("Mode changed to ${currentMode}. Initiating Failsafe Pause & Shutdown for active zones.")
+        logAction("${triggerSource}: Mode is ${currentMode}. Initiating Failsafe Pause & Shutdown for inactive zones.")
         gracefulShutdownSpecificZones(zonesToTurnOff)
     }
     
     if (zonesToRunRoutine) {
-        logAction("Mode changed to ${currentMode}. Initiating Music Routines.")
-        zonesToRunRoutine.each { zNum -> runIn(1, executeModeRoutine, [data: [zNum: zNum]]) }
+        logAction("${triggerSource}: Mode is ${currentMode}. Initiating Music Routines.")
+        def rDelayMult = 0
+        zonesToRunRoutine.each { zNum -> 
+            def delay = (rDelayMult * 6) + 2
+            runIn(delay, executeModeRoutine, [data: [zNum: zNum]]) 
+            rDelayMult++
+        }
     }
 }
 
 def powerUpSpecificZones(zones, routineZones = []) {
+    def delayMult = 0
     zones.each { i ->
         if (settings["z${i}Switch"]) {
-            settings["z${i}Switch"].on()
-            
-            if (settings["z${i}StartVol"] && settings["z${i}Speaker"]) {
-                def targetVol = settings["z${i}StartVol"]
-                def fadeDur = settings["z${i}FadeIn"]
-                
-                if (fadeDur && fadeDur > 0) {
-                    settings["z${i}Speaker"].setLevel(0) 
-                    runIn(5, startVolumeFade, [spkId: settings["z${i}Speaker"].id, targetVol: targetVol, durationSec: fadeDur, isFadeOut: false])
-                } else {
-                    runIn(5, setStartupVolume, [data: [spkId: settings["z${i}Speaker"].id, vol: targetVol]])
-                }
-            }
-            
-            if (settings["z${i}AutoResume"] && settings["z${i}Speaker"] && !routineZones.contains(i)) {
-                runIn(60, triggerAutoResume, [data: [spkId: settings["z${i}Speaker"].id]])
-            }
+            def delay = delayMult * 6 + 1
+            runIn(delay, executeStaggeredPowerOn, [data: [zNum: i, isRoutine: routineZones.contains(i)]])
+            delayMult++
         }
     }
-    logAction("Master power switches turned ON for active zones.")
+    if(zones) logAction("Master power switches scheduled to turn ON (Staggered).")
+}
+
+def executeStaggeredPowerOn(data) {
+    def i = data.zNum
+    def isRoutine = data.isRoutine
+    def sw = settings["z${i}Switch"]
+    def spk = settings["z${i}Speaker"]
+    
+    if (sw) sw.on()
+    
+    if (settings["z${i}StartVol"] && spk) {
+        def targetVol = settings["z${i}StartVol"]
+        def fadeDur = settings["z${i}FadeIn"]
+        
+        if (fadeDur && fadeDur > 0) {
+            spk.setLevel(0) 
+            runIn(5, startVolumeFadeWrapper, [data: [spkId: spk.id, targetVol: targetVol, durationSec: fadeDur, isFadeOut: false]])
+        } else {
+            runIn(5, setStartupVolume, [data: [spkId: spk.id, vol: targetVol]])
+        }
+    }
+    
+    if (settings["z${i}AutoResume"] && spk && !isRoutine) {
+        runIn(60, triggerAutoResume, [data: [spkId: spk.id]])
+    }
 }
 
 def executeModeRoutine(data) {
@@ -1022,12 +1108,19 @@ def gracefulShutdownSpecificZones(zones) {
 
 def executePowerCutSpecificZones(data) {
     def zones = data.zonesToCut
+    def delayMult = 0
     zones.each { i ->
         if (settings["z${i}Switch"]) {
-            settings["z${i}Switch"].off()
+            def delay = delayMult * 6 + 1
+            runIn(delay, executeStaggeredPowerOff, [data: [zNum: i]])
+            delayMult++
         }
     }
-    logAction("Master power switches successfully powered OFF for designated zones.")
+    logAction("Master power switches successfully scheduled to turn OFF (Staggered).")
+}
+
+def executeStaggeredPowerOff(data) {
+    settings["z${data.zNum}Switch"]?.off()
 }
 
 def setStartupVolume(data) {
