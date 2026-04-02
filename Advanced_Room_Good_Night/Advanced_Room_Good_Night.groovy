@@ -53,15 +53,28 @@ def mainPage() {
                     syncExplanation = "<span style='color:#28a745;'><b>✅ No Blocking Devices Active</b></span>"
                 }
                 
+                // Timer 1: Global Night Mode Sync
+                if (state.nightModeScheduledTime) {
+                    def globalTimeSecs = Math.round((state.nightModeScheduledTime - now()) / 1000.0)
+                    if (globalTimeSecs > 60) {
+                        syncExplanation += "<br><span style='color:#007bff; margin-top:4px; display:inline-block;'><b>⏳ Global Night Mode Countdown:</b> ~${Math.round(globalTimeSecs / 60.0)} min(s) until Good Night.</span>"
+                    } else if (globalTimeSecs > 0) {
+                        syncExplanation += "<br><span style='color:#007bff; margin-top:4px; display:inline-block;'><b>⏳ Global Night Mode Countdown:</b> ${globalTimeSecs} sec(s) until Good Night.</span>"
+                    } else {
+                        syncExplanation += "<br><span style='color:#007bff; margin-top:4px; display:inline-block;'><b>⏳ Global Night Mode Countdown:</b> Executing...</span>"
+                    }
+                }
+
+                // Timer 2: Lead Room(s) Override
                 if (settings.enableLeadRoomOverride && state.overrideScheduledTime) {
                     def timeLeft = Math.round((state.overrideScheduledTime - now()) / 60000.0)
                     if (timeLeft > 0) {
-                        syncExplanation += "<br><span style='color:#f39c12; margin-top:4px; display:inline-block;'><b>⏳ Lead Room Timer Active:</b> ~${timeLeft} min(s) until forced Good Night evaluation.</span>"
+                        syncExplanation += "<br><span style='color:#f39c12; margin-top:4px; display:inline-block;'><b>⏳ Lead Room(s) Timer Active:</b> ~${timeLeft} min(s) until forced Good Night evaluation.</span>"
                     } else {
-                        syncExplanation += "<br><span style='color:#f39c12; margin-top:4px; display:inline-block;'><b>⏳ Lead Room Timer:</b> Evaluation Pending...</span>"
+                        syncExplanation += "<br><span style='color:#f39c12; margin-top:4px; display:inline-block;'><b>⏳ Lead Room(s) Timer:</b> Evaluation Pending...</span>"
                     }
                 } else if (settings.enableLeadRoomOverride) {
-                    syncExplanation += "<br><span style='color:#6c757d; margin-top:4px; display:inline-block;'><b>⏳ Lead Room Timer:</b> Not Active</span>"
+                    syncExplanation += "<br><span style='color:#6c757d; margin-top:4px; display:inline-block;'><b>⏳ Lead Room(s) Timer:</b> Not Active</span>"
                 }
             }
             
@@ -215,10 +228,10 @@ def mainPage() {
                 input "targetWakeMode", "mode", title: "Change House Mode to", required: true
                 input "wakeModeDelay", "number", title: "Delay before entering Wake Mode (seconds)", defaultValue: 60, required: false
 
-                paragraph "<b>Lead Room Good Night Override</b>"
+                paragraph "<b>Lead Room(s) Good Night Override</b>"
                 input "enableLeadRoomOverride", "bool", title: "<b>Enable Lead Room Override</b>", submitOnChange: true
                 if (enableLeadRoomOverride) {
-                    input "leadRoom", "enum", title: "Select Lead Room", options: ["1":"Room 1", "2":"Room 2", "3":"Room 3", "4":"Room 4"], required: true
+                    input "leadRooms", "enum", title: "Select Lead Rooms (All selected must be asleep to trigger override)", options: ["1":"Room 1", "2":"Room 2", "3":"Room 3", "4":"Room 4"], multiple: true, required: true
                     input "leadRoomTimeout", "number", title: "Wait time (minutes) for other rooms to go to sleep", defaultValue: 30, required: true
                     input "leadRoomMotionSensors", "capability.motionSensor", title: "Require NO motion on these sensors to force Good Night", multiple: true, required: true
                     input "targetOverrideMode", "mode", title: "Change House Mode to (Good Night)", required: true
@@ -735,6 +748,19 @@ def areRequiredRoomsAsleep() {
     return (roomsChecked > 0 && allAsleep)
 }
 
+def areAllLeadRoomsAsleep() {
+    if (!settings.leadRooms) return false
+    def allAsleep = true
+    def roomsList = settings.leadRooms as List
+    roomsList.each { rNum ->
+        def sw = settings["roomSwitch${rNum}"]
+        if (!sw || sw.currentValue("switch") != "on") {
+            allAsleep = false
+        }
+    }
+    return allAsleep
+}
+
 def globalMotionHandler(evt) {
     if (evt.value == "inactive") {
         if (areRequiredRoomsAsleep()) {
@@ -769,11 +795,13 @@ def roomSwitchHandler(evt) {
         logInfo("${rName}: Good Night Switch ON. Engaging Routine.")
         executeRoomGoodNight(roomNum)
         
-        if (settings.enableLeadRoomOverride && settings.leadRoom == roomNum.toString()) {
-            def delaySecs = (settings.leadRoomTimeout ?: 30) * 60
-            state.overrideScheduledTime = now() + (delaySecs * 1000)
-            logInfo("GOOD NIGHT OVERRIDE: Lead Room (${roomNum}) is asleep. Waiting ${settings.leadRoomTimeout} minutes for other rooms.")
-            runIn(delaySecs, "evaluateLeadRoomOverride")
+        if (settings.enableLeadRoomOverride && settings.leadRooms?.contains(roomNum.toString())) {
+            if (areAllLeadRoomsAsleep()) {
+                def delaySecs = (settings.leadRoomTimeout ?: 30) * 60
+                state.overrideScheduledTime = now() + (delaySecs * 1000)
+                logInfo("GOOD NIGHT OVERRIDE: All selected Lead Rooms are asleep. Waiting ${settings.leadRoomTimeout} minutes for other rooms.")
+                runIn(delaySecs, "evaluateLeadRoomOverride")
+            }
         }
         
     } else {
@@ -795,10 +823,10 @@ def roomSwitchHandler(evt) {
         }
         endRoomGoodNight(roomNum)
         
-        if (settings.enableLeadRoomOverride && settings.leadRoom == roomNum.toString()) {
+        if (settings.enableLeadRoomOverride && settings.leadRooms?.contains(roomNum.toString())) {
             unschedule("evaluateLeadRoomOverride")
             state.remove("overrideScheduledTime")
-            logInfo("GOOD NIGHT OVERRIDE: Lead Room (${roomNum}) woke up. Canceled evaluation.")
+            logInfo("GOOD NIGHT OVERRIDE: A Lead Room (${roomNum}) woke up. Canceled evaluation.")
         }
     }
     evaluateGlobalMode(evt)
@@ -812,8 +840,10 @@ def evaluateLeadRoomOverride() {
     logInfo("GOOD NIGHT OVERRIDE: Timeout reached. Checking other rooms and motion.")
 
     def otherRoomAwake = false
+    def lRooms = settings.leadRooms as List
+    
     for (int i = 1; i <= 4; i++) {
-        if (i.toString() != settings.leadRoom && settings["enableRoom${i}"]) {
+        if (!lRooms.contains(i.toString()) && settings["enableRoom${i}"]) {
             def sw = settings["roomSwitch${i}"]
             if (sw && sw.currentValue("switch") != "on") {
                 otherRoomAwake = true
@@ -905,13 +935,30 @@ def evaluateGlobalMode(evt = null) {
                     
                     if (noMotion && noBlockingDevices) {
                         def nDelay = settings.nightModeDelay != null ? settings.nightModeDelay : 60
-                        logInfo("GLOBAL SYNC: Required rooms asleep, house is quiet, and no blocking devices are ON. Scheduling Night Mode (${targetNightMode}) in ${nDelay} seconds.")
-                        runIn(nDelay, "executeNightModeChange")
+                        if (!state.nightModeScheduledTime) {
+                            state.nightModeScheduledTime = now() + (nDelay * 1000)
+                            logInfo("GLOBAL SYNC: Required rooms asleep, house is quiet, and no blocking devices are ON. Scheduling Night Mode (${targetNightMode}) in ${nDelay} seconds.")
+                            runIn(nDelay, "executeNightModeChange")
+                        }
                     } else {
-                        logInfo("GLOBAL SYNC: Waiting on motion sensors to clear or blocking devices to turn OFF before shifting mode.")
+                        if (state.nightModeScheduledTime) {
+                            logInfo("GLOBAL SYNC: Waiting on motion sensors to clear or blocking devices to turn OFF before shifting mode. (Timer Paused)")
+                            unschedule("executeNightModeChange")
+                            state.remove("nightModeScheduledTime")
+                        }
+                    }
+                } else {
+                    if (state.nightModeScheduledTime) {
+                        logInfo("GLOBAL SYNC: A required room woke up. (Timer Canceled)")
                         unschedule("executeNightModeChange")
+                        state.remove("nightModeScheduledTime")
                     }
                 }
+            }
+        } else {
+            if (state.nightModeScheduledTime) {
+                 unschedule("executeNightModeChange")
+                 state.remove("nightModeScheduledTime")
             }
         }
     }
@@ -996,10 +1043,19 @@ def executeRoomGoodNight(roomNum) {
     def audioType = settings["audioSourceType${roomNum}"] ?: "uri"
     
     if (speaker || audioType == "switch") {
-        if (speakerPower && speakerPower.currentValue("switch") == "off") {
-            logInfo("${rName}: Speaker power plug is OFF. Turning ON and waiting 120s before initiating audio play.")
-            speakerPower.on()
-            runIn(120, "playDelayedAudioRoom${roomNum}")
+        if (speakerPower) {
+            if (speakerPower.hasCommand("refresh")) {
+                speakerPower.refresh()
+                logInfo("${rName}: Refreshed speaker power plug state.")
+                pauseExecution(1000) 
+            }
+            if (speakerPower.currentValue("switch") == "off") {
+                logInfo("${rName}: Speaker power plug is OFF. Turning ON and waiting 120s before initiating audio play.")
+                speakerPower.on()
+                runIn(120, "playDelayedAudioRoom${roomNum}")
+            } else {
+                executeAudioPlay(roomNum)
+            }
         } else {
             executeAudioPlay(roomNum)
         }
@@ -1332,6 +1388,7 @@ def logInfo(msg) {
 }
 
 def executeNightModeChange() {
+    state.remove("nightModeScheduledTime")
     if (targetNightMode) {
         logInfo("GLOBAL SYNC: Delay complete. Changing mode to ${targetNightMode}.")
         setLocationMode(targetNightMode)
