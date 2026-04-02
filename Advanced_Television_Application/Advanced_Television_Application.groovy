@@ -38,13 +38,14 @@ def mainPage() {
                     }
                
                     def isTrulyOn = isTvActuallyOn(tv, i)
+                
                     def powerState = isTrulyOn ? "ON" : "STANDBY / OFF"
                     def pwrColor = isTrulyOn ? "green" : "red"
                     
                     def currentApp = "Unknown"
                     if (isTrulyOn) {
                         if (settings["isAvrOnly_${i}"]) {
-                            def rawInput = tv.currentValue("mediaInputSource") ?: "Unknown"
+                             def rawInput = tv.currentValue("mediaInputSource") ?: "Unknown"
                             currentApp = getMappedAppName(i, rawInput)
                         } else {
                             currentApp = tv.currentValue("application") ?: "Unknown"
@@ -58,7 +59,7 @@ def mainPage() {
                     if (settings["enableAcousticMgmt_${i}"]) {
                         def activeAcoustics = []
                         def thermo = settings["mainThermostat_${i}"]
-                       
+                        
                         if (thermo) {
                             def tState = thermo.currentValue("thermostatOperatingState")
                             if (tState in ["heating", "cooling", "fan only"]) {
@@ -96,7 +97,7 @@ def mainPage() {
  
                     def watchMins = state.watchTimeToday?."${i}" ?: 0
                     def watchDisplay = "${(watchMins / 60).toInteger()}h ${watchMins % 60}m"
-                    
+               
                     // --- Time Limit Dashboard Extensions ---
                     if (settings["enableTimeLimits_${i}"]) {
                         def maxTv = settings["tvMaxLimitMins_${i}"]
@@ -104,10 +105,10 @@ def mainPage() {
                         def limitText = ""
                         
                         if (maxTv) {
-                            def totalAllowedTv = maxTv + ext
+                             def totalAllowedTv = maxTv + ext
                             def remainTv = totalAllowedTv - watchMins
                             if (remainTv < 0) remainTv = 0
-                            limitText += "<br><span style='color:#e67e22; font-size:11px;'>TV Limit: ${(remainTv/60).toInteger()}h ${remainTv%60}m left</span>"
+                             limitText += "<br><span style='color:#e67e22; font-size:11px;'>TV Limit: ${(remainTv/60).toInteger()}h ${remainTv%60}m left</span>"
                         }
                         
                         def limitedApps = settings["appLimitList_${i}"]
@@ -126,7 +127,7 @@ def mainPage() {
                     def topApp = "None"
                     def topTime = 0
                     if (state.appStats?."${i}") {
-                        state.appStats["${i}"].each { app, time ->
+                         state.appStats["${i}"].each { app, time ->
                             if (time > topTime) {
                                 topApp = app
                                 topTime = time
@@ -267,7 +268,7 @@ def tvPage(params) {
             }
         }
         
-        // --- NEW SECTION: APPLICATION TIME LIMITS ---
+        // --- MODIFIED SECTION: APPLICATION TIME LIMITS ---
         section("Application & TV Time Limits", hideable: true, hidden: true) {
             input "enableTimeLimits_${tNum}", "bool", title: "Enable Time Limits", defaultValue: false, submitOnChange: true, description: "Limit screen time per TV or individual applications."
             if (settings["enableTimeLimits_${tNum}"]) {
@@ -280,7 +281,17 @@ def tvPage(params) {
                     input "appLimitList_${tNum}", "enum", title: "Select Apps to Limit", options: savedAppsList, multiple: true, submitOnChange: true, description: "Choose which specific applications should have limits."
                     if (settings["appLimitList_${tNum}"]) {
                         input "appLimitMins_${tNum}", "number", title: "Time Limit for Selected Apps (Minutes/Day)", required: true
-                        input "appLimitAction_${tNum}", "enum", title: "Action when limit reached", options: ["Turn Off TV", "Return to Home Menu"], defaultValue: "Turn Off TV"
+                        
+                        input "appLimitAction_${tNum}", "enum", title: "Action when limit reached", options: ["Turn Off TV", "Launch Specific App / Menu"], defaultValue: "Turn Off TV", submitOnChange: true
+                        if (settings["appLimitAction_${tNum}"] == "Launch Specific App / Menu") {
+                            input "appLimitTargetMethod_${tNum}", "enum", title: "Launch Method", options: ["setApplication (Launch App)", "keyPress (Remote Button)"], defaultValue: "setApplication (Launch App)", submitOnChange: true
+                            if (settings["appLimitTargetMethod_${tNum}"] == "setApplication (Launch App)") {
+                                input "appLimitTargetApp_${tNum}", "enum", title: "Select Target App", options: savedAppsList, submitOnChange: true, description: "Choose an app from your saved list (e.g., Roku Dynamic Menu)."
+                                input "appLimitCustomApp_${tNum}", "text", title: "OR Custom Target App", required: false, description: "Type the exact app name if it's not in the dropdown list."
+                            } else {
+                                input "appLimitTargetKey_${tNum}", "text", title: "KeyPress Command", required: true, defaultValue: "Home", description: "Standard remote key to press (e.g., Home, Back)."
+                            }
+                        }
                     }
                     
                     input "clearAppsBtn_${tNum}", "button", title: "Clear Entire Saved Apps List", description: "Wipes out all stored applications."
@@ -292,7 +303,17 @@ def tvPage(params) {
                 
                 paragraph "<hr><b>Global TV Limits & Extensions</b>"
                 input "tvMaxLimitMins_${tNum}", "number", title: "Maximum TV Limit (Minutes/Day)", required: false, description: "Global screen time allowed for this television per day."
-                input "tvLimitAction_${tNum}", "enum", title: "Action when TV limit reached", options: ["Turn Off TV", "Return to Home Menu"], defaultValue: "Turn Off TV"
+                
+                input "tvLimitAction_${tNum}", "enum", title: "Action when TV limit reached", options: ["Turn Off TV", "Launch Specific App / Menu"], defaultValue: "Turn Off TV", submitOnChange: true
+                if (settings["tvLimitAction_${tNum}"] == "Launch Specific App / Menu") {
+                    input "tvLimitTargetMethod_${tNum}", "enum", title: "Launch Method", options: ["setApplication (Launch App)", "keyPress (Remote Button)"], defaultValue: "setApplication (Launch App)", submitOnChange: true
+                    if (settings["tvLimitTargetMethod_${tNum}"] == "setApplication (Launch App)") {
+                        input "tvLimitTargetApp_${tNum}", "enum", title: "Select Target App", options: savedAppsList, submitOnChange: true
+                        input "tvLimitCustomApp_${tNum}", "text", title: "OR Custom Target App", required: false
+                    } else {
+                        input "tvLimitTargetKey_${tNum}", "text", title: "KeyPress Command", required: true, defaultValue: "Home"
+                    }
+                }
                 
                 input "extend30mBtn_${tNum}", "button", title: "Extend Time by 30 Minutes", description: "Adds a temporary 30m allowance to today's limits."
                 input "extend1hrBtn_${tNum}", "button", title: "Extend Time by 1 Hour", description: "Adds a temporary 1hr allowance to today's limits."
@@ -671,16 +692,29 @@ def turnOffExtendSwitch(data) {
     }
 }
 
-def enforceLimitAction(i, actionType) {
+def enforceLimitAction(i, limitType) {
     def tv = getPrimaryDevice(i)
     if (!tv) return
     
-    if (actionType == "Return to Home Menu") {
-        addToHistory("${getTvName(i)}: Time Limit Reached. Returning to Home Menu.")
-        if (tv.hasCommand("keyPress")) tv.keyPress("Home")
-        else if (tv.hasCommand("setApplication")) tv.setApplication("Home")
-        else if (tv.hasCommand("home")) tv.home()
-        else issuePowerCommand(i, "off", 1) // Fallback if no home command
+    def actionType = settings["${limitType}Action_${i}"]
+    
+    if (actionType == "Launch Specific App / Menu" || actionType == "Return to Home Menu") {
+        def method = settings["${limitType}TargetMethod_${i}"] ?: "keyPress (Remote Button)"
+        def target = ""
+        
+        if (method == "setApplication (Launch App)") {
+            target = settings["${limitType}CustomApp_${i}"] ?: settings["${limitType}TargetApp_${i}"] ?: "Home"
+            addToHistory("${getTvName(i)}: Time Limit Reached. Launching App [${target}].")
+            if (tv.hasCommand("setApplication")) tv.setApplication(target)
+            else if (tv.hasCommand("home")) tv.home()
+            else issuePowerCommand(i, "off", 1)
+        } else {
+            target = settings["${limitType}TargetKey_${i}"] ?: "Home"
+            addToHistory("${getTvName(i)}: Time Limit Reached. Sending KeyPress [${target}].")
+            if (tv.hasCommand("keyPress")) tv.keyPress(target)
+            else if (tv.hasCommand("home")) tv.home()
+            else issuePowerCommand(i, "off", 1)
+        }
     } else {
         addToHistory("${getTvName(i)}: Time Limit Reached. Powering OFF.")
         issuePowerCommand(i, "off", 1)
@@ -1318,13 +1352,13 @@ def tvPowerEvaluator(evt) {
                                     else bulb.setLevel(targetLevel)
                                     pauseExecution(300)
                                 }
-                             } else {
+                            } else {
                                 addToHistory("${tvName}: Cozy Mode conditions met. Setting accent lights to ${targetLevel}%.")
                                 cozyLights.each { 
                                     it.setLevel(targetLevel)
                                     pauseExecution(300)
                                 }
-                             }
+                            }
                             
                             state.cozyLightsActivatedByTv["${i}"] = true
                         } else {
@@ -1370,13 +1404,13 @@ def tvPowerEvaluator(evt) {
                     def noiseSwitches = settings["tvNoiseSwitches_${i}"]
                     def pausedIds = state.noiseSwitchesPaused["${i}"] ?: []
                     if (noiseSwitches && pausedIds) {
-                         def toRestore = noiseSwitches.findAll { pausedIds.contains(it.id) }
+                        def toRestore = noiseSwitches.findAll { pausedIds.contains(it.id) }
                         if (toRestore) {
                              addToHistory("${tvName}: Restoring background appliances: ${toRestore.join(', ')}")
                              toRestore.each { 
                                 it.on()
                                 pauseExecution(300)
-                             } 
+                            } 
                         }
                          state.noiseSwitchesPaused["${i}"] = []
                     }
@@ -1694,7 +1728,7 @@ def trackUsageStep() {
             if (!state.appStats["${i}"]) state.appStats["${i}"] = [:]
             state.appStats["${i}"][currentApp] = (state.appStats["${i}"][currentApp] ?: 0) + 5
             
-            // --- NEW: Time Limit Tracking ---
+            // --- TIME LIMIT ENFORCEMENT ---
             if (settings["enableTimeLimits_${i}"]) {
                 
                 // Track Unique Apps automatically
@@ -1712,6 +1746,7 @@ def trackUsageStep() {
                 def ext = state.tvTimeExtended?."${i}" ?: 0
                 def totalAllowedTv = maxTv ? (maxTv + ext) : null
                 def limitedApps = settings["appLimitList_${i}"]
+                def limitEnforced = false
                 
                 // Enforce App Limit
                 if (limitedApps && limitedApps.contains(currentApp)) {
@@ -1721,13 +1756,14 @@ def trackUsageStep() {
                     
                     def appLimit = settings["appLimitMins_${i}"]
                     if (appLimit && appMins >= (appLimit + ext)) {
-                        enforceLimitAction(i, settings["appLimitAction_${i}"])
+                        enforceLimitAction(i, "appLimit")
+                        limitEnforced = true
                     }
                 }
                 
-                // Enforce TV Limit
-                if (totalAllowedTv && state.watchTimeToday["${i}"] >= totalAllowedTv) {
-                    enforceLimitAction(i, settings["tvLimitAction_${i}"])
+                // Enforce TV Limit ONLY if an app limit action wasn't just sent
+                if (!limitEnforced && totalAllowedTv && state.watchTimeToday["${i}"] >= totalAllowedTv) {
+                    enforceLimitAction(i, "tvLimit")
                 }
             }
             
@@ -1930,7 +1966,7 @@ def muteActiveTVs() {
     for (int i = 1; i <= (numTVs as Integer); i++) {
         def tv = getPrimaryDevice(i)
         if (isTvActuallyOn(tv, i)) {
-            def audioDevice = getAudioDevice(i)
+             def audioDevice = getAudioDevice(i)
             if (audioDevice.hasCommand("mute")) {
                 audioDevice.mute()
                 pauseExecution(300)
@@ -2009,7 +2045,7 @@ def appButtonHandler(btn) {
     // --- NEW: Time Limit Buttons ---
     } else if (btn?.startsWith("clearAppsBtn_")) {
         def tNum = btn.split("_")[1] as Integer
-        state.savedApps["${tNum}"] = []
+         state.savedApps["${tNum}"] = []
         log.info "Cleared saved apps list for TV ${tNum}"
     } else if (btn?.startsWith("confirmDeleteAppBtn_")) {
         def tNum = btn.split("_")[1] as Integer
@@ -2017,7 +2053,7 @@ def appButtonHandler(btn) {
         if (appToDelete) {
             def saved = state.savedApps["${tNum}"] ?: []
             saved.remove(appToDelete)
-            state.savedApps["${tNum}"] = saved
+             state.savedApps["${tNum}"] = saved
             log.info "Deleted app ${appToDelete} for TV ${tNum}"
         }
     } else if (btn?.startsWith("extend30mBtn_")) {
@@ -2053,7 +2089,7 @@ def stopMorningRoutineTest(i) {
 def testHvacBoost(i, isRunning) {
     def tv = getPrimaryDevice(i)
     if (isTvActuallyOn(tv, i)) {
-        def audioDevice = getAudioDevice(i)
+         def audioDevice = getAudioDevice(i)
         def boostAmount = settings["hvacVolumeBoost_${i}"] ?: 3
         def tvName = getTvName(i)
        
