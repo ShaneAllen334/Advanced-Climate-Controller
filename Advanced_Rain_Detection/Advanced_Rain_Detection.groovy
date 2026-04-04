@@ -495,7 +495,7 @@ def mainPage() {
                 }
                 visualWidgets += "</div>"
                 
-                statusText += visualWidgets  // <--- RESTORED LINE!
+                statusText += visualWidgets
                 
                 statusText += "<div style='margin-top: 15px; padding: 10px; background: #e9e9e9; border-radius: 4px; font-size: 13px; display: flex; flex-wrap: wrap; gap: 15px; border: 1px solid #ccc;'>"
                 
