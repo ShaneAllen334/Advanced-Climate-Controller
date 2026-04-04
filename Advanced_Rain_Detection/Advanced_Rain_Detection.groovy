@@ -24,18 +24,44 @@ def renderChartHTML() {
         return "[" + hist.collect { "{ x: ${it.time}, y: ${it.value} }" }.join(",") + "]"
     }
 
+    // Helper to aggregate raw lightning strikes into hourly buckets for the Bar Graph
+    def buildLightningBars = { hist ->
+        if (!hist || hist.size() == 0) return "[]"
+        def counts = [:]
+        hist.each { entry ->
+            def hourMillis = entry.time - (entry.time % 3600000) // Truncate to the start of the hour
+            counts[hourMillis] = (counts[hourMillis] ?: 0) + 1
+        }
+        return "[" + counts.collect { "{ x: ${it.key}, y: ${it.value} }" }.join(",") + "]"
+    }
+
+    // Fetch primary data arrays
     def tempJs = buildJsArray(state.tempHistory)
     def pressJs = buildJsArray(state.pressureHistory)
     def spreadJs = buildJsArray(state.spreadHistory)
     def probJs = buildJsArray(state.probHistory)
+    
+    // Fetch new kinetic data arrays
+    def windJs = buildJsArray(state.windHistory)
+    def lightJs = buildLightningBars(state.lightningHistory)
+    
+    def windUnit = isMetric() ? "km/h" : "mph"
 
     return """
-    <h4 style="margin:0 0 10px 0; border-bottom:1px solid #ccc; padding-bottom:5px; color:#333;">24-Hour Timeline</h4>
-    <div id="chartWrapper" style="position: relative; height: 350px; width: 100%; background: #fdfdfd; border: 1px solid #eee; border-radius: 4px;">
-        <div id="chartLoadingText" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-family: sans-serif; color: #555; font-weight: bold; font-size: 14px;">
+    <h4 style="margin:0 0 10px 0; border-bottom:1px solid #ccc; padding-bottom:5px; color:#333;">24-Hour Thermodynamic Timeline</h4>
+    <div id="chartWrapper1" style="position: relative; height: 350px; width: 100%; background: #fdfdfd; border: 1px solid #eee; border-radius: 4px; margin-bottom: 20px;">
+        <div id="chartLoadingText1" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-family: sans-serif; color: #555; font-weight: bold; font-size: 14px;">
             Loading chart data...
         </div>
         <canvas id="weatherChart" style="opacity: 0; transition: opacity 0.4s ease-in-out;"></canvas>
+    </div>
+
+    <h4 style="margin:0 0 10px 0; border-bottom:1px solid #ccc; padding-bottom:5px; color:#333;">Wind & Lightning Activity</h4>
+    <div id="chartWrapper2" style="position: relative; height: 250px; width: 100%; background: #fdfdfd; border: 1px solid #eee; border-radius: 4px;">
+        <div id="chartLoadingText2" style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-family: sans-serif; color: #555; font-weight: bold; font-size: 14px;">
+            Loading activity data...
+        </div>
+        <canvas id="windLightChart" style="opacity: 0; transition: opacity 0.4s ease-in-out;"></canvas>
     </div>
     
     <script>
@@ -59,97 +85,82 @@ def renderChartHTML() {
         }
 
         function initChart() {
-            var canvas = document.getElementById('weatherChart');
-            var loading = document.getElementById('chartLoadingText');
+            var canvas1 = document.getElementById('weatherChart');
+            var loading1 = document.getElementById('chartLoadingText1');
+            var canvas2 = document.getElementById('windLightChart');
+            var loading2 = document.getElementById('chartLoadingText2');
             
-            if (!canvas || typeof Chart === 'undefined' || typeof luxon === 'undefined') {
+            if (!canvas1 || !canvas2 || typeof Chart === 'undefined' || typeof luxon === 'undefined') {
                 setTimeout(initChart, 100);
                 return;
             }
             
-            if (window.myWeatherChart) {
-                window.myWeatherChart.destroy();
-            }
+            if (window.myWeatherChart) window.myWeatherChart.destroy();
+            if (window.myWindChart) window.myWindChart.destroy();
             
-            var ctx = canvas.getContext('2d');
-            window.myWeatherChart = new Chart(ctx, {
+            // Chart 1: Thermodynamics
+            var ctx1 = canvas1.getContext('2d');
+            window.myWeatherChart = new Chart(ctx1, {
                 type: 'line',
                 data: {
                     datasets: [
+                        { label: 'Temperature (°)', data: ${tempJs}, borderColor: 'rgb(255, 99, 132)', yAxisID: 'yTemp', tension: 0.3, pointRadius: 0 },
+                        { label: 'Dew Point Spread (°)', data: ${spreadJs}, borderColor: 'rgb(54, 162, 235)', yAxisID: 'yTemp', borderDash: [5, 5], tension: 0.3, pointRadius: 0 },
+                        { label: 'Pressure', data: ${pressJs}, borderColor: 'rgb(75, 192, 192)', yAxisID: 'yPress', tension: 0.3, pointRadius: 0 },
+                        { label: 'Rain Probability (%)', data: ${probJs}, backgroundColor: 'rgba(153, 102, 255, 0.2)', borderColor: 'rgb(153, 102, 255)', yAxisID: 'yProb', fill: true, stepped: true, pointRadius: 0 }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
+                    scales: {
+                        x: { type: 'time', time: { unit: 'hour' }, title: { display: false } },
+                        yTemp: { type: 'linear', display: true, position: 'left', title: { display: true, text: 'Temp / Spread' } },
+                        yPress: { type: 'linear', display: true, position: 'right', title: { display: true, text: 'Pressure' }, grid: { drawOnChartArea: false } },
+                        yProb: { type: 'linear', display: true, position: 'right', min: 0, max: 100, title: { display: true, text: 'Probability %' }, grid: { drawOnChartArea: false } }
+                    }
+                }
+            });
+            
+            // Chart 2: Mixed Graph for Wind & Lightning
+            var ctx2 = canvas2.getContext('2d');
+            window.myWindChart = new Chart(ctx2, {
+                data: {
+                    datasets: [
                         {
-                            label: 'Temperature (°)',
-                            data: ${tempJs},
-                            borderColor: 'rgb(255, 99, 132)',
-                            yAxisID: 'yTemp',
+                            type: 'line',
+                            label: 'Wind Speed (${windUnit})',
+                            data: ${windJs},
+                            borderColor: 'rgb(255, 159, 64)',
+                            backgroundColor: 'rgba(255, 159, 64, 0.2)',
+                            yAxisID: 'yWind',
                             tension: 0.3,
-                            pointRadius: 0
+                            pointRadius: 0,
+                            fill: true
                         },
                         {
-                            label: 'Dew Point Spread (°)',
-                            data: ${spreadJs},
-                            borderColor: 'rgb(54, 162, 235)',
-                            yAxisID: 'yTemp',
-                            borderDash: [5, 5],
-                            tension: 0.3,
-                            pointRadius: 0
-                        },
-                        {
-                            label: 'Pressure',
-                            data: ${pressJs},
-                            borderColor: 'rgb(75, 192, 192)',
-                            yAxisID: 'yPress',
-                            tension: 0.3,
-                            pointRadius: 0
-                        },
-                        {
-                            label: 'Rain Probability (%)',
-                            data: ${probJs},
-                            backgroundColor: 'rgba(153, 102, 255, 0.2)',
-                            borderColor: 'rgb(153, 102, 255)',
-                            yAxisID: 'yProb',
-                            fill: true,
-                            stepped: true,
-                            pointRadius: 0
+                            type: 'bar',
+                            label: 'Lightning Strikes (per hr)',
+                            data: ${lightJs},
+                            backgroundColor: 'rgba(255, 205, 86, 0.8)',
+                            yAxisID: 'yLight',
+                            barThickness: 15
                         }
                     ]
                 },
                 options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    interaction: { mode: 'index', intersect: false },
+                    responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
                     scales: {
-                        x: {
-                            type: 'time',
-                            time: { unit: 'hour' },
-                            title: { display: false }
-                        },
-                        yTemp: {
-                            type: 'linear',
-                            display: true,
-                            position: 'left',
-                            title: { display: true, text: 'Temp / Spread' }
-                        },
-                        yPress: {
-                            type: 'linear',
-                            display: true,
-                            position: 'right',
-                            title: { display: true, text: 'Pressure' },
-                            grid: { drawOnChartArea: false }
-                        },
-                        yProb: {
-                            type: 'linear',
-                            display: true,
-                            position: 'right',
-                            min: 0,
-                            max: 100,
-                            title: { display: true, text: 'Probability %' },
-                            grid: { drawOnChartArea: false }
-                        }
+                        x: { type: 'time', time: { unit: 'hour' }, title: { display: false }, offset: true },
+                        yLight: { type: 'linear', display: true, position: 'left', min: 0, title: { display: true, text: 'Strikes/Hr' }, ticks: { precision: 0 } },
+                        yWind: { type: 'linear', display: true, position: 'right', min: 0, title: { display: true, text: 'Wind (${windUnit})' }, grid: { drawOnChartArea: false } }
                     }
                 }
             });
-            if (loading) loading.style.display = 'none';
-            if (canvas) canvas.style.opacity = '1';
+
+            if (loading1) loading1.style.display = 'none';
+            if (canvas1) canvas1.style.opacity = '1';
+            if (loading2) loading2.style.display = 'none';
+            if (canvas2) canvas2.style.opacity = '1';
         }
 
         loadScript(chartLibs[0], function() {
@@ -484,14 +495,15 @@ def mainPage() {
                 }
                 visualWidgets += "</div>"
                 
-                statusText += visualWidgets
+                statusText += visualWidgets  // <--- RESTORED LINE!
+                
+                statusText += "<div style='margin-top: 15px; padding: 10px; background: #e9e9e9; border-radius: 4px; font-size: 13px; display: flex; flex-wrap: wrap; gap: 15px; border: 1px solid #ccc;'>"
                 
                 // Switch Status
                 def rainSw = switchRaining?.currentValue("switch") == "on" ? "<span style='color:blue; font-weight:bold;'>ON</span>" : "<span style='color:gray;'>OFF</span>"
                 def sprinkSw = switchSprinkling?.currentValue("switch") == "on" ? "<span style='color:blue; font-weight:bold;'>ON</span>" : "<span style='color:gray;'>OFF</span>"
                 def probSw = switchProbable?.currentValue("switch") == "on" ? "<span style='color:orange; font-weight:bold;'>ON</span>" : "<span style='color:gray;'>OFF</span>"
                 
-                statusText += "<div style='margin-top: 15px; padding: 10px; background: #e9e9e9; border-radius: 4px; font-size: 13px; display: flex; flex-wrap: wrap; gap: 15px; border: 1px solid #ccc;'>"
                 statusText += "<div><b>Virtual Switches:</b> Probable Threat: [${probSw}] | Sprinkling: [${sprinkSw}] | Heavy Rain: [${rainSw}]</div>"
                 statusText += "</div>"
 
@@ -761,7 +773,7 @@ def initialize() {
 
 // === UNIT DETECTION HELPER ===
 def isMetric() {
-    return location.temperatureScale == "C"
+    return location?.temperatureScale == "C"
 }
 
 // === OPEN-METEO API INTEGRATION (Smart Offline/Anti-Noise Logic) ===
