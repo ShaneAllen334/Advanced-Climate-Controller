@@ -1,738 +1,604 @@
 /**
- * Advanced Lock Manager
+ * Advanced Mail Monitor
  *
  * Author: ShaneAllen
  */
 definition(
-    name: "Advanced Lock Manager",
+    name: "Advanced Mail Monitor",
     namespace: "ShaneAllen",
     author: "ShaneAllen",
-    description: "Enterprise access control with Ghost Codes, Auto-Locking, Identity Automations, and Predictive Maintenance.",
-    category: "Safety & Security",
+    description: "Advanced mailbox state tracking with historical averages, audio announcements, nag reminders, and live telemetry dashboard.",
+    category: "Convenience",
     iconUrl: "",
     iconX2Url: ""
 )
 
 preferences {
     page(name: "mainPage")
-    page(name: "userPage")
 }
 
 def mainPage() {
-    dynamicPage(name: "mainPage", title: "Advanced Lock Manager", install: true, uninstall: true) {
+    dynamicPage(name: "mainPage", title: "Main Configuration", install: true, uninstall: true) {
         
-        section("Live Access Dashboard") {
-            // TABLE 1: Lock Status
-            def statusText = "<b>Physical Lock Status</b><br><table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc; margin-bottom: 15px;'>"
-            statusText += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Door</th><th style='padding: 8px;'>Current State</th><th style='padding: 8px;'>Last Action</th></tr>"
-            
-            if (masterLocks) {
-                masterLocks.each { lock ->
-                    def lName = lock.displayName
-                    def lState = lock.currentValue("lock")?.toUpperCase() ?: "UNKNOWN"
-                    def stateColor = (lState == "UNLOCKED") ? "red" : (lState == "LOCKED" ? "green" : "black")
-                    
-                    def lastAction = state.lastAction?."${lock.id}" ?: "Awaiting Sync..."
-                    def pendingMsg = ""
-                    
-                    // Countdown Timer Math
-                    if (lState == "UNLOCKED") {
-                        if (state["pendingAutoLock_${lock.id}"]) {
-                            def cSensor = settings["contactSensor_${lock.id}"]
-                            if (cSensor && cSensor.currentValue("contact") == "closed") {
-                                pendingMsg = "<br><span style='color: orange; font-size: 11px;'><i>Locking in < 10s...</i></span>"
-                            } else {
-                                pendingMsg = "<br><span style='color: orange; font-size: 11px;'><i>Awaiting Door Close to Auto-Lock</i></span>"
-                            }
-                        } else {
-                            def epoch = state["autoLockEpoch_${lock.id}"]
-                            def delayMins = settings["autoLockTime_${lock.id}"] ?: 0
-                            if (epoch && delayMins > 0) {
-                                def targetTime = epoch + (delayMins * 60 * 1000)
-                                def diffMs = targetTime - new Date().time
-                  
-                                if (diffMs > 0) {
-                                    def diffMins = Math.floor(diffMs / 60000).toInteger()
-                                    def diffSecs = Math.round((diffMs % 60000) / 1000).toInteger()
-                                    pendingMsg = "<br><span style='color: blue; font-size: 11px;'><i>Auto-Locking in ${diffMins}m ${diffSecs}s</i></span>"
-                                }
-                            }
-                        }
-                    }
-                    
-                    statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${lName}</b></td><td style='padding: 8px; color: ${stateColor}; font-weight: bold;'>${lState}</td><td style='padding: 8px;'>${lastAction}${pendingMsg}</td></tr>"
-                }
-            } else {
-                statusText += "<tr><td colspan='3' style='padding: 8px; color: #888;'>No locks configured.</td></tr>"
-            }
-            statusText += "</table>"
-            
-            // TABLE 2: Hardware Health & Maintenance
-            statusText += "<b>Hardware Health & Maintenance</b><br><table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc; margin-bottom: 15px;'>"
-            statusText += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Door</th><th style='padding: 8px;'>Battery Level</th><th style='padding: 8px;'>Weekly Door Cycles</th><th style='padding: 8px;'>Weekly Lock Cycles</th><th style='padding: 8px;'>Maintenance Status</th></tr>"
-            
-            if (masterLocks) {
-                masterLocks.each { lock ->
-                    def lName = lock.displayName
-                    def battery = lock.currentValue("battery")
-                    def battStr = battery ? "${battery}%" : "N/A"
-                    def battColor = (battery && battery < (settings["lowBatteryThreshold"] ?: 20)) ? "red" : "green"
-                    
-                    def dCycles = state.weeklyDoorCycles?."${lock.id}" ?: 0
-                    def lCycles = state.weeklyLockCycles?."${lock.id}" ?: 0
-                    
-                    def mStatus = "<span style='color: green;'>Healthy</span>"
-                    def highCycles = settings["highCycleWarning"] ?: 50
-                    if (battery && battery < (settings["lowBatteryThreshold"] ?: 20)) {
-                        mStatus = "<span style='color: red; font-weight: bold;'>Replace Battery</span>"
-                    } else if (lCycles >= highCycles) {
-                        mStatus = "<span style='color: orange; font-weight: bold;'>High Wear (Lube Recommended)</span>"
-                    }
-                    
-                    statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${lName}</b></td><td style='padding: 8px; color: ${battColor}; font-weight: bold;'>${battStr}</td><td style='padding: 8px;'>${dCycles} Opens</td><td style='padding: 8px;'>${lCycles} Unlocks</td><td style='padding: 8px;'>${mStatus}</td></tr>"
-                }
-            } else {
-                statusText += "<tr><td colspan='5' style='padding: 8px; color: #888;'>No locks configured.</td></tr>"
-            }
-            statusText += "</table>"
-            
-            // TABLE 3: User Authorization Status
-            statusText += "<b>Dynamic Authorization Engine</b><br><table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc;'>"
-            statusText += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>User Identity</th><th style='padding: 8px;'>Access Rights</th><th style='padding: 8px;'>Lock Programming Status</th></tr>"
-            
-            def userCount = settings["numUsers"] ?: 1
-            if (userCount > 0) {
-                for (int i = 1; i <= (userCount as Integer); i++) {
-                    def uName = settings["userName_${i}"] ?: "User ${i}"
-                    def hasPrimary = settings["userPin_${i}"] ? true : false
-                    def hasGhost = settings["userGhostPin_${i}"] ? true : false
-                    
-                    if (!hasPrimary && !hasGhost) {
-                        statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${uName}</b></td><td style='padding: 8px; color: #888;'>Unconfigured</td><td style='padding: 8px;'>-</td></tr>"
-                        continue
-                    }
-                    
-                    def allowedLocks = settings["userLocks_${i}"]
-                    def lockNames = allowedLocks ? allowedLocks.collect{it.displayName}.join(", ") : "All Locks"
-                    def modes = settings["userModes_${i}"] ? settings["userModes_${i}"].join(", ") : "Always"
-                    def tStart = settings["userStartTime_${i}"] ? new Date().parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", settings["userStartTime_${i}"]).format("h:mm a") : ""
-                    def tEnd = settings["userEndTime_${i}"] ? new Date().parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", settings["userEndTime_${i}"]).format("h:mm a") : ""
-                    def timeStr = (tStart && tEnd) ? "${tStart} - ${tEnd}" : "24/7"
-                    def rightsStr = "<b>Locks:</b> ${lockNames}<br><b>Modes:</b> ${modes}<br><b>Hours:</b> ${timeStr}"
-                    
-                    def progState = state.userProgrammed?."${i}"
-                    def progColor = progState ? "green" : "orange"
-                    def ghostStr = hasGhost ? " + Ghost" : ""
-                    def progText = progState ? "ACTIVE (Primary${ghostStr})" : "SUSPENDED (Codes Removed)"
-                    
-                    statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${uName}</b></td><td style='padding: 8px; font-size: 11px;'>${rightsStr}</td><td style='padding: 8px; color: ${progColor}; font-weight: bold;'>${progText}</td></tr>"
-                }
-            } else {
-                statusText += "<tr><td colspan='3' style='padding: 8px; color: #888;'>No users configured.</td></tr>"
-            }
-            statusText += "</table>"
-            
-            def globalStatus = isSystemPaused() ? "<span style='color: red; font-weight: bold;'>PAUSED (Master Switch Off)</span>" : "<span style='color: green; font-weight: bold;'>ACTIVE</span>"
-            statusText += "<div style='margin-top: 10px; padding: 8px; background: #e9e9e9; border-radius: 4px; font-size: 13px;'><b>System Core:</b> ${globalStatus}</div>"
-
-            paragraph statusText
-        }
-
-        section("Access Audit Log (Last 10 Entries)") {
-            if (atomicState.accessLog && atomicState.accessLog.size() > 0) {
-                def logText = "<table style='width:100%; font-size: 13px; border-collapse: collapse; border: 1px solid #ccc;'>"
-                logText += "<tr style='background-color: #eee; border-bottom: 1px solid #ccc; text-align: left;'><th style='padding: 6px;'>Date & Time</th><th style='padding: 6px;'>Event Details</th></tr>"
+        section("Live System Dashboard") {
+            if (mailSensors && mailSwitch) {
+                def statusText = "<table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc;'>"
+                statusText += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Metric</th><th style='padding: 8px;'>Today</th><th style='padding: 8px;'>Historical Average</th></tr>"
                 
-                atomicState.accessLog.each { entry ->
-                    logText += "<tr style='border-bottom: 1px solid #eee;'><td style='padding: 6px; width: 35%;'>${entry.time}</td><td style='padding: 6px;'>${entry.event}</td></tr>"
-                }
-                logText += "</table>"
-                paragraph logText
-            } else {
-                paragraph "<i>No access events recorded yet.</i>"
-            }
-        }
-        
-        section("Application History") {
-            if (atomicState.historyLog && atomicState.historyLog.size() > 0) {
-                def logText = atomicState.historyLog.join("<br>")
-                paragraph "<div style='font-size: 13px; font-family: monospace; background-color: #f4f4f4; padding: 10px; border-radius: 5px; border: 1px solid #ccc;'>${logText}</div>"
-            }
-        }
-        
-        section("Global Core Settings") {
-            input "masterLocks", "capability.lock", title: "Select Smart Locks to Manage", multiple: true, required: true, submitOnChange: true
-            input "masterEnableSwitch", "capability.switch", title: "Master System Enable Switch", required: false, description: "Pausing this stops the dynamic removal/injection of codes and disables auto-locking."
-            
-            input "syncInterval", "enum", title: "Background Sync Interval", required: true, defaultValue: "15", submitOnChange: true, options: [
-                "5": "Every 5 Minutes (High Hub Load)",
-                "10": "Every 10 Minutes",
-                "15": "Every 15 Minutes (Recommended)",
-                "30": "Every 30 Minutes",
-                "60": "Every 1 Hour",
-                "0": "Manual / Event-Driven Only"
-            ], description: "How often the app double-checks and syncs codes in the background. Note: Codes will still sync instantly if a lock is used or the house mode changes."
-            
-            input "numUsers", "number", title: "Number of Identities/Users to Configure (1-20)", required: true, defaultValue: 1, range: "1..20", submitOnChange: true
-            input "btnForceSync", "button", title: "Force Sync All Locks Now"
-        }
-        
-        if (masterLocks) {
-            section("System Notifications") {
-                paragraph "Get alerted when a lock requires preventative maintenance or a battery swap."
-                input "notifyDevices", "capability.notification", title: "Send notifications to...", multiple: true, required: false
-                input "notifyLowBattery", "bool", title: "Notify on Low Battery", defaultValue: true
-                input "notifyHighWear", "bool", title: "Notify on High Wear (Lube Recommended)", defaultValue: true
-                input "notifyTime", "time", title: "Daily Maintenance Check Time", required: true, defaultValue: "10:00"
-            }
-
-            section("Device Health & Maintenance Thresholds") {
-                paragraph "Smart locks are high-torque devices. Tracking their cycles and battery voltage prevents lockouts. Weekly counters automatically reset every Sunday at midnight."
+                def tDelivery = state.todayDeliveryTime ?: "--:-- --"
+                def tRetrieval = state.todayRetrievalTime ?: "--:-- --"
+                def tWalk = state.lastRetrievalWalkTime ? formatSeconds(state.lastRetrievalWalkTime) : "--"
                 
-                input "lowBatteryThreshold", "number", title: "Critical Battery Threshold (%)", defaultValue: 20, required: true, 
-                    description: "Alkaline batteries experience severe voltage drops below 20%, which can cause the internal motor to stall halfway through throwing the deadbolt."
-                input "highCycleWarning", "number", title: "High Usage Wear Threshold (Cycles per Week)", defaultValue: 50, required: true,
-                    description: "If a deadbolt cycles more than this number of times in a single week, it requires powdered graphite lubrication every 3 months to prevent mechanical stripping."
-                input "btnResetCounters", "button", title: "Clear Maintenance Alerts (Reset Counters)"
-            }
-            
-            section("Life Safety & Emergency Overrides") {
-                paragraph "If smoke or carbon monoxide is detected, all auto-locking routines will be instantly suspended to ensure emergency egress."
-                input "smokeDetectors", "capability.smokeDetector", title: "Smoke Detectors", multiple: true, required: false
-                input "coDetectors", "capability.carbonMonoxideDetector", title: "Carbon Monoxide Detectors", multiple: true, required: false
-            }
+                def avgDel = state.avgDeliveryTime ? minutesToTimeStr(state.avgDeliveryTime) : "--:-- --"
+                def avgRet = state.avgRetrievalTime ? minutesToTimeStr(state.avgRetrievalTime) : "--:-- --"
+                
+                statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>Mail Delivery</b></td><td style='padding: 8px; color: green;'>${tDelivery}</td><td style='padding: 8px;'>${avgDel}</td></tr>"
+                statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>Mail Retrieval</b></td><td style='padding: 8px; color: blue;'>${tRetrieval}</td><td style='padding: 8px;'>${avgRet}</td></tr>"
+                statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>Last Retrieval Trip</b></td><td style='padding: 8px; color: purple;'>${tWalk}</td><td style='padding: 8px;'>--</td></tr>"
+                statusText += "</table>"
+ 
+                def batteryHtml = "<table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc; margin-top: 10px;'>"
+                batteryHtml += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Mailbox Sensor</th><th style='padding: 8px;'>Current State</th><th style='padding: 8px;'>Battery Health</th></tr>"
+         
+                mailSensors.each { sensor ->
+                    def contactState = sensor.currentValue("contact")?.toUpperCase() ?: "UNKNOWN"
+                    def contactColor = (contactState == "OPEN") ? "red" : "green"
+                    
+                    def batt = sensor.currentValue("battery") ?: "N/A"
+                    def battColor = "green"
+                    if (batt != "N/A") {
+                        if (batt.toInteger() <= 15) battColor = "red"
+                        else if (batt.toInteger() <= 50) battColor = "orange"
+                        batt = "${batt}%"
+                    }
+                    batteryHtml += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'>${sensor.displayName}</td><td style='padding: 8px; color: ${contactColor}; font-weight: bold;'>${contactState}</td><td style='padding: 8px; color: ${battColor}; font-weight: bold;'>${batt}</td></tr>"
+                }
+                batteryHtml += "</table>"
+                statusText += batteryHtml
+       
+                if (tempSensor || outsideTempSensor) {
+                    def currentTemp
+                    if (tempSensor) {
+                        currentTemp = tempSensor.currentValue("temperature")
+                    } else {
+                        def outTemp = outsideTempSensor.currentValue("temperature")
+                        currentTemp = outTemp ? (outTemp.toDouble() + (tempOffset ?: 20)) : null
+                    }
+                    
+                    if (currentTemp) {
+                        statusText += "<div style='margin-top: 10px; padding: 10px; background: #fff3e0; border: 1px solid #ffcc80; border-radius: 4px; font-size: 13px; color: #e65100;'><b>Mailbox Internal Temperature:</b> ${currentTemp}° ${outsideTempSensor && !tempSensor ? '(Estimated)' : ''}</div>"
+                    }
+                }
+                
+                def switchState = mailSwitch.currentValue("switch")?.toUpperCase() ?: "UNKNOWN"
+                def switchColor = (switchState == "ON") ? "red" : "green"
+                def indicatorText = (switchState == "ON") ? "MAIL WAITING" : "EMPTY / WAITING FOR DELIVERY"
+                
+                statusText += "<div style='margin-top: 10px; padding: 10px; background: #e9e9e9; border-radius: 4px; font-size: 13px; display: flex; flex-wrap: wrap; gap: 15px; border: 1px solid #ccc;'>"
+                statusText += "<div><b>Indicator Switch:</b> <span style='color: ${switchColor}; font-weight: bold;'>${switchState}</span></div>"
+                statusText += "<div style='border-left: 1px solid #ccc; padding-left: 15px;'><b>Current State:</b> <b>${indicatorText}</b></div>"
+                statusText += "</div>"
 
-            section("Auto-Lock & Door Sensors") {
-                paragraph "Configure automatic locking based on time and physical door state. If the timer expires while the door is open, the app will wait for it to close, then lock it after a 10-second grace period."
-                masterLocks.each { lock ->
-                    input "autoLockTime_${lock.id}", "number", title: "Auto-Lock Timer for ${lock.displayName} (Minutes, 0 to disable)", defaultValue: 0, required: true
-                    input "contactSensor_${lock.id}", "capability.contactSensor", title: "Contact Sensor for ${lock.displayName}", required: false, description: "Highly recommended to prevent the deadbolt from throwing while the door is open. Also used to track weekly door cycles."
-                }
-            }
-            
-            section("Mode-Based Perimeter Lockdown") {
-                paragraph "Automatically secure the perimeter when the house changes mode. (0 = Instant Lock)."
-                for (int i = 1; i <= 3; i++) {
-                    input "autoLockMode_${i}", "mode", title: "Rule ${i}: Trigger Mode", required: false, multiple: false
-                    input "autoLockModeDelay_${i}", "number", title: "Rule ${i}: Delay (Minutes)", defaultValue: 0, required: false
-                }
-            }
-            
-            section("Safety Override (Shower Vulnerability Sync)") {
-                paragraph "Select motion sensors located in your showers. If motion is detected here, the system assumes you are vulnerable and instantly sweeps the house to lock all closed doors."
-                input "showerSensors", "capability.motionSensor", title: "Shower Motion Sensors", multiple: true, required: false
+                paragraph statusText
+                
+                input "btnClearMail", "button", title: "Manually Clear Mail Status & Lights"
+                
+            } else {
+                paragraph "<i>Configure devices below to see live system status.</i>"
             }
         }
-        
-        def userCount = settings["numUsers"] ?: 1
-        if (userCount > 0 && userCount <= 20) {
-            for (int i = 1; i <= (userCount as Integer); i++) {
-                def uName = settings["userName_${i}"] ?: "User ${i}"
-                section("${uName} Configuration") {
-                    href(name: "userHref${i}", page: "userPage", params: [userNum: i], title: "Configure ${uName}")
-                }
-            }
-        }
-    }
-}
-
-def userPage(params) {
-    def uNum = params?.userNum ?: state.currentUser ?: 1
-    state.currentUser = uNum
-    def currentName = settings["userName_${uNum}"] ?: "User ${uNum}"
     
-    dynamicPage(name: "userPage", title: "${currentName} Identity Setup", install: false, uninstall: false, previousPage: "mainPage") {
-        section("Primary Code (Triggers Automations)") {
-            input "userName_${uNum}", "text", title: "User Name (e.g., Dog Walker, Mom)", required: false, defaultValue: "User ${uNum}", submitOnChange: true
-            input "userSlot_${uNum}", "number", title: "Primary Lock Slot Position (1-30)", required: true, description: "The physical memory slot on the lock. MUST be unique."
-            input "userPin_${uNum}", "text", title: "Primary PIN Code (4-8 digits)", required: false
+        section("Application History (Last 20 Events)") {
+            if (state.historyLog && state.historyLog.size() > 0) {
+                def logText = state.historyLog.join("<br>")
+                paragraph "<div style='font-size: 13px; font-family: monospace; background-color: #f4f4f4; padding: 10px; border-radius: 5px; border: 1px solid #ccc;'>${logText}</div>"
+            } else {
+                paragraph "<i>No history available yet. The log will populate as events occur.</i>"
+            }
         }
         
-        section("Ghost Code (Silent Entry / Bypass Automations)") {
-            paragraph "An optional secondary code. Using this code will unlock the door but intentionally skip any mode changes configured below."
-            input "userGhostSlot_${uNum}", "number", title: "Ghost Lock Slot Position (1-30)", required: false, description: "Must be a different slot than the Primary."
-            input "userGhostPin_${uNum}", "text", title: "Ghost PIN Code (4-8 digits)", required: false
+        section("Device Configuration") {
+            input "mailSensors", "capability.contactSensor", title: "Mailbox Door Sensor(s)", multiple: true, required: true
+            input "tempSensor", "capability.temperatureMeasurement", title: "Internal Mailbox Temperature Sensor (Preferred)", required: false
+            input "outsideTempSensor", "capability.temperatureMeasurement", title: "OR Outside Air Temperature Sensor (Fallback)", required: false
+            input "tempOffset", "number", title: "Estimated Mailbox Heat Offset (° added to outside temp)", defaultValue: 20, required: false
+            input "tempThreshold", "number", title: "Temperature Alert Threshold (°)", defaultValue: 90, required: false
+            input "mailSwitch", "capability.switch", title: "Virtual Mail Indicator Switch", required: true
+            input "deliveryLockout", "number", title: "State Change Lockout (Minutes)", defaultValue: 2, required: true
+        }
+
+        section("Delivery Time Restrictions") {
+            input "enableDeliveryWindow", "bool", title: "Restrict Delivery Detection to a Time Window?", defaultValue: false, submitOnChange: true
+            if (enableDeliveryWindow) {
+                paragraph "Only allow 'Mail Delivered' events between these times. This prevents false deliveries when you drop off outgoing mail in the morning or evening."
+                input "deliveryStartTime", "time", title: "Delivery Window Start Time", required: true
+                input "deliveryEndTime", "time", title: "Delivery Window End Time", required: true
+            }
+        }
+
+        section("Home Activity Tracking (Doors & Arrivals)") {
+            paragraph "These sensors are used to calculate your 'Retrieval Trip Time' and are optional. They can also be used to prevent false mail deliveries."
+            input "exteriorDoors", "capability.contactSensor", title: "Exterior Doors (Front, Garage, etc.)", multiple: true, required: false
+            input "arrivalSensors", "capability.presenceSensor", title: "Arrival Sensors (Mobile Phones)", multiple: true, required: false
+            
+            input "enableSecondaryCheck", "bool", title: "Enable False Retrieval Protection? (Requires sensors above)", defaultValue: false, submitOnChange: true
+            if (enableSecondaryCheck) {
+                input "activityTimeWindow", "number", title: "Activity Time Window (Minutes)", defaultValue: 10, required: true
+            }
+        }
+
+        section("Visual Indicators (Colored Lights)") {
+            input "indicatorLight", "capability.colorControl", title: "Standard RGB Lights", required: false, multiple: true
+            
+            input "inovelliSwitches", "capability.pushableButton", title: "Inovelli Red Series Switches", required: false, multiple: true, submitOnChange: true
+            if (inovelliSwitches) {
+                input "inovelliTarget", "enum", title: "Inovelli Target LEDs", required: true, defaultValue: "All", options: [
+                    "All":"All LEDs", "7":"LED 7 (Top)", "6":"LED 6", "5":"LED 5", "4":"LED 4 (Middle)", "3":"LED 3", "2":"LED 2", "1":"LED 1 (Bottom)"
+                ]
+            }
+
+            input "deliveryColor", "enum", title: "Color when Mail is Delivered", required: false, defaultValue: "Green", options: ["Red", "Green", "Blue", "Yellow", "Orange", "Purple", "Pink", "White"]
+            input "lightLevel", "number", title: "Indicator Light Level (%)", defaultValue: 100, required: false, range: "1..100"
+            input "retrievalLightAction", "enum", title: "Action when Mail is Retrieved", required: false, defaultValue: "Turn Off", options: ["Turn Off", "Leave On"]
         }
         
-        section("Physical & Access Restrictions (The Dynamic Gate)") {
-            paragraph "Leave these blank if the user should have 24/7 access to all configured locks."
-            input "userLocks_${uNum}", "capability.lock", title: "Allowed Locks", multiple: true, required: false, description: "Leave blank to allow access to ALL configured locks."
-            input "userModes_${uNum}", "mode", title: "Allowed Modes", multiple: true, required: false
-            input "userStartTime_${uNum}", "time", title: "Start Time", required: false
-            input "userEndTime_${uNum}", "time", title: "End Time", required: false
+        section("Integration & External Overrides") {
+            paragraph "<b>Freeze other applications during delivery</b><br>If you are using shared lights for your mail notification (such as a living room lamp managed by a motion lighting app), those other apps might try to turn the light off while the mail notification is active.<br><br>Select a Virtual Switch here. This app will turn it ON during a delivery. You can use that switch in your other apps to 'freeze' or 'disable' them until the mail is retrieved."
+            input "overrideSwitch", "capability.switch", title: "State Override Switch (Freezes external apps)", required: false
+            
+            paragraph "<b>Yield to Higher Priority Applications</b><br>If another app (like the School Bus sequence) is actively using the lights, select its active switch here. Mail deliveries will be tracked, but the lights will wait to turn on until the priority app is finished."
+            input "priorityYieldSwitch", "capability.switch", title: "Priority Yield Switch (e.g., School Active Switch)", required: false
         }
-        
-        section("Identity-Based Automations (Primary Code Only)") {
-            paragraph "If this specific user unlocks the door using their Primary Code while the house is in one of the 'Trigger Modes', automatically change the house to the 'Target Mode'."
-            input "triggerFromModes_${uNum}", "mode", title: "If the house is currently in these modes (e.g., Good Night)...", multiple: true, required: false
-            input "arrivalTargetMode_${uNum}", "mode", title: "...Change the house to this mode (e.g., Home)", multiple: false, required: false
+
+        section("Audio Announcements & Notifications") {
+            paragraph "<b>Smart Speakers (TTS)</b>"
+            input "ttsSpeakers", "capability.speechSynthesis", title: "Smart Speakers", multiple: true, required: false
+            input "ttsDeliveryText", "text", title: "Delivery Announcement Text", defaultValue: "The mail has arrived"
+            input "ttsRetrievalText", "text", title: "Retrieval Announcement Text", defaultValue: "The mail has been retrieved"
+            
+            paragraph "<b>Zooz Siren & Chime</b>"
+            input "zoozChimes", "capability.chime", title: "Zooz Chime Devices", multiple: true, required: false, submitOnChange: true
+            if (zoozChimes) {
+                input "zoozSoundDelivery", "number", title: "Sound File #: Mail Arrived", required: false
+                input "zoozSoundMore", "number", title: "Sound File #: More Mail Arrived", required: false
+                input "zoozSoundRetrieval", "number", title: "Sound File #: Mail Retrieved", required: false
+            }
+
+            paragraph "<b>Push Notifications</b>"
+            input "pushDevices", "capability.notification", title: "Push Notification Devices", multiple: true, required: false
+            input "sendPushDelivery", "bool", title: "Push on Delivery?", defaultValue: false
+            input "sendPushRetrieval", "bool", title: "Push on Retrieval?", defaultValue: false
+        }
+       
+        section("Security & Nags") {
+            input "securityStartTime", "time", title: "Security Start", required: false
+            input "securityEndTime", "time", title: "Security End", required: false
+            
+            // Single-time Daily Nag
+            input "enableNag", "bool", title: "Enable Single Daily Reminder?", defaultValue: false, submitOnChange: true
+            if (enableNag) {
+                input "nagTime", "time", title: "Time to check", required: true
+                input "nagMessage", "text", title: "Nag Message", defaultValue: "Don't forget the mail!", required: true
+            }
+            
+            paragraph "<hr>"
+            
+            // Hourly Mode-Restricted Nag
+            input "enableHourlyNag", "bool", title: "Enable Hourly Mode-Restricted Reminder?", defaultValue: false, submitOnChange: true
+            if (enableHourlyNag) {
+                paragraph "If the mail is active and the hub is in one of the selected modes, this will run every hour with its own dedicated sound/TTS instead of repeating the 'Mail Arrived' alerts."
+                input "hourlyNagModes", "mode", title: "Only run in these Modes:", multiple: true, required: true
+                input "ttsHourlyText", "text", title: "Hourly Nag TTS Announcement Text", defaultValue: "The mail is still waiting to be retrieved", required: false
+                if (zoozChimes) {
+                    input "zoozSoundHourly", "number", title: "Sound File #: Hourly Nag Reminder", required: false
+                }
+            }
+        }
+
+        section("System Settings") {
+            input "activeModes", "mode", title: "Active Modes", multiple: true, required: false
+            input "btnForceReset", "button", title: "Reset Historical Averages & Logs"
         }
     }
 }
 
-def installed() {
-    log.info "Advanced Lock Manager Installed."
-    initialize()
-}
-
-def updated() {
-    log.info "Advanced Lock Manager Updated."
-    unsubscribe()
-    unschedule()
-    initialize()
-}
+def installed() { initialize() }
+def updated() { unsubscribe(); unschedule(); initialize() }
 
 def initialize() {
-    atomicState.historyLog = atomicState.historyLog ?: []
-    atomicState.accessLog = atomicState.accessLog ?: []
+    state.historyLog = state.historyLog ?: []
+    subscribe(mailSensors, "contact.open", sensorOpenHandler)
     
-    state.lastAction = state.lastAction ?: [:]
-    state.userProgrammed = state.userProgrammed ?: [:]
+    if (tempSensor) {
+        subscribe(tempSensor, "temperature", tempHandler)
+    } else if (outsideTempSensor) {
+        subscribe(outsideTempSensor, "temperature", tempHandler)
+    }
     
-    // Setup Weekly Counters
-    state.weeklyDoorCycles = state.weeklyDoorCycles ?: [:]
-    state.weeklyLockCycles = state.weeklyLockCycles ?: [:]
+    if (exteriorDoors) subscribe(exteriorDoors, "contact.open", homeActivityHandler)
+    if (arrivalSensors) subscribe(arrivalSensors, "presence.present", homeActivityHandler)
+    if (priorityYieldSwitch) subscribe(priorityYieldSwitch, "switch", priorityYieldHandler)
     
-    if (masterLocks) {
-        subscribe(masterLocks, "lock", lockHandler)
-        
-        masterLocks.each { lock ->
-            def cSensor = settings["contactSensor_${lock.id}"]
-            if (cSensor) {
-                subscribe(cSensor, "contact", contactHandler)
+    if (inovelliSwitches) subscribe(inovelliSwitches, "switch.off", inovelliMailSwitchOffHandler)
+    
+    schedule("0 0 0 * * ?", "midnightReset")
+ 
+    if (enableNag && nagTime) schedule(nagTime, "nagHandler")
+    
+    if (enableHourlyNag) runEvery1Hour("hourlyNagHandler")
+}
+
+def inovelliMailSwitchOffHandler(evt) {
+    if (mailSwitch && mailSwitch.currentValue("switch") == "on") {
+        log.info "Switch '${evt.device.displayName}' turned off, but Mail is still waiting. Re-applying Mail LED indicator."
+        setLightColor([evt.device], deliveryColor, lightLevel ?: 100, inovelliTarget ?: "All")
+    }
+}
+
+def priorityYieldHandler(evt) {
+    if (evt.value == "off") {
+        if (mailSwitch.currentValue("switch") == "on") {
+            log.info "Priority sequence ended. Mail is waiting. Activating indicators."
+            addToHistory("RESUMING: Priority ended. Turning on mail lights.")
+            
+            if (indicatorLight) captureLightState(indicatorLight)
+            
+            if (overrideSwitch && overrideSwitch.currentValue("switch") != "on") {
+                overrideSwitch.on()
             }
-            state["pendingAutoLock_${lock.id}"] = false
+            
+            if (indicatorLight) setLightColor(indicatorLight, deliveryColor, lightLevel ?: 100, "All")
+            if (inovelliSwitches) setLightColor(inovelliSwitches, deliveryColor, lightLevel ?: 100, inovelliTarget ?: "All")
         }
     }
-    
-    subscribe(location, "mode", modeChangeHandler)
-    
-    if (showerSensors) {
-        subscribe(showerSensors, "motion.active", showerMotionHandler)
-    }
-
-    if (smokeDetectors) {
-        subscribe(smokeDetectors, "smoke", emergencyAlarmHandler)
-    }
-    
-    if (coDetectors) {
-        subscribe(coDetectors, "carbonMonoxide", emergencyAlarmHandler)
-    }
-    
-    // Scheduled Events
-    schedule("0 0 0 ? * SUN", resetWeeklyCounters) // Reset counters Sunday at midnight
-    
-    if (settings["notifyTime"]) {
-        schedule(settings["notifyTime"], dailyMaintenanceCheck)
-    } else {
-        schedule("0 0 10 ? * *", dailyMaintenanceCheck) // Default to 10:00 AM
-    }
-    
-    // Apply User Selected Sync Interval
-    def interval = settings["syncInterval"] ?: "15"
-    if (interval != "0") {
-        if (interval == "60") {
-            schedule("0 0 * * * ?", evaluateSchedules) // Hourly
-        } else {
-            schedule("0 0/${interval} * * * ?", evaluateSchedules)
-        }
-    }
-    
-    // Ensure we force sync all codes whenever the app is updated/saved
-    runIn(5, "forceSyncSchedules")
 }
 
-def forceSyncSchedules() {
-    evaluateSchedules(true)
-}
-
-// --- UTILITY: LOGGER ---
-def addToHistory(String msg) {
-    def currentLog = atomicState.historyLog ?: []
-    def timestamp = new Date().format("MM/dd HH:mm:ss", location.timeZone)
-    currentLog.add(0, "<b>[${timestamp}]</b> ${msg}")
-    if (currentLog.size() > 20) currentLog = currentLog.take(20)
-    atomicState.historyLog = currentLog
-    
-    log.info "HISTORY: " + msg.replaceAll("\\<.*?\\>", "")
-}
-
-def addToAccessLog(String msg) {
-    def currentLog = atomicState.accessLog ?: []
-    def timestamp = new Date().format("MM/dd hh:mm a", location.timeZone)
-    def entry = [time: timestamp, event: msg]
-    currentLog.add(0, entry)
-    if (currentLog.size() > 10) currentLog = currentLog.take(10)
-    atomicState.accessLog = currentLog
-}
-
-def isSystemPaused() {
-    return (masterEnableSwitch && masterEnableSwitch.currentValue("switch") == "off")
-}
-
-def isEmergencyActive() {
-    def emergency = false
-    if (smokeDetectors?.find { it.currentValue("smoke") != "clear" }) emergency = true
-    if (coDetectors?.find { it.currentValue("carbonMonoxide") != "clear" }) emergency = true
-    return emergency
-}
-
-// --- EMERGENCY HANDLER ---
-def emergencyAlarmHandler(evt) {
-    if (evt.value != "clear") {
-        addToHistory("EMERGENCY: ${evt.device.displayName} detected ${evt.name}! Suspending all auto-lock operations.")
-        // Immediately invalidate any pending lock routines
-        if (masterLocks) {
-            masterLocks.each { lock ->
-                state["pendingAutoLock_${lock.id}"] = false
-                state["autoLockEpoch_${lock.id}"] = new Date().time 
-            }
-        }
-    } else {
-        addToHistory("SAFETY: ${evt.device.displayName} is now clear.")
-    }
-}
-
-// --- MAINTENANCE & RESET ---
-def resetWeeklyCounters() {
-    addToHistory("MAINTENANCE: Weekly cycle counters have been reset to zero.")
-    state.weeklyDoorCycles = [:]
-    state.weeklyLockCycles = [:]
-}
-
-def dailyMaintenanceCheck() {
-    if (!masterLocks) return
-    
-    def notifyList = []
-    
-    masterLocks.each { lock ->
-        def battery = lock.currentValue("battery")
-        def lowBattThresh = settings["lowBatteryThreshold"] ?: 20
-        if (battery && battery < lowBattThresh && settings["notifyLowBattery"]) {
-            notifyList << "${lock.displayName} battery is critically low (${battery}%)."
-        }
-        
-        def lCycles = state.weeklyLockCycles?."${lock.id}" ?: 0
-        def highCycles = settings["highCycleWarning"] ?: 50
-        if (lCycles >= highCycles && settings["notifyHighWear"]) {
-            notifyList << "${lock.displayName} has high wear (${lCycles} cycles). Lube recommended."
-        }
-    }
-    
-    if (notifyList.size() > 0 && settings["notifyDevices"]) {
-        def msg = "Lock Manager Maintenance Alert:\n" + notifyList.join("\n")
-        settings["notifyDevices"].each { it.deviceNotification(msg) }
-        addToHistory("NOTIFICATIONS: Sent daily maintenance alerts.")
-    }
-}
-
-// --- BUTTON HANDLER ---
 def appButtonHandler(btn) {
-    if (btn == "btnForceSync") {
-        addToHistory("SYSTEM: Manual Force Sync triggered.")
-        evaluateSchedules(true)
-    } else if (btn == "btnResetCounters") {
-        addToHistory("SYSTEM: Manual counter reset triggered. Clearing maintenance alerts.")
-        resetWeeklyCounters()
-    }
-}
-
-// --- SAFETY OVERRIDE HANDLER (Motion Based) ---
-def showerMotionHandler(evt) {
-    if (isSystemPaused() || !masterLocks) return
-    
-    if (isEmergencyActive()) {
-        addToHistory("SAFETY OVERRIDE ABORTED: Life Safety Emergency is active.")
-        return
-    }
-
-    def sensorName = evt.device.displayName
-    addToHistory("SAFETY OVERRIDE: Motion detected at ${sensorName}. Securing perimeter.")
-    
-    masterLocks.each { lock ->
-        if (lock.currentValue("lock") == "unlocked") {
-            def cSensor = settings["contactSensor_${lock.id}"]
-            def isClosed = cSensor ? (cSensor.currentValue("contact") == "closed") : true
-            
-            if (isClosed) {
-                addToHistory("SAFETY: ${lock.displayName} was unlocked and closed. Locking immediately.")
-                lock.lock()
-                state["pendingAutoLock_${lock.id}"] = false
-            } else {
-                addToHistory("SAFETY ALERT: Cannot secure ${lock.displayName} because it is OPEN. Queuing auto-lock.")
-                state["pendingAutoLock_${lock.id}"] = true
-            }
+    if (btn == "btnClearMail") {
+        log.info "Manually clearing mail status..."
+        if (mailSwitch) mailSwitch.off()
+      
+        if (indicatorLight) {
+            if (retrievalLightAction == "Turn Off") restoreLightState(indicatorLight)
         }
-    }
-}
-
-// --- DOOR SENSOR HANDLER (The Frame-Smash Protector & Cycle Tracker) ---
-def contactHandler(evt) {
-    if (isSystemPaused()) return
-    
-    def sensorId = evt.device.id
-    def isClosed = (evt.value == "closed")
-    
-    masterLocks.each { lock ->
-        def cSensor = settings["contactSensor_${lock.id}"]
-        if (cSensor && cSensor.id == sensorId) {
-            
-            if (isClosed) {
-                if (state["pendingAutoLock_${lock.id}"]) {
-                    if (isEmergencyActive()) {
-                        addToHistory("SECURITY: Auto-Lock queue aborted for ${lock.displayName} due to Life Safety Emergency.")
-                        state["pendingAutoLock_${lock.id}"] = false
-                        return
-                    }
-                    addToHistory("SECURITY: ${lock.displayName} closed. Executing Auto-Lock in 10 seconds.")
-                    def epoch = new Date().time
-                    state["autoLockEpoch_${lock.id}"] = epoch
-                    runIn(10, "executeFinalAutoLock", [data: [lockId: lock.id, epoch: epoch], overwrite: false])
-                }
-            } else {
-                // Tracking Door Open Cycles
-                if (!state.weeklyDoorCycles) state.weeklyDoorCycles = [:]
-                state.weeklyDoorCycles["${lock.id}"] = (state.weeklyDoorCycles["${lock.id}"] ?: 0) + 1
-                
-                // If door opens during the 10-second grace period, cancel the lock command
-                if (state["pendingAutoLock_${lock.id}"]) {
-                    state["autoLockEpoch_${lock.id}"] = new Date().time // Invalidate old timers
-                    addToHistory("SECURITY: ${lock.displayName} reopened during 10s grace period. Auto-Lock suspended.")
-                }
-            }
-        }
-    }
-}
-
-def executeFinalAutoLock(data) {
-    def lockId = data.lockId
-    if (state["autoLockEpoch_${lockId}"] != data.epoch || isSystemPaused()) return
-    
-    def lock = masterLocks.find { it.id == lockId }
-    
-    if (isEmergencyActive()) {
-        addToHistory("SECURITY: Auto-Lock aborted for ${lock?.displayName} due to active Life Safety Emergency!")
-        state["pendingAutoLock_${lockId}"] = false
-        return
-    }
-
-    if (lock && lock.currentValue("lock") == "unlocked") {
-        addToHistory("SECURITY: Executing delayed Auto-Lock for ${lock.displayName}.")
-        lock.lock()
-        state["pendingAutoLock_${lockId}"] = false
-    }
-}
-
-// --- LOCK EVENT HANDLER (The Auditor & Trigger) ---
-def lockHandler(evt) {
-    def lockId = evt.device.id
-    def lockName = evt.device.displayName
-    def action = evt.value 
-    def desc = evt.descriptionText ?: ""
-    
-    def logMsg = ""
-    def codeName = ""
-    
-    if (action == "unlocked") {
-        // Track Lock Cycle
-        if (!state.weeklyLockCycles) state.weeklyLockCycles = [:]
-        state.weeklyLockCycles["${lockId}"] = (state.weeklyLockCycles["${lockId}"] ?: 0) + 1
-        
-        // Parse ID from payload
-        if (evt.data) {
-            try {
-                def dataMap = parseJson(evt.data)
-                if (dataMap?.codeName) codeName = dataMap.codeName
-            } catch (e) { }
-        } 
-        // Fallback string parsing
-        if (!codeName && desc.contains("unlocked by")) {
-            codeName = desc.split("unlocked by ")[1]?.trim()
-        }
-        
-        if (codeName) {
-            def isGhost = codeName.endsWith("(Ghost)")
-            logMsg = "Unlocked by <b>${codeName}</b>"
-            
-            if (isGhost) {
-                addToAccessLog("箔 ${lockName} unlocked silently by <b>${codeName}</b>")
-                addToHistory("ACCESS: ${lockName} unlocked by ${codeName}. Bypassing automations.")
-            } else {
-                addToAccessLog("箔 ${lockName} unlocked by <b>${codeName}</b>")
-                addToHistory("ACCESS: ${lockName} unlocked by ${codeName}.")
-            }
-            processIdentityAutomation(codeName)
-        } else {
-            logMsg = "Unlocked (Manual/Thumbturn)"
-            addToAccessLog("箔 ${lockName} unlocked manually.")
-            addToHistory("ACCESS: ${lockName} unlocked manually.")
-        }
-        
-        // --- AUTO-LOCK TRIGGER ---
-        def delayMins = settings["autoLockTime_${lockId}"] ?: 0
-        if (delayMins > 0) {
-            def epoch = new Date().time
-            state["autoLockEpoch_${lockId}"] = epoch
-            addToHistory("SECURITY: Auto-Lock timer started for ${lockName} (${delayMins} min).")
-            runIn(delayMins * 60, "evaluateAutoLock", [data: [lockId: lockId, epoch: epoch], overwrite: false])
-        }
-        
-    } else if (action == "locked") {
-        logMsg = "Locked"
-        addToAccessLog("白 ${lockName} was locked.")
-        
-        // Destroy any running auto-lock timers for this specific door
-        state["autoLockEpoch_${lockId}"] = new Date().time 
-        state["pendingAutoLock_${lockId}"] = false
-    }
-    
-    state.lastAction["${lockId}"] = logMsg
-}
-
-def evaluateAutoLock(data) {
-    def lockId = data.lockId
-    if (state["autoLockEpoch_${lockId}"] != data.epoch || isSystemPaused()) return
-    
-    def lock = masterLocks.find { it.id == lockId }
-    if (!lock || lock.currentValue("lock") != "unlocked") return
-
-    if (isEmergencyActive()) {
-        addToHistory("SECURITY: Auto-Lock aborted for ${lock.displayName} due to active Life Safety Emergency!")
-        state["pendingAutoLock_${lockId}"] = false
-        return
-    }
-    
-    def cSensor = settings["contactSensor_${lockId}"]
-    // If no sensor is configured, we assume the door is closed and blindly throw the deadbolt
-    def isClosed = cSensor ? (cSensor.currentValue("contact") == "closed") : true 
-    
-    if (isClosed) {
-        addToHistory("SECURITY: Auto-Lock timer expired. Door is closed. Locking ${lock.displayName}.")
-        lock.lock()
-        state["pendingAutoLock_${lockId}"] = false
-    } else {
-        addToHistory("SECURITY: Auto-Lock timer expired, but ${lock.displayName} is OPEN. Suspending lock command.")
-        state["pendingAutoLock_${lockId}"] = true
-    }
-}
-
-// --- IDENTITY AUTOMATION ENGINE ---
-def processIdentityAutomation(String unlockedByName) {
-    if (isSystemPaused()) return
-    if (unlockedByName.endsWith("(Ghost)")) return 
-    
-    def currentMode = location.mode
-    def userCount = settings["numUsers"] ?: 1
-    
-    for (int i = 1; i <= (userCount as Integer); i++) {
-        def configName = settings["userName_${i}"]
-        
-        if (configName && configName.equalsIgnoreCase(unlockedByName)) {
-            def tModes = settings["triggerFromModes_${i}"]
-            def targetMode = settings["arrivalTargetMode_${i}"]
-            
-            if (tModes && targetMode && tModes.contains(currentMode)) {
-                addToHistory("IDENTITY TRIGGER: ${configName} arrived. Changing mode from ${currentMode} to ${targetMode}.")
-                setLocationMode(targetMode)
-            }
-            return
-        }
-    }
-}
-
-// --- DYNAMIC CODE INJECTION ENGINE ---
-def modeChangeHandler(evt) {
-    def currentMode = evt.value
-    addToHistory("SYSTEM: Hub mode changed to ${currentMode}. Re-evaluating access schedules.")
-    
-    // Evaluate if this mode change triggers a Perimeter Lockdown
-    if (masterLocks && !isSystemPaused()) {
-        for (int i = 1; i <= 3; i++) {
-            def targetMode = settings["autoLockMode_${i}"]
-            if (targetMode && targetMode == currentMode) {
-                def delayMins = settings["autoLockModeDelay_${i}"] ?: 0
-                addToHistory("SECURITY: Mode Lockdown triggered. Securing perimeter in ${delayMins} minutes.")
-                
-                masterLocks.each { lock ->
-                    if (lock.currentValue("lock") == "unlocked") {
-                        def epoch = new Date().time
-                        state["autoLockEpoch_${lock.id}"] = epoch
-                        
-                        if (delayMins > 0) {
-                            runIn(delayMins * 60, "evaluateAutoLock", [data: [lockId: lock.id, epoch: epoch], overwrite: false])
-                        } else {
-                            // Run instantly
-                            evaluateAutoLock([lockId: lock.id, epoch: epoch])
-                        }
-                    }
-                }
-            }
-        }
-    }
-    
-    evaluateSchedules()
-}
-
-def evaluateSchedules(forceSync = false) {
-    if (isSystemPaused() || !masterLocks) return
-    
-    def userCount = settings["numUsers"] ?: 1
-    for (int i = 1; i <= (userCount as Integer); i++) {
-        def uName = settings["userName_${i}"]
-        
-        def pSlot = settings["userSlot_${i}"]
-        def pPin = settings["userPin_${i}"]
-        
-        def gSlot = settings["userGhostSlot_${i}"]
-        def gPin = settings["userGhostPin_${i}"]
-        
-        if (!uName) continue
-        
-        def isAllowed = true
-        
-        // 1. Check Mode Restrictions
-        def allowedModes = settings["userModes_${i}"]
-        if (allowedModes && !allowedModes.contains(location.mode)) {
-            isAllowed = false
-        }
-        
-        // 2. Check Time Restrictions
-        def tStart = settings["userStartTime_${i}"]
-        def tEnd = settings["userEndTime_${i}"]
-        if (isAllowed && tStart && tEnd) {
-            def between = timeOfDayIsBetween(tStart, tEnd, new Date(), location.timeZone)
-            if (!between) {
-                isAllowed = false
-            }
-        }
-        
-        // 3. Inject or Remove the Codes
-        def currentlyProgrammed = state.userProgrammed["${i}"] ?: false
-        
-        if (isAllowed && (!currentlyProgrammed || forceSync)) {
-            addToHistory("SECURITY: Access granted for ${uName}. Synchronizing Locks.")
-            masterLocks.each { lock ->
-                def allowedLocks = settings["userLocks_${i}"]
-                def allowedIds = allowedLocks?.collect { it.id }
-                def lockPermitted = (!allowedIds || allowedIds.contains(lock.id))
-                
-                if (lockPermitted) {
-                    if (pSlot && pPin && lock.hasCommand("setCode")) lock.setCode(pSlot, pPin, uName)
-                    if (gSlot && gPin && lock.hasCommand("setCode")) lock.setCode(gSlot, gPin, "${uName} (Ghost)")
+        if (inovelliSwitches) {
+            inovelliSwitches.each { device -> 
+                def target = inovelliTarget ?: "All"
+                if (target == "All") {
+                    if (device.hasCommand("ledEffectAll")) device.ledEffectAll(255, 0, 0, 0)
                 } else {
-                    if (pSlot && lock.hasCommand("deleteCode")) lock.deleteCode(pSlot)
-                    if (gSlot && lock.hasCommand("deleteCode")) lock.deleteCode(gSlot)
+                    if (device.hasCommand("ledEffectOne")) device.ledEffectOne(target, 255, 0, 0, 0)
                 }
             }
-            state.userProgrammed["${i}"] = true
-        } 
-        else if (!isAllowed && (currentlyProgrammed || forceSync)) {
-            addToHistory("SECURITY: Access revoked for ${uName}. Deleting PIN(s).")
-            masterLocks.each { lock ->
-                if (pSlot && lock.hasCommand("deleteCode")) lock.deleteCode(pSlot)
-                if (gSlot && lock.hasCommand("deleteCode")) lock.deleteCode(gSlot)
-            }
-            state.userProgrammed["${i}"] = false
         }
+        if (overrideSwitch) overrideSwitch.off()
+        state.lastValidStateChange = new Date().time 
+        addToHistory("MANUAL CLEAR: System reset via app dashboard.")
+        
+    } else if (btn == "btnForceReset") {
+        log.info "Resetting historical data..."
+        state.historyLog = []
+        state.avgDeliveryTime = null
+        state.avgRetrievalTime = null
+        state.deliveryCount = 0
+        state.retrievalCount = 0
+        state.todayDeliveryTime = null
+        state.todayRetrievalTime = null
+        state.lastRetrievalWalkTime = null
+        addToHistory("SYSTEM WIPE: Historical data reset.")
+    }
+}
+
+def homeActivityHandler(evt) { state.lastHomeActivity = new Date().time }
+
+def sensorOpenHandler(evt) {
+    def now = new Date().time
+    def switchState = mailSwitch.currentValue("switch")
+    def tz = location.timeZone ?: TimeZone.getDefault()
+    
+    // 1. HARD LOCKOUT CHECK FIRST
+    def lastStateChange = state.lastValidStateChange ?: 0
+    def lockoutMillis = (deliveryLockout != null ? deliveryLockout.toInteger() : 2) * 60000
+    
+    if ((now - lastStateChange) < lockoutMillis) {
+        log.debug "Ignored: Sensor opened during the ${deliveryLockout} minute lockout window."
+        return
+    }
+
+    // 2. DELIVERY WINDOW RESTRICTION CHECK
+    if (switchState != "on" && enableDeliveryWindow && deliveryStartTime && deliveryEndTime) {
+        def isWithinWindow = timeOfDayIsBetween(deliveryStartTime, deliveryEndTime, new Date(), tz)
+        if (!isWithinWindow) {
+            log.info "Mailbox opened outside delivery window. Ignoring delivery event."
+            addToHistory("IGNORED: Opened outside of delivery window.")
+            return 
+        }
+    }
+
+    // 3. CONCURRENCY DEBOUNCE LAST (Only updates if event is valid)
+    def lastEvt = atomicState.lastSensorEvent ?: 0
+    if ((now - lastEvt) < 5000) return 
+    atomicState.lastSensorEvent = now
+
+    // --- PAST ALL GATES: PROCESS THE EVENT ---
+    def currentTimeStr = new Date().format("h:mm a", tz)
+    def currentMinutes = getMinutesSinceMidnight(new Date(), tz)
+
+    if (switchState == "on") {
+        // --- MAIL RETRIEVAL LOGIC ---
+        if (enableSecondaryCheck && (exteriorDoors || arrivalSensors)) {
+            def lastActivity = state.lastHomeActivity ?: 0
+            def window = (activityTimeWindow ?: 10) * 60000
+            
+            if ((now - lastActivity) > window) {
+                state.lastValidStateChange = now
+                
+                if (sendPushDelivery) sendMessage("📫 More mail was delivered!")
+                
+                if (settings.zoozChimes && settings.zoozSoundMore != null) {
+                    playZoozChime(settings.zoozSoundMore)
+                }
+                
+                addToHistory("SECONDARY DELIVERY: No home activity detected.")
+                return
+            }
+        }
+
+        def tripTimeStr = ""
+        if ((exteriorDoors || arrivalSensors) && state.lastHomeActivity) {
+            def timeDiff = now - state.lastHomeActivity
+            if (timeDiff <= 900000) { 
+                def totalSecs = Math.round(timeDiff / 1000).toInteger()
+                state.lastRetrievalWalkTime = totalSecs
+                tripTimeStr = " (Trip Time: ${formatSeconds(totalSecs)})"
+            }
+        }
+
+        mailSwitch.off()
+        state.lastValidStateChange = now
+        state.todayRetrievalTime = currentTimeStr
+        updateAverage("retrieval", currentMinutes)
+        addToHistory("RETRIEVAL DETECTED.${tripTimeStr}")
+  
+        if (retrievalLightAction == "Turn Off") {
+            if (indicatorLight) restoreLightState(indicatorLight)
+            if (inovelliSwitches) {
+                inovelliSwitches.each { device -> 
+                    def target = inovelliTarget ?: "All"
+                    if (target == "All") {
+                        if (device.hasCommand("ledEffectAll")) device.ledEffectAll(255, 0, 0, 0)
+                    } else {
+                        if (device.hasCommand("ledEffectOne")) device.ledEffectOne(target, 255, 0, 0, 0)
+                    }
+                }
+            }
+        }
+        
+        if (overrideSwitch) overrideSwitch.off()
+  
+        if (sendPushRetrieval) sendMessage("📬 Mail retrieved!")
+        if (ttsSpeakers && ttsRetrievalText) ttsSpeakers.speak(ttsRetrievalText)
+        if (settings.zoozChimes && settings.zoozSoundRetrieval != null) {
+            playZoozChime(settings.zoozSoundRetrieval)
+        }
+ 
+    } else {
+        // --- MAIL DELIVERY LOGIC ---
+        mailSwitch.on()
+        
+        state.lastValidStateChange = now
+        state.todayDeliveryTime = currentTimeStr
+        updateAverage("delivery", currentMinutes)
+        addToHistory("DELIVERY DETECTED.")
+        
+        if (sendPushDelivery) sendMessage("📫 Mail delivered!")
+        if (ttsSpeakers && ttsDeliveryText) ttsSpeakers.speak(ttsDeliveryText)
+        
+        if (settings.zoozChimes && settings.zoozSoundDelivery != null) {
+            playZoozChime(settings.zoozSoundDelivery)
+        }
+
+        if (priorityYieldSwitch && priorityYieldSwitch.currentValue("switch") == "on") {
+            addToHistory("YIELD: Priority sequence active. Delaying lights.")
+            return 
+        }
+        
+        if (indicatorLight) captureLightState(indicatorLight)
+ 
+        if (overrideSwitch && overrideSwitch.currentValue("switch") != "on") {
+            overrideSwitch.on()
+        }
+        
+        if (indicatorLight) setLightColor(indicatorLight, deliveryColor, lightLevel ?: 100, "All")
+        if (inovelliSwitches) setLightColor(inovelliSwitches, deliveryColor, lightLevel ?: 100, inovelliTarget ?: "All")
+    }
+}
+
+// === STATE CAPTURE ENGINE ---
+def captureLightState(devices) {
+    if (!state.savedLightStates) state.savedLightStates = [:]
+    
+    devices.each { dev ->
+        state.savedLightStates[dev.id] = [
+            switch: dev.currentValue("switch"),
+            hue: dev.currentValue("hue"),
+            saturation: dev.currentValue("saturation"),
+            level: dev.currentValue("level"),
+            colorTemperature: dev.currentValue("colorTemperature")
+        ]
+        log.info "Captured previous state for ${dev.displayName}: ${state.savedLightStates[dev.id]}"
+    }
+}
+
+def restoreLightState(devices) {
+    if (!state.savedLightStates) return
+    
+    devices.each { dev ->
+        def saved = state.savedLightStates[dev.id]
+        if (saved) {
+            if (saved.switch == "on") {
+                if (saved.colorTemperature) {
+                    dev.setColorTemperature(saved.colorTemperature, saved.level)
+                } else if (saved.hue != null && saved.saturation != null) {
+                    dev.setColor([hue: saved.hue, saturation: saved.saturation, level: saved.level])
+                } else {
+                    dev.on()
+                    if (saved.level) dev.setLevel(saved.level)
+                }
+                log.info "Restored ${dev.displayName} to ON state."
+            } else {
+                dev.off()
+                log.info "Restored ${dev.displayName} to OFF state."
+            }
+        } else {
+            dev.off() 
+        }
+    }
+    state.savedLightStates = [:] 
+}
+
+def setLightColor(devices, colorName, level, target = "All") {
+    def inovelliHue = 0 
+    def standardHue = 0
+    def standardSat = 100
+    
+    switch(colorName) {
+        case "White": inovelliHue = 255; standardSat = 0; break 
+        case "Red": inovelliHue = 0; standardHue = 0; break 
+        case "Green": inovelliHue = 85; standardHue = 33; break 
+        case "Blue": inovelliHue = 170; standardHue = 66; break 
+        case "Yellow": inovelliHue = 42; standardHue = 16; break 
+        case "Orange": inovelliHue = 14; standardHue = 10; break 
+        case "Purple": inovelliHue = 191; standardHue = 75; break 
+        case "Pink": inovelliHue = 234; standardHue = 83; break 
+    }
+    
+    devices.each { device -> 
+        if (device.hasCommand("ledEffectAll") || device.hasCommand("ledEffectOne")) {
+            if (target == "All") {
+                if (device.hasCommand("ledEffectAll")) device.ledEffectAll(1, inovelliHue, level as Integer, 255) 
+            } else {
+                if (device.hasCommand("ledEffectOne")) device.ledEffectOne(target, 1, inovelliHue, level as Integer, 255)
+            }
+        } else {
+            device.on() 
+            device.setColor([hue: standardHue, saturation: standardSat, level: level as Integer])
+        }
+    }
+}
+
+def tempHandler(evt) {
+    def currentTemp = evt.numericValue ?: evt.value.toDouble()
+    if (evt.device.id == outsideTempSensor?.id) currentTemp += (tempOffset ?: 20)
+
+    if (mailSwitch.currentValue("switch") == "on" && currentTemp >= (tempThreshold ?: 90)) {
+        def today = new Date().format("yyyy-MM-dd", location.timeZone ?: TimeZone.getDefault())
+        if (state.lastTempAlertDate != today) {
+            sendMessage("🌡️ Warning: Box is estimated to be ${currentTemp}°. Get mail soon!")
+            state.lastTempAlertDate = today
+        }
+    }
+}
+
+// === AUDIO PLAYBACK LOGIC ===
+def playZoozChime(soundNum) {
+    if (!settings.zoozChimes || soundNum == null) return
+    
+    def isNumeric = soundNum.toString().isNumber()
+    def trackNum = isNumeric ? soundNum.toString().toInteger() : null
+
+    settings.zoozChimes.eachWithIndex { chime, index ->
+        if (index > 0) pauseExecution(1000)
+        try {
+            if (chime.hasCommand("playSound") && trackNum != null) {
+                chime.playSound(trackNum)
+            } else if (chime.hasCommand("playTrack")) {
+                chime.playTrack(soundNum.toString())
+            } else if (chime.hasCommand("chime") && trackNum != null) {
+                chime.chime(trackNum)
+            } else {
+                log.error "${chime.displayName} does not support standard audio/siren commands (playSound, playTrack, or chime)."
+            }
+        } catch (e) {
+            log.error "${chime.displayName} failed to play sound: ${e.message ?: e}"
+        }
+    }
+}
+
+def nagHandler() {
+    if (enableNag && mailSwitch?.currentValue("switch") == "on") {
+        log.info "Nag scheduled task running: Mail has not been retrieved."
+        def msg = nagMessage ?: "Don't forget the mail!"
+        sendMessage(msg)
+        if (ttsSpeakers) ttsSpeakers.speak(msg)
+        addToHistory("NAG ALERT: Reminder sent.")
+    }
+}
+
+def hourlyNagHandler() {
+    if (enableHourlyNag && mailSwitch?.currentValue("switch") == "on") {
+        def currentMode = location.mode
+        def allowedModes = hourlyNagModes ?: []
+        
+        if (allowedModes.contains(currentMode)) {
+            log.info "Hourly Mode-Restricted Nag executing in mode: ${currentMode}"
+            
+            if (ttsSpeakers && ttsHourlyText) {
+                ttsSpeakers.speak(ttsHourlyText)
+            }
+            if (settings.zoozChimes && settings.zoozSoundHourly != null) {
+                playZoozChime(settings.zoozSoundHourly)
+            }
+            
+            addToHistory("HOURLY NAG ALERT: Announcement triggered.")
+        } else {
+            log.info "Skipping hourly nag because current mode '${currentMode}' is not selected."
+        }
+    }
+}
+
+def sendMessage(msg) { settings.pushDevices ? settings.pushDevices*.deviceNotification(msg) : sendPush(msg) }
+
+def updateAverage(type, currentMinutes) {
+    def count = state."${type}Count" ?: 0
+    def currentAvg = state."avg${type.capitalize()}Time" ?: currentMinutes
+    state."avg${type.capitalize()}Time" = ((currentAvg * count) + currentMinutes) / (count + 1)
+    state."${type}Count" = count + 1
+}
+
+def getMinutesSinceMidnight(date, tz) {
+    return (new Date(date.time).format("H", tz).toInteger() * 60) + new Date(date.time).format("m", tz).toInteger()
+}
+
+def minutesToTimeStr(minutesNum) {
+    if (!minutesNum) return "--:-- --"
+    int totalMins = Math.round(minutesNum.toDouble()).toInteger() 
+    int h = (totalMins / 60).toInteger()
+    int m = totalMins % 60
+  
+    def ampm = h >= 12 ? "PM" : "AM"
+    h = h % 12 ?: 12
+    return "${h}:${m < 10 ? '0'+m : m} ${ampm}"
+}
+
+def formatSeconds(totalSecs) {
+    if (!totalSecs) return "--"
+    int m = (totalSecs / 60).toInteger()
+    int s = totalSecs % 60
+    if (m > 0) return "${m}m ${s}s"
+    return "${s}s"
+}
+
+def addToHistory(msg) {
+    def timestamp = new Date().format("MM/dd HH:mm:ss", location.timeZone ?: TimeZone.getDefault())
+    state.historyLog.add(0, "<b>[${timestamp}]</b> ${msg}")
+    if (state.historyLog.size() > 20) state.historyLog = state.historyLog.take(20)
+}
+
+def midnightReset() {
+    state.todayDeliveryTime = state.todayRetrievalTime = state.lastTempAlertDate = null
+    state.lastRetrievalWalkTime = null 
+    if (mailSwitch.currentValue("switch") == "on") {
+        addToHistory("SYSTEM RESET: Mail left overnight.")
     }
 }
