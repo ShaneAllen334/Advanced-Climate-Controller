@@ -165,26 +165,32 @@ def mainPage() {
                         def fDev = settings["z${i}Fan"]
                         def pDev = settings["z${i}Power"]
                         def zSpeed = fDev.currentValue("speed") ?: "unknown"
-                        currentSpeedStr = zSpeed
                         def zTargetSpeed = state["z${i}Target"] ?: "off"
-                        
-                        actualDisplay = zSpeed.capitalize()
                         def pwrState = pDev ? pDev.currentValue("switch") : "N/A"
+                        
+                        if (pwrState == "off") {
+                            currentSpeedStr = "off"
+                            actualDisplay = "<span style='color:gray;'>Off (No Pwr)</span>"
+                        } else {
+                            currentSpeedStr = zSpeed
+                            actualDisplay = zSpeed.capitalize()
+                        }
+                        
                         relayDisplay = pDev ? pwrState?.toUpperCase() : "<span style='color:gray;'>NONE</span>"
                         
                         if (isManualOverrideActive) {
                             gnStatus = "<span style='color:red;'><b>Override Active</b><br><span style='font-size:11px;'>(${overrideRemainStr} left)</span></span>"
                         } else if (settings["z${i}GnSwitch"] && settings["z${i}GnSwitch"].currentValue("switch") == "on") {
                             gnStatus = "<span style='color:orange;'>Isolated (GN)</span>"
-                        } else if (settings["z${i}RelayAlwaysOn"] && zSpeed == "off" && zTargetSpeed == "off" && pwrState == "on") {
+                        } else if (settings["z${i}RelayAlwaysOn"] && currentSpeedStr == "off" && zTargetSpeed == "off" && pwrState == "on") {
                             gnStatus = "<span style='color:purple;'>Relay 24/7 Active</span>"
-                        } else if (zSpeed == "off" && zTargetSpeed == "off" && pwrState == "on") {
+                        } else if (currentSpeedStr == "off" && zTargetSpeed == "off" && pwrState == "on") {
                             gnStatus = "<span style='color:purple;'>Lighting Override (Relay ON)</span>"
                         } else if (emptyOverride) {
                             gnStatus = "<span style='color:gray;'>Empty (Ignored)</span>"
-                        } else if (zSpeed != zTargetSpeed && fanType != "fixed") {
+                        } else if (currentSpeedStr != zTargetSpeed && fanType != "fixed") {
                             gnStatus = "<span style='color:blue;'>Stepping to ${zTargetSpeed.capitalize()}...</span>"
-                        } else if (zSpeed != zTargetSpeed && fanType == "fixed") {
+                        } else if (currentSpeedStr != zTargetSpeed && fanType == "fixed") {
                             gnStatus = "<span style='color:blue;'>Commanding to ${zTargetSpeed.capitalize()}...</span>"
                         } else {
                             gnStatus = "<span style='color:green;'>Target Reached</span>"
@@ -299,12 +305,12 @@ def mainPage() {
 
         section("<b>6-Speed Fan Thresholds (Global)</b>") {
             paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Specific temperature thresholds for 6-Speed fans.</div>"
-            input "t6S1", "decimal", title: "Speed 1: Low (+°F)", required: true, defaultValue: 0.5
-            input "t6S2", "decimal", title: "Speed 2: Med-Low (+°F)", required: true, defaultValue: 1.0
-            input "t6S3", "decimal", title: "Speed 3: Medium (+°F)", required: true, defaultValue: 1.5
-            input "t6S4", "decimal", title: "Speed 4: Med-High (+°F)", required: true, defaultValue: 2.0
-            input "t6S5", "decimal", title: "Speed 5: High (+°F)", required: true, defaultValue: 2.5
-            paragraph "<i>Anything above Speed 5 triggers Speed 6 (Auto/Max).</i>"
+            input "t6S1", "decimal", title: "Speed 1: Very-Low (+°F)", required: true, defaultValue: 0.5
+            input "t6S2", "decimal", title: "Speed 2: Low (+°F)", required: true, defaultValue: 1.0
+            input "t6S3", "decimal", title: "Speed 3: Med-Low (+°F)", required: true, defaultValue: 1.5
+            input "t6S4", "decimal", title: "Speed 4: Medium (+°F)", required: true, defaultValue: 2.0
+            input "t6S5", "decimal", title: "Speed 5: Med-High (+°F)", required: true, defaultValue: 2.5
+            paragraph "<i>Anything above Speed 5 triggers Speed 6 (High).</i>"
         }
 
         section("<b>RF / Bond Fan Reliability & Relays</b>") {
@@ -393,13 +399,13 @@ def mainPage() {
 // ==============================================================================
 
 def getSpeedLevels(fanType) {
-    if (fanType == "speed6") return ["off": 0, "low": 1, "medium-low": 2, "medium": 3, "medium-high": 4, "high": 5, "auto": 6]
+    if (fanType == "speed6") return ["off": 0, "very-low": 1, "low": 2, "medium-low": 3, "medium": 4, "medium-high": 5, "high": 6, "auto": 6]
     if (fanType == "speed5") return ["off": 0, "low": 1, "medium-low": 2, "medium": 3, "medium-high": 4, "high": 5]
     return ["off": 0, "low": 1, "medium": 2, "high": 3]
 }
 
 def getLevelSpeeds(fanType) {
-    if (fanType == "speed6") return [0: "off", 1: "low", 2: "medium-low", 3: "medium", 4: "medium-high", 5: "high", 6: "auto"]
+    if (fanType == "speed6") return [0: "off", 1: "very-low", 2: "low", 3: "medium-low", 4: "medium", 5: "medium-high", 6: "high"]
     if (fanType == "speed5") return [0: "off", 1: "low", 2: "medium-low", 3: "medium", 4: "medium-high", 5: "high"]
     return [0: "off", 1: "low", 2: "medium", 3: "high"]
 }
@@ -408,13 +414,13 @@ def getWattsForSpeed(speedStr, fanType, minW, maxW) {
     if (speedStr == "off" || speedStr == "unknown") return 0.0
     if (fanType == "fixed") return maxW
     if (speedStr == "high" || speedStr == "auto" || speedStr == "on") return maxW
-    if (speedStr == "low") return minW
+    if (speedStr == "low" || speedStr == "very-low") return minW
     
     def sMap = getSpeedLevels(fanType)
     def lvl = sMap[speedStr] ?: 0
     if (lvl == 0) return 0.0
     
-    def maxLvl = fanType == "speed6" ? 5 : (fanType == "speed5" ? 5 : 3)
+    def maxLvl = fanType == "speed6" ? 6 : (fanType == "speed5" ? 5 : 3)
     if (lvl >= maxLvl) return maxW
     
     def stepWatts = (maxW - minW) / (maxLvl - 1)
@@ -499,9 +505,16 @@ def calculateEnergyData() {
             
             def fDev = settings["z${i}Fan"]
             def sDev = settings["z${i}SimpleFan"]
+            def pDev = settings["z${i}Power"]
             def currentSpeedStr = "off"
             
-            if ((fanType.startsWith("speed") || fanType == "fixed") && fDev) currentSpeedStr = fDev.currentValue("speed") ?: "off"
+            if ((fanType.startsWith("speed") || fanType == "fixed") && fDev) {
+                currentSpeedStr = fDev.currentValue("speed") ?: "off"
+                // Ensure wattage evaluates to 0 if the master relay is killed
+                if (pDev && pDev.currentValue("switch") == "off") {
+                    currentSpeedStr = "off"
+                }
+            }
             else if (fanType == "switch" && sDev) currentSpeedStr = sDev.currentValue("switch") == "on" ? "high" : "off"
             
             def cWatts = getWattsForSpeed(currentSpeedStr, fanType, minW, maxW)
@@ -661,7 +674,7 @@ def setManualOverride(roomId, actionVal) {
     logAction("Manual override detected for Room ${roomId} (Set to ${actionVal.toUpperCase()}). Automation paused for ${timeoutHrs} hours.")
     
     def delaySecs = (ms / 1000).toInteger() + 5
-    runIn(delaySecs, "evaluateFans")
+    runIn(delaySecs, "evaluateFans", [overwrite: false])
 }
 
 def isOverrideActive(roomId) {
@@ -694,6 +707,13 @@ def fanSpeedHandler(evt) {
     }
 
     if (evt.value == expected) return
+
+    // TRANSITION LOCKOUT: If the app is actively stepping to a target, ignore all events to prevent false overrides
+    if (expected != target) {
+        logInfo("Room ${roomId} is transitioning. Ignoring ${evt.value} to prevent false override.")
+        return
+    }
+
     if (isDetectionPaused(roomId)) return
     
     if (evt.value == prev && prev != expected) {
@@ -928,7 +948,28 @@ def turnRoomOff(roomId, fanType, roomName, reason) {
     if (fanType.startsWith("speed") || fanType == "fixed") {
         def fDev = settings["z${roomId}Fan"]
         def pDev = settings["z${roomId}Power"]
-        setFanTarget(roomId, fDev, pDev, roomName, "off", reason)
+        
+        def alwaysOn = settings["z${roomId}RelayAlwaysOn"]
+        def isAway = awayModes ? (awayModes as List).contains(location.mode) : false
+        def isNight = nightModes ? (nightModes as List).contains(location.mode) : false
+        
+        // Skip fan commands if Away/Night and no 24/7 relay requirement, to save network resources
+        if (pDev && !alwaysOn && (isAway || isNight)) {
+            if (state["z${roomId}Target"] != "off") {
+                logAction("Mode is ${isAway ? 'Away' : 'Good Night'}. Killing ${roomName} Master Relay directly (skipping fan speed commands to save hub resources).")
+                state["z${roomId}Target"] = "off"
+                setExpectedState(roomId, "fan", "off")
+            }
+            
+            if (pDev.currentValue("switch") != "off") {
+                pauseOverrideDetection(roomId, 30) // Setup Blind Spot
+                setExpectedState(roomId, "power", "off")
+                pDev.off()
+                runIn(5, "refreshSwitch", [data: [room: roomId, type: "power"], overwrite: false])
+            }
+        } else {
+            setFanTarget(roomId, fDev, pDev, roomName, "off", reason)
+        }
     } else {
         def sDev = settings["z${roomId}SimpleFan"]
         if (sDev && sDev.currentValue("switch") != "off") {
@@ -1040,7 +1081,7 @@ def setFanTarget(roomId, fDev, pDev, roomName, newTargetSpeed, reason) {
         setExpectedState(roomId, "power", "on")
         pDev.on()
         runIn(5, "refreshSwitch", [data: [room: roomId, type: "power"], overwrite: false])
-        runInMillis(1500, "stepFanTrigger", [data: [room: roomId]])
+        runInMillis(1500, "stepFanTrigger", [data: [room: roomId], overwrite: false])
         return
     }
     
@@ -1055,6 +1096,16 @@ def stepFan(roomId) {
     
     def gnSwitch = settings["z${roomId}GnSwitch"]
     if (gnSwitch && gnSwitch.currentValue("switch") == "on") return
+    
+    def pDev = settings["z${roomId}Power"]
+    def alwaysOn = settings["z${roomId}RelayAlwaysOn"]
+    def isAway = awayModes ? (awayModes as List).contains(location.mode) : false
+    def isNight = nightModes ? (nightModes as List).contains(location.mode) : false
+    
+    // Abort RF commands if power is cut during Away/Night to save resources
+    if (pDev && !alwaysOn && (isAway || isNight)) {
+        if (pDev.currentValue("switch") == "off") return
+    }
     
     def targetSpeed = state["z${roomId}Target"] ?: "off"
     def currentSpeed = fDev.currentValue("speed") ?: "off"
@@ -1071,13 +1122,12 @@ def stepFan(roomId) {
             fDev.setSpeed(targetSpeed)
             
             // Re-trigger to check if it reached target or needs power killed
-            runIn(rfStepDelay ?: 3, "stepFanTrigger", [data: [room: roomId]])
+            runIn(rfStepDelay ?: 3, "stepFanTrigger", [data: [room: roomId], overwrite: false])
         } else if (currentSpeed == "off" && targetSpeed == "off") {
-            def pDev = settings["z${roomId}Power"]
             if (pDev && pDev.currentValue("switch") != "off") {
                 def spinDelay = relaySpinDown ?: 15
                 logAction("${settings["z${roomId}Name"]} blades are OFF. Scheduling power relay check in ${spinDelay} seconds.")
-                runIn(spinDelay, "killPowerRelay", [data: [room: roomId]])
+                runIn(spinDelay, "killPowerRelay", [data: [room: roomId], overwrite: false])
             }
         }
         return
@@ -1096,7 +1146,7 @@ def stepFan(roomId) {
         pauseOverrideDetection(roomId, 60) // HUGE Blind Spot for sluggish cloud hubs
         setExpectedState(roomId, "fan", nextSpeed)
         fDev.setSpeed(nextSpeed)
-        runIn(delay, "stepFanTrigger", [data: [room: roomId]])
+        runIn(delay, "stepFanTrigger", [data: [room: roomId], overwrite: false])
     } 
     else if (currentInt > targetInt) {
         def nextSpeed = lMap[currentInt - 1]
@@ -1104,14 +1154,13 @@ def stepFan(roomId) {
         pauseOverrideDetection(roomId, 60) // HUGE Blind Spot for sluggish cloud hubs
         setExpectedState(roomId, "fan", nextSpeed)
         fDev.setSpeed(nextSpeed)
-        runIn(delay, "stepFanTrigger", [data: [room: roomId]])
+        runIn(delay, "stepFanTrigger", [data: [room: roomId], overwrite: false])
     } 
     else if (currentInt == 0 && targetInt == 0) {
-        def pDev = settings["z${roomId}Power"]
         if (pDev && pDev.currentValue("switch") != "off") {
             def spinDelay = relaySpinDown ?: 15
             logAction("${settings["z${roomId}Name"]} blades are OFF. Scheduling power relay check in ${spinDelay} seconds.")
-            runIn(spinDelay, "killPowerRelay", [data: [room: roomId]])
+            runIn(spinDelay, "killPowerRelay", [data: [room: roomId], overwrite: false])
         }
     }
 }
@@ -1157,6 +1206,9 @@ def doHourlyWiggle() {
             if (gnSwitch && gnSwitch.currentValue("switch") == "on") continue 
             if (isOverrideActive(i)) continue 
             
+            def pDev = settings["z${i}Power"]
+            if (pDev && pDev.currentValue("switch") == "off") continue // Skip if power is cut
+            
             def sMap = getSpeedLevels(fanType)
             def lMap = getLevelSpeeds(fanType)
             
@@ -1181,7 +1233,7 @@ def doHourlyWiggle() {
         }
     }
     
-    runIn(10, "evaluateFans")
+    runIn(10, "evaluateFans", [overwrite: true])
 }
 
 def getWetBulbF(tempF, rh) {
