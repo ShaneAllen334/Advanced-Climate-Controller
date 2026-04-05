@@ -20,7 +20,6 @@ preferences {
 
 def mainPage() {
     dynamicPage(name: "mainPage", title: "Energy Management Core", install: true, uninstall: true) {
- 
         
         section("Dashboard Actions") {
             href(name: "refreshPage", title: "🔄 Refresh Data", page: "mainPage")
@@ -28,7 +27,6 @@ def mainPage() {
             href(name: "clearDataPage", title: "🗑️ Clear All Data", description: "Reset all history, baselines, and counters.", page: "clearDataPage")
         }
 
- 
         section("Live Financial & Health Dashboard") {
             def kwhRate = settings["costPerKwh"]?.toString()?.toDouble() ?: 0.13
             def statusText = "<b>Appliance Status & Analytics</b><br><table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc; margin-bottom: 15px;'>"
@@ -37,13 +35,11 @@ def mainPage() {
             def appliances = ["refrigerator": "Refrigerator", "chestFreezer": "Chest Freezer", "hotWaterHeater": "Hot Water Heater", "washerDryer": "Washer/Dryer", "dishwasher": "Dishwasher", "microwave": "Microwave"]
             
             appliances.each { key, name ->
-            
                 def sw = settings["${key}Switch"]
                 def pMeter = settings["${key}Power"]
                 def eMeter = settings["${key}Energy"]
                 
                 if (pMeter && eMeter) {
-                   
                     def currentPower = pMeter.currentValue('power')?.toString()?.toDouble() ?: 0.0
                     def currentEnergy = eMeter.currentValue('energy')?.toString()?.toDouble() ?: 0.0
                     
@@ -53,22 +49,18 @@ def mainPage() {
                     def stateDisplay = "${switchState}<br><span style='font-size: 10px; color: gray;'>${contextMsg}</span>"
 
                     // Cost Math
-        
                     def baselineEnergy = state["${key}_startEnergy"] ?: currentEnergy
                     def usedKwh = currentEnergy - baselineEnergy
                     if (usedKwh < 0) usedKwh = 0 
                     def estCost = usedKwh * kwhRate
-      
                     def costStr = String.format("\$%.2f", estCost)
                     
                     // Health Check & Compressor Status
                     def health = "<span style='color: green;'>GOOD</span>"
-            
                     def struggle = state["${key}_struggleCount"] ?: 0
                     
                     if (state["${key}_creepWarning"]) health = "<span style='color: orange;'>CREEPING WATTS</span>"
                     if (struggle >= 3 && struggle < 6) health = "<span style='color: orange;'>CLEAN COILS</span>"
-       
                     if (struggle >= 6) health = "<span style='color: red;'>STRUGGLING</span>"
                     if (state["${key}_spikeWarning"]) health = "<span style='color: red;'>SPIKE DETECTED</span>"
                     if (state["${key}_tempWarningActive"]) health = "<span style='color: red;'>HIGH TEMP ALERT</span>"
@@ -79,7 +71,6 @@ def mainPage() {
                     statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${name}</b></td><td style='padding: 8px;'>${stateDisplay}</td><td style='padding: 8px; color: ${powerColor};'>${currentPower} W</td><td style='padding: 8px; color: red;'>${costStr}</td><td style='padding: 8px; font-weight: bold;'>${health}</td></tr>"
                 }
             }
-       
             statusText += "</table>"
             
             // Active Cycles & Usage (7-Day)
@@ -94,19 +85,15 @@ def mainPage() {
                 if (state["${key}_stopPending"]) isRunning = "<span style='color: orange; font-weight: bold;'>PAUSED</span>"
                 
                 def lastRunStr = "N/A"
-         
                 if (state["${key}_isRunning"] && state["${key}_cycleStartTime"]) {
                     def currentRunMs = now() - state["${key}_cycleStartTime"]
                     def currentRunMins = Math.round(currentRunMs / 60000.0)
                     lastRunStr = "Running (${currentRunMins} min)"
-               
                 } else if (state["${key}_lastRunLengthMins"]) {
                     lastRunStr = "${Math.round(state["${key}_lastRunLengthMins"])} min"
                 }
                 
                 def runCount = state["${key}_7DayRunCount"] ?: 0
-                
-   
                 statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${name}</b></td><td style='padding: 8px;'>${isRunning}</td><td style='padding: 8px;'>${lastRunStr}</td><td style='padding: 8px;'>${runCount}</td></tr>"
             }
             statusText += "</table>"
@@ -137,18 +124,20 @@ def mainPage() {
             }
             statusText += "</table>"
             
-            // ROI Table for Scheduled Savings
-           
-            statusText += "<b>Scheduled Savings (ROI)</b><br><table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #eef9f0; border: 1px solid #ccc; margin-bottom: 15px;'>"
-            statusText += "<tr style='background-color: #dcedc8; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Appliance</th><th style='padding: 8px;'>Est. Savings (7-Day)</th></tr>"
+            // ROI Table for Scheduled Savings & Maintenance
+            statusText += "<b>Financial Savings (ROI)</b><br><table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #eef9f0; border: 1px solid #ccc; margin-bottom: 15px;'>"
+            statusText += "<tr style='background-color: #dcedc8; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Appliance</th><th style='padding: 8px;'>Sch. Savings</th><th style='padding: 8px;'>Maint. Savings</th><th style='padding: 8px;'>Total (7D)</th></tr>"
             
             def totalSavings = 0.0
             appliances.each { key, name ->
-                def savings = state["${key}_roiSavings"] ?: 0.0
-                totalSavings += savings
-                statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${name}</b></td><td style='padding: 8px; color: green;'>\$${String.format("%.2f", savings)}</td></tr>"
+                def schSavings = state["${key}_roiSavings"] ?: 0.0
+                def maintSavings = state["${key}_maintRoiSavings"] ?: 0.0
+                def appTotal = schSavings + maintSavings
+                totalSavings += appTotal
+                
+                statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${name}</b></td><td style='padding: 8px; color: green;'>\$${String.format("%.2f", schSavings)}</td><td style='padding: 8px; color: green;'>\$${String.format("%.2f", maintSavings)}</td><td style='padding: 8px; color: green; font-weight: bold;'>\$${String.format("%.2f", appTotal)}</td></tr>"
             }
-            statusText += "<tr style='background-color: #c5e1a5;'><td style='padding: 8px;'><b>Total Saved</b></td><td style='padding: 8px; color: green; font-weight: bold;'>\$${String.format("%.2f", totalSavings)}</td></tr>"
+            statusText += "<tr style='background-color: #c5e1a5;'><td style='padding: 8px;' colspan='3'><b>Total Saved</b></td><td style='padding: 8px; color: green; font-weight: bold;'>\$${String.format("%.2f", totalSavings)}</td></tr>"
             statusText += "</table>"
             
             paragraph statusText
@@ -156,9 +145,9 @@ def mainPage() {
 
         section("Global Core Settings") {
             input "costPerKwh", "decimal", title: "Electricity Cost (\$ per kWh)", required: true, defaultValue: 0.13, description: "Your default rate is \$0.13."
+            input "enableMaintenanceRoi", "bool", title: "Track ROI for Maintenance (Coil Cleaning, etc.)?", defaultValue: true, required: false, description: "Calculates savings when an appliance runs more efficiently after a health reset."
         }
 
- 
         section("Appliance Scheduling & Shutdown") {
             input "scheduleStart", "time", title: "Time to turn appliances OFF", required: false
             input "scheduleEnd", "time", title: "Time to turn appliances ON", required: false
@@ -169,7 +158,6 @@ def mainPage() {
         section("Manual Override Button") {
             input "overrideButton", "capability.pushableButton", title: "Override Button(s)", required: false, multiple: true
             input "legacyOverrideButton", "capability.button", title: "Legacy Button Devices (Use this if your button didn't show in the list above)", required: false, multiple: true
-       
             input "buttonNumber", "text", title: "Button Number(s) (Comma separated, e.g., 1, 2)", defaultValue: "1", required: false, description: "Leave blank to allow all buttons on the device."
             input "buttonAction", "enum", title: "Button Action(s)", options: ["pushed", "held", "doubleTapped", "released", "tapped", "multiTapped"], defaultValue: "pushed", required: false, multiple: true
             input "overrideModes", "mode", title: "Only allow override in specific modes?", required: false, multiple: true
@@ -182,7 +170,6 @@ def mainPage() {
             input "refrigeratorTemp", "capability.temperatureMeasurement", title: "Internal Temperature Sensor", required: false
             input "refrigeratorRoomTemp", "capability.temperatureMeasurement", title: "Room Temperature Sensor", required: false
             input "refrigeratorOutsideTemp", "capability.temperatureMeasurement", title: "Outside Air Temperature Sensor", required: false
-         
             input "refrigeratorTempThreshold", "number", title: "Max Internal Temperature Alert Threshold (°F/°C)", defaultValue: 42, required: false
             input "refrigeratorSpike", "number", title: "Spike Warning Threshold (Watts)", defaultValue: 800, required: false
             input "refrigeratorRunWatts", "number", title: "Compressor Running Threshold (Watts)", defaultValue: 80, required: false, description: "Watts required to consider the compressor 'running'."
@@ -216,7 +203,6 @@ def mainPage() {
             input "chestFreezerTemp", "capability.temperatureMeasurement", title: "Internal Temperature Sensor", required: false
             input "chestFreezerRoomTemp", "capability.temperatureMeasurement", title: "Room Temperature Sensor", required: false
             input "chestFreezerOutsideTemp", "capability.temperatureMeasurement", title: "Outside Air Temperature Sensor", required: false
-     
             input "chestFreezerTempThreshold", "number", title: "Max Internal Temperature Alert Threshold (°F/°C)", defaultValue: 15, required: false
             input "chestFreezerSpike", "number", title: "Spike Warning Threshold (Watts)", defaultValue: 800, required: false
             input "chestFreezerRunWatts", "number", title: "Compressor Running Threshold (Watts)", defaultValue: 80, required: false, description: "Watts required to consider the compressor 'running'."
@@ -251,7 +237,7 @@ def mainPage() {
             input "hotWaterHeaterRunWatts", "number", title: "Heating Threshold (Watts)", defaultValue: 1000, required: false
             input "hotWaterHeaterStartDelay", "number", title: "Cycle Start Delay (Minutes)", defaultValue: 1, required: false, description: "Wait this long above the running threshold before logging a cycle."
             input "hotWaterHeaterDebounce", "number", title: "Heating Pause/Debounce Time (Minutes)", defaultValue: 5, required: false, description: "Wait this long after power drops before declaring cycle complete."
-         
+            
             paragraph "Mode-Based Power Control"
             input "hotWaterHeaterTurnOffModes", "mode", title: "Turn OFF switch when entering these modes:", required: false, multiple: true
             input "hotWaterHeaterTurnOnModes", "mode", title: "Turn ON switch when entering these modes:", required: false, multiple: true
@@ -424,6 +410,15 @@ def doResetPage(params) {
         state.remove("${key}_tempCreepWarning")
         state.remove("${key}_totalRunHours")
    
+        // Capture inefficient state before reset for ROI tracking
+        if (state["${key}_baselineAvg"] && state["${key}_avgPower"]) {
+            def currentAvg = state["${key}_avgPower"].toString().toDouble()
+            def baseline = state["${key}_baselineAvg"].toString().toDouble()
+            if (currentAvg > baseline) {
+                state["${key}_inefficientPowerMark"] = currentAvg
+            }
+        }
+
         // Recalibrate Baselines
         state.remove("${key}_baselineAvg")
         state.remove("${key}_idlePowerAvg")
@@ -463,6 +458,8 @@ def clearAllData() {
         state.remove("${key}_avgPower")
         state.remove("${key}_idlePowerAvg")
         state.remove("${key}_roiSavings")
+        state.remove("${key}_maintRoiSavings") // Cleared new maintenance ROI
+        state.remove("${key}_inefficientPowerMark") // Cleared inefficient mark
         state.remove("${key}_totalRunHours")
         state.remove("${key}_struggleCount")
         state.remove("${key}_7DayRunCount")
@@ -511,6 +508,7 @@ def initialize() {
         if (!state["${key}_avgPower"]) state["${key}_avgPower"] = 0.0
         if (!state["${key}_idlePowerAvg"]) state["${key}_idlePowerAvg"] = 0.0
         if (!state["${key}_roiSavings"]) state["${key}_roiSavings"] = 0.0
+        if (!state["${key}_maintRoiSavings"]) state["${key}_maintRoiSavings"] = 0.0
         if (!state["${key}_totalRunHours"]) state["${key}_totalRunHours"] = 0.0
         if (!state["${key}_struggleCount"]) state["${key}_struggleCount"] = 0
         if (!state["${key}_7DayRunCount"]) state["${key}_7DayRunCount"] = 0
@@ -575,7 +573,7 @@ def initialize() {
     if (allOverrideButtons) {
         def actions = buttonAction ?: ["pushed"]
         if (!(actions instanceof List)) actions = [actions]
-      
+       
         actions.each { action ->
             subscribe(allOverrideButtons, action, buttonHandler)
             // Support for legacy ST event formats
@@ -597,7 +595,7 @@ def roomTempHandler(evt) {
         if (settings["${key}RoomTemp"]?.id == deviceId) {
             def avg = state["${key}_dailyAvgRoomTemp"]?.toString()?.toDouble() ?: 0.0
             if (avg == 0.0) {
-                state["${key}_dailyAvgRoomTemp"] = currentTemp
+                  state["${key}_dailyAvgRoomTemp"] = currentTemp
             } else {
                 state["${key}_dailyAvgRoomTemp"] = (avg * 0.95) + (currentTemp * 0.05)
             }
@@ -609,7 +607,7 @@ def outsideTempHandler(evt) {
     def deviceId = evt.device.id
     def currentTemp = evt.value.toString().toDouble()
     def targets = ["refrigerator", "chestFreezer"]
-    
+  
     targets.each { key ->
         if (settings["${key}OutsideTemp"]?.id == deviceId) {
             def currentMax = state["${key}_dailyMaxOutsideTemp"]?.toString()?.toDouble() ?: -100.0
@@ -718,6 +716,8 @@ def modeChangeHandler(evt) {
     def appliances = ["hotWaterHeater", "washerDryer", "dishwasher", "microwave"]
     def kwhRate = settings["costPerKwh"]?.toString()?.toDouble() ?: 0.13
     
+    def actionCount = 0 // Track how many actual commands we send to stagger them
+    
     appliances.each { key ->
         def offModes = settings["${key}TurnOffModes"]
         def onModes = settings["${key}TurnOnModes"]
@@ -727,6 +727,9 @@ def modeChangeHandler(evt) {
             // Process Turn ON logic first
             if (onModes && onModes.contains(newMode)) {
                 if (sw.currentValue("switch") != "on") {
+                    if (actionCount > 0) pauseExecution(1000) // Prevent mesh flooding
+                    actionCount++
+                    
                     state["${key}_systemActionPending"] = true
                     state["${key}_context"] = "Mode Restore"
                     sw.on()
@@ -744,6 +747,8 @@ def modeChangeHandler(evt) {
             } 
             // Then process Turn OFF logic
             else if (offModes && offModes.contains(newMode)) {
+                if (actionCount > 0) pauseExecution(1000) // Prevent mesh flooding
+                actionCount++
                 executeApplianceShutdown(key)
             }
         }
@@ -868,6 +873,7 @@ def triggerTurnOff() {
     def appliances = ["hotWaterHeater", "washerDryer", "dishwasher", "microwave"]
     def safeThreshold = settings["safeShutdownThreshold"]?.toString()?.toDouble() ?: 15.0
     def needsRetry = false
+    def actionCount = 0
     
     appliances.each { key ->
         def sw = settings["${key}Switch"]
@@ -881,6 +887,9 @@ def triggerTurnOff() {
                 needsRetry = true
             } else {
                 if (sw.currentValue("switch") != "off") {
+                    if (actionCount > 0) pauseExecution(1000) // Prevent mesh flooding
+                    actionCount++
+                    
                     state["${key}_systemActionPending"] = true
                     state["${key}_context"] = "Scheduled Shutdown"
                     sw.off()
@@ -891,31 +900,38 @@ def triggerTurnOff() {
     }
     
     if (needsRetry) {
-        runIn(900, triggerTurnOff)
+        runIn(900, "triggerTurnOff") // Fixed missing quotes around method name
     }
 }
 
 def triggerTurnOn() {
     def appliances = ["hotWaterHeater", "washerDryer", "dishwasher", "microwave"]
     def kwhRate = settings["costPerKwh"]?.toString()?.toDouble() ?: 0.13
+    def actionCount = 0
     
     appliances.each { key ->
         def sw = settings["${key}Switch"]
         if (sw) {
-            state["${key}_systemActionPending"] = true
-            if (state["${key}_context"] != "Manual Override") {
-                state["${key}_context"] = "Scheduled Restore"
-            }
-            sw.on()
-            
-            if (state["${key}_offTimeStart"]) {
-                def offTimeMs = now() - state["${key}_offTimeStart"]
-                def offTimeHours = offTimeMs / 3600000.0
-                def idleAvgPower = state["${key}_idlePowerAvg"]?.toString()?.toDouble() ?: 0.0
+            // Check state before firing to avoid redundant ON commands
+            if (sw.currentValue("switch") != "on") { 
+                if (actionCount > 0) pauseExecution(1000) // Prevent mesh flooding
+                actionCount++
                 
-                def savingsThisCycle = (idleAvgPower / 1000.0) * offTimeHours * kwhRate
-                state["${key}_roiSavings"] = (state["${key}_roiSavings"] ?: 0.0) + savingsThisCycle
-                state["${key}_offTimeStart"] = null
+                state["${key}_systemActionPending"] = true
+                if (state["${key}_context"] != "Manual Override") {
+                    state["${key}_context"] = "Scheduled Restore"
+                }
+                sw.on()
+                
+                if (state["${key}_offTimeStart"]) {
+                    def offTimeMs = now() - state["${key}_offTimeStart"]
+                    def offTimeHours = offTimeMs / 3600000.0
+                    def idleAvgPower = state["${key}_idlePowerAvg"]?.toString()?.toDouble() ?: 0.0
+                    
+                    def savingsThisCycle = (idleAvgPower / 1000.0) * offTimeHours * kwhRate
+                    state["${key}_roiSavings"] = (state["${key}_roiSavings"] ?: 0.0) + savingsThisCycle
+                    state["${key}_offTimeStart"] = null
+                }
             }
         }
     }
@@ -952,7 +968,7 @@ def powerHandler(evt) {
             if (!isCurrentlyRunning && currentPower > 0.0) {
                 def currentIdle = state["${key}_idlePowerAvg"]?.toString()?.toDouble() ?: currentPower
                 if (currentIdle == 0.0) {
-                    state["${key}_idlePowerAvg"] = currentPower
+                     state["${key}_idlePowerAvg"] = currentPower
                 } else {
                     state["${key}_idlePowerAvg"] = (currentIdle * 0.95) + (currentPower * 0.05)
                 }
@@ -1131,9 +1147,31 @@ def trackCompressorHealth(key, name, cycleDurationMins) {
 
 def dailyHealthCheck() {
     def appliances = ["refrigerator": "Refrigerator", "chestFreezer": "Chest Freezer", "hotWaterHeater": "Hot Water Heater", "washerDryer": "Washer/Dryer", "dishwasher": "Dishwasher", "microwave": "Microwave"]
-    
+    def kwhRate = settings["costPerKwh"]?.toString()?.toDouble() ?: 0.13
+    def allowMaintRoi = settings["enableMaintenanceRoi"] != false // Defaults to true
+
     appliances.each { key, name ->
         def avgPower = state["${key}_avgPower"]?.toString()?.toDouble() ?: 0.0
+        
+        // --- NEW ROI CALCULATION FOR MAINTENANCE SAVINGS ---
+        if (allowMaintRoi && state["${key}_inefficientPowerMark"]) {
+            def badWatts = state["${key}_inefficientPowerMark"].toString().toDouble()
+            if (avgPower < badWatts && avgPower > 0) {
+                def savedKw = (badWatts - avgPower) / 1000.0
+                
+                // Estimate daily run hours (use 7-day average if available, otherwise assume 24h standby)
+                def totalWeeklyMins = state["${key}_7DayTotalCycleMins"]?.toString()?.toDouble() ?: 0.0
+                def dailyRunHours = totalWeeklyMins > 0 ? (totalWeeklyMins / 7.0 / 60.0) : 24.0
+                
+                def dailySavings = savedKw * dailyRunHours * kwhRate
+                state["${key}_maintRoiSavings"] = (state["${key}_maintRoiSavings"] ?: 0.0) + dailySavings
+            } else if (avgPower >= badWatts) {
+                // If it creeps back up to the bad mark, stop calculating savings until the next reset
+                state.remove("${key}_inefficientPowerMark")
+            }
+        }
+        
+        // Existing creep warning logic
         def baselineAvg = state["${key}_baselineAvg"]?.toString()?.toDouble() ?: avgPower
         
         if (baselineAvg == 0.0) {
@@ -1176,6 +1214,7 @@ def resetWeeklyCounters() {
             state["${key}_startEnergy"] = eMeter.currentValue("energy")?.toString()?.toDouble() ?: 0.0
         }
         state["${key}_roiSavings"] = 0.0
+        state["${key}_maintRoiSavings"] = 0.0
         state["${key}_7DayRunCount"] = 0
         state["${key}_7DayTotalCycleMins"] = 0.0
     }
@@ -1222,11 +1261,38 @@ def sendAlert(msg, key, alertType) {
         ttsDev.speak(msg)
     }
     
+    // FIX APPLIED: Routing audio through the safe Zooz Helper
     if (audioDev && audioEvents.contains(alertType)) {
+        playZoozSound(audioDev, audioTrack)
+    }
+}
+
+// FIX APPLIED: New safe play function handling playSound, playTrack, and chime with mesh protection
+def playZoozSound(devices, sound) {
+    if (!devices || sound == null) return
+    def soundInt = sound.toInteger()
+    
+    // Handle single device or list of devices
+    def devList = devices instanceof List ? devices : [devices]
+    
+    devList.eachWithIndex { dev, index ->
+        // Add a 1000ms (1 second) delay before subsequent devices to prevent Z-Wave mesh flooding
+        if (index > 0) {
+            pauseExecution(1000)
+        }
+
         try {
-            audioDev.playTrack(audioTrack)
-        } catch(e) {
-            log.error "Failed to play audio track on Zooz/Siren for ${key}: ${e}"
+            if (dev.hasCommand("playSound")) {
+                dev.playSound(soundInt)
+            } else if (dev.hasCommand("playTrack")) {
+                dev.playTrack(sound.toString())
+            } else if (dev.hasCommand("chime")) {
+                dev.chime(soundInt)
+            } else {
+                log.warn "Advanced Energy Management Controller: Device ${dev.displayName} does not support standard sound commands (playSound, playTrack, or chime)."
+            }
+        } catch (e) {
+            log.error "Failed to play audio on ${dev.displayName}: ${e}"
         }
     }
 }
