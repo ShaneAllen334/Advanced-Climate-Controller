@@ -6,7 +6,7 @@ definition(
     name: "Advanced Air Quality Controller",
     namespace: "ShaneAllen",
     author: "ShaneAllen",
-    description: "Advanced AQI control for up to 12 rooms, integrating Ecowitt sensors, ROI tracking, Smart Filters, Post-Scrubbing, and Alerting.",
+    description: "Advanced AQI control for up to 12 rooms, integrating Ecowitt sensors, ROI tracking, Smart Filters, Post-Scrubbing, Hourly Cycles, and Alerting.",
     category: "Health & Wellness",
     iconUrl: "",
     iconX2Url: "",
@@ -241,6 +241,9 @@ def mainPage() {
             input "quietModes", "mode", title: "Quiet Modes (Prevents purifiers from turning on UNLESS emergency override is met)", multiple: true, required: false
             input "quietOverrideAQI", "number", title: "Emergency AQI Threshold during Quiet Modes", required: false, defaultValue: 150
             input "emergencyAlertDelay", "number", title: "Minutes sustained in Emergency AQI before sending push alert", required: false, defaultValue: 60
+            
+            paragraph "<b>Routine Cycling</b>"
+            input "enableHourlyCycle", "bool", title: "Enable Hourly Cycle (Turns ON for 1 hour, OFF for 1 hour when idle & AQI is good)", required: false, defaultValue: false
         }
 
         section("<b>External Monitoring & Pollen</b>", hideable: true, hidden: true) {
@@ -356,6 +359,11 @@ def initialize() {
         fetchPollenData()
     }
     
+    if (enableHourlyCycle) {
+        // Evaluate precisely at the top of every hour to flip the cycle seamlessly
+        schedule("0 0 * ? * *", evaluateSystem)
+    }
+    
     logAction("App Initialized. Logic Engine Ready.")
     evaluateSystem()
 }
@@ -402,6 +410,7 @@ String getHumanReadableStatus() {
     
     if (isQuiet) return "<span style='color:purple;'><b>Quiet Mode Active:</b></span> Purifiers are locked OFF unless emergency thresholds are met."
     if (isPollenContinuous) return "<span style='color:blue;'><b>Continuous Mode Active:</b></span> Running 24/7 due to High Local Pollen (${pollenVal})."
+    if (enableHourlyCycle) return "Monitoring actively. Enforcing Target AQI and running routine Hourly Air Cycles."
     return "Monitoring actively. System is enforcing Target AQI requirements."
 }
 
@@ -520,10 +529,13 @@ def evaluateSystem(evt = null) {
     if (enablePollen && continuousPollen && pollenVal >= (continuousPollenThreshold ?: 7.0)) {
         isPollenContinuous = true
     }
+    
+    // Cycle logic: True if current hour is even (e.g. 14:00/2PM is ON, 15:00/3PM is OFF)
+    def isCycleHour = (enableHourlyCycle && new Date().format("H", location.timeZone).toInteger() % 2 == 0)
 
     def anyZoneNeedsPurification = false
     def highestZoneAQI = 0
-    def activeZoneReasons = [] // Collect all reasons instead of overwriting
+    def activeZoneReasons = [] 
     def hasConfiguredZones = false
     
     if (!state.scrubEndTimes) state.scrubEndTimes = [:]
@@ -556,6 +568,17 @@ def evaluateSystem(evt = null) {
                 } else if (state.scrubEndTimes?.get("z${i}") && now() < state.scrubEndTimes.get("z${i}")) {
                     zNeedsIt = true; isScrubbing = true
                     runIn(((state.scrubEndTimes.get("z${i}") - now()) / 1000).toInteger(), "evaluateSystem")
+                }
+            }
+
+            // Hourly Cycle check
+            def zCycleActive = false
+            if (!zNeedsIt && isCycleHour && !isQuiet) {
+                def pBlocked = false
+                if (settings["z${i}PreventSwitch"] && settings["z${i}PreventSwitch"].currentValue("switch") == "on") pBlocked = true
+                if (!pBlocked) {
+                    zNeedsIt = true
+                    zCycleActive = true
                 }
             }
 
@@ -593,9 +616,9 @@ def evaluateSystem(evt = null) {
 
             if (zNeedsIt) {
                 anyZoneNeedsPurification = true
-                // Add specific reason to the list
                 if (isScrubbing) activeZoneReasons << "${zName} (Scrubbing)"
                 else if (isForcedOn) activeZoneReasons << "${zName} (Trigger Switch)"
+                else if (zCycleActive) activeZoneReasons << "${zName} (Hourly Cycle)"
                 else activeZoneReasons << "${zName} (AQI: ${aqiVal})"
             }
         }
@@ -629,11 +652,21 @@ def evaluateSystem(evt = null) {
         // Final Need Calculation
         def mainNeedsIt = anyZoneNeedsPurification || isMainForcedOn || mainHouseNeedsIt
         
+        // Hourly Cycle apply check for Main
+        def mainCycleActive = false
+        if (!mainNeedsIt && isCycleHour && !isQuiet) {
+            mainNeedsIt = true
+            mainCycleActive = true
+        }
+        
         // Prevent Switch Check
         if (mainNeedsIt && !isMainForcedOn && !isMainScrubbing && mainPreventSwitch) {
             if (mainPreventSwitch.currentValue("switch") == "on") {
                 def mOverride = mainOverrideLevel ?: 100
-                if (mainIndoorAQIVal < mOverride && highestZoneAQI < mOverride) mainNeedsIt = false // Blocked
+                if (mainIndoorAQIVal < mOverride && highestZoneAQI < mOverride) {
+                    mainNeedsIt = false // Blocked
+                    mainCycleActive = false // Override hourly cycle
+                }
             }
         }
 
@@ -645,6 +678,7 @@ def evaluateSystem(evt = null) {
             else if (isQuiet) currentActionReason = "ON: Emergency AQI Override during Quiet Mode"
             else if (isPollenContinuous) currentActionReason = "ON: Continuous Run for High Pollen (${pollenVal})"
             else if (mainHouseNeedsIt) currentActionReason = "ON: Main Indoor AQI (${mainIndoorAQIVal}) > Target (${baseTarget})"
+            else if (mainCycleActive) currentActionReason = "ON: Routine Hourly Air Cycle"
             else if (anyZoneNeedsPurification) currentActionReason = "ON: Triggered by " + activeZoneReasons.join(", ")
         } else {
             if (mainPreventSwitch && mainPreventSwitch.currentValue("switch") == "on") {
