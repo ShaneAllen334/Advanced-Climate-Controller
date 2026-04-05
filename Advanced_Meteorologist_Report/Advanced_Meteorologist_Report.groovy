@@ -8,7 +8,7 @@ definition(
     name: "Advanced Meteorologist Report",
     namespace: "ShaneAllen",
     author: "ShaneAllen",
-    description: "Generates a detailed meteorologist report combining live local weather station data with macro-forecast APIs. Features 5 distinct broadcasting personas, historical context, dry planning windows, and stargazing conditions.",
+    description: "Generates a detailed meteorologist report combining live local weather station data with macro-forecast APIs. Features dynamic phrasing to prevent repetition.",
     category: "Weather",
     iconUrl: "",
     iconX2Url: "",
@@ -88,36 +88,31 @@ def mainPage() {
         }
 
         section(title: "<b>1. Data Sources & Settings</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:12px; color:#555;'><b>Setup Tip:</b> Connect your local weather sensor to provide accurate micro-climate data (what's actually happening on your porch). The app handles the rest by fetching macro-forecasts from the free Open-Meteo API. <b>Polling every 30 minutes</b> is highly recommended to keep data fresh without overloading the API.</div>"
-            
-            input "localStation", "capability.temperatureMeasurement", title: "Select Personal Weather Station", description: "Your local outdoor temperature, humidity, and wind sensor.", required: true, multiple: false
-            input "zipCode", "text", title: "Zip Code (Required for Pollen)", description: "Enter a valid US Zip Code to enable daily pollen index forecasting.", required: false
-            input "pollingInterval", "enum", title: "Background Sync Interval", description: "How often the app fetches new data.", options: ["15":"Every 15 Mins", "30":"Every 30 Mins", "60":"Every 1 Hour"], defaultValue: "30"
-            input "reportPersona", "enum", title: "Select Default Dashboard Personality", description: "This controls the tone/attitude of the weather script shown on the Dashboard tile.", options: ["Professional", "Casual", "Technical", "Disgruntled", "GenZ"], defaultValue: "Professional", required: true
+            paragraph "<div style='font-size:12px; color:#555;'><b>Setup Tip:</b> Connect your local weather sensor to provide accurate micro-climate data. Polling every 30 minutes is highly recommended.</div>"
+            input "localStation", "capability.temperatureMeasurement", title: "Select Personal Weather Station", required: true, multiple: false
+            input "zipCode", "text", title: "Zip Code (Required for Pollen)", required: false
+            input "pollingInterval", "enum", title: "Background Sync Interval", options: ["15":"Every 15 Mins", "30":"Every 30 Mins", "60":"Every 1 Hour"], defaultValue: "30"
+            input "reportPersona", "enum", title: "Select Default Dashboard Personality", options: ["Professional", "Casual", "Technical", "Disgruntled", "GenZ"], defaultValue: "Professional", required: true
         }
 
         section(title: "<b>2. Morning Report Profile</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:12px; color:#555;'><b>Setup Tip:</b> This profile defines what data is included in reports generated during the morning. <b>Less is usually more with TTS audio.</b> Try limiting this to just Temp, Rain, and Clothing recommendations so the broadcast is punchy and useful.</div>"
-            
-            input "morningStartTime", "time", title: "Morning Window Start", description: "E.g., 5:00 AM", required: false
-            input "morningEndTime", "time", title: "Morning Window End", description: "E.g., 11:00 AM", required: false
-            input "m_includeGreeting", "bool", title: "Include Greeting", description: "Starts with 'Good Morning'.", defaultValue: true
-            input "m_includeMicro", "bool", title: "Include Local Station Data", description: "Announces the exact temperature right outside your door.", defaultValue: true
-            input "m_includeDaily", "bool", title: "Include Today's Highs/Lows/Conditions", description: "The broad forecast for the day ahead.", defaultValue: true
-            input "m_includeFeelsLike", "bool", title: "Include 'Feels Like' & Wind Gusts", description: "Only speaks if wind gusts are high or the heat index significantly differs from the actual temp.", defaultValue: true
-            input "m_includeRain", "bool", title: "Include Expected Rain Amount", description: "Announces total expected accumulation.", defaultValue: true
-            input "m_includeUV", "bool", title: "Include Peak UV Index", description: "Warns you to wear sunscreen if UV > 5.", defaultValue: true
+            input "morningStartTime", "time", title: "Morning Window Start", required: false
+            input "morningEndTime", "time", title: "Morning Window End", required: false
+            input "m_includeGreeting", "bool", title: "Include Greeting", defaultValue: true
+            input "m_includeMicro", "bool", title: "Include Local Station Data", defaultValue: true
+            input "m_includeDaily", "bool", title: "Include Today's Highs/Lows/Conditions", defaultValue: true
+            input "m_includeFeelsLike", "bool", title: "Include 'Feels Like' & Wind Gusts", defaultValue: true
+            input "m_includeRain", "bool", title: "Include Expected Rain Amount", defaultValue: true
+            input "m_includeUV", "bool", title: "Include Peak UV Index", defaultValue: true
             input "m_includePollen", "bool", title: "Include Pollen Forecast", defaultValue: false
-            input "m_includeClothing", "bool", title: "Include Clothing Recommendation", description: "Suggests a coat, sweater, or short sleeves based on the high.", defaultValue: false
+            input "m_includeClothing", "bool", title: "Include Clothing Recommendation", defaultValue: false
             input "m_includeMoon", "bool", title: "Include Moon Phase", defaultValue: false
-            input "m_includeWeekly", "bool", title: "Include Upcoming Week Teaser", description: "Gives a brief teaser of the weather 3-4 days out.", defaultValue: false
+            input "m_includeWeekly", "bool", title: "Include Upcoming Week Teaser", defaultValue: false
         }
         
         section(title: "<b>3. Evening/Night Report Profile</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:12px; color:#555;'><b>Setup Tip:</b> This profile takes over in the evening. It automatically shifts the phrasing to focus on <i>Tomorrow's</i> weather rather than today's. Dial this in for your 'Goodnight' routines.</div>"
-            
-            input "eveningStartTime", "time", title: "Evening Window Start", description: "E.g., 6:00 PM", required: false
-            input "eveningEndTime", "time", title: "Evening Window End", description: "E.g., 11:59 PM", required: false
+            input "eveningStartTime", "time", title: "Evening Window Start", required: false
+            input "eveningEndTime", "time", title: "Evening Window End", required: false
             input "e_includeGreeting", "bool", title: "Include Greeting", defaultValue: true
             input "e_includeMicro", "bool", title: "Include Local Station Data", defaultValue: true
             input "e_includeDaily", "bool", title: "Include Tonight's Low & Tomorrow's Forecast", defaultValue: true
@@ -130,16 +125,12 @@ def mainPage() {
         }
 
         section(title: "<b>4. Informational Insights</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:12px; color:#555;'><b>Setup Tip:</b> These toggle dynamic 'smart' features. The script will only include them if the conditions are met (e.g., it only talks about dry windows if it's going to rain, keeping the script brief on sunny days).</div>"
-            
-            input "infoHistorical", "bool", title: "Include Historical Context", description: "Compares today's high to the exact same date last year (e.g., 'It is 5 degrees warmer than this day last year').", defaultValue: false
-            input "infoPlanning", "bool", title: "Include Dry Planning Windows", description: "If rain is expected today, scans the hourly forecast to find a block of 3+ dry hours for outdoor planning.", defaultValue: false
-            input "infoStargazing", "bool", title: "Include Stargazing / Night Sky Conditions", description: "Checks cloud cover between 8 PM and midnight. Alerts you if skies are perfectly clear.", defaultValue: false
+            input "infoHistorical", "bool", title: "Include Historical Context", defaultValue: false
+            input "infoPlanning", "bool", title: "Include Dry Planning Windows", defaultValue: false
+            input "infoStargazing", "bool", title: "Include Stargazing / Night Sky Conditions", defaultValue: false
         }
 
         section(title: "<b>5. Broadcast Triggers</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:12px; color:#555;'><b>Setup Tip:</b> Toggle on the specific triggers you want to configure. Unused triggers remain hidden to keep your settings clean.</div>"
-            
             paragraph "<b>🕒 Scheduled Time Triggers</b>"
             input "enableTime1", "bool", title: "Enable Time Trigger 1", submitOnChange: true, defaultValue: false
             if (enableTime1) {
@@ -150,7 +141,6 @@ def mainPage() {
                 input "timeAudio1", "bool", title: "Play Audio Broadcast (TTS)?", defaultValue: true
             }
             paragraph "<hr>"
-            
             input "enableTime2", "bool", title: "Enable Time Trigger 2", submitOnChange: true, defaultValue: false
             if (enableTime2) {
                 input "timeTrigger2", "time", title: "Time Trigger 2", required: true
@@ -160,7 +150,6 @@ def mainPage() {
                 input "timeAudio2", "bool", title: "Play Audio Broadcast (TTS)?", defaultValue: true
             }
             paragraph "<hr>"
-            
             input "enableTime3", "bool", title: "Enable Time Trigger 3", submitOnChange: true, defaultValue: false
             if (enableTime3) {
                 input "timeTrigger3", "time", title: "Time Trigger 3", required: true
@@ -173,15 +162,14 @@ def mainPage() {
             paragraph "<hr><b>🏠 Mode-Based Triggers</b>"
             input "enableMode1", "bool", title: "Enable Mode Trigger 1", submitOnChange: true, defaultValue: false
             if (enableMode1) {
-                input "triggerMode1", "mode", title: "Mode Change To:", description: "E.g., Trigger when mode changes to 'Awake'.", required: true, multiple: false
+                input "triggerMode1", "mode", title: "Mode Change To:", required: true, multiple: false
                 input "t1StartTime", "time", title: "Allowable Start Time", required: false
                 input "t1EndTime", "time", title: "Allowable End Time", required: false
                 input "modeNotifyTarget1", "enum", title: "Who gets the Push Notification?", options: ["User 1", "User 2", "User 3", "User 4", "All Profiles", "No Push Notification"], defaultValue: "All Profiles"
                 input "modeAudio1", "bool", title: "Play Audio Broadcast (TTS)?", defaultValue: true
-                input "modeDelay1", "number", title: "Delay Audio Broadcast (Seconds)", description: "Useful if smart speakers need time to power on and connect to Wi-Fi.", required: false, defaultValue: 0
+                input "modeDelay1", "number", title: "Delay Audio Broadcast (Seconds)", required: false, defaultValue: 0
             }
             paragraph "<hr>"
-            
             input "enableMode2", "bool", title: "Enable Mode Trigger 2", submitOnChange: true, defaultValue: false
             if (enableMode2) {
                 input "triggerMode2", "mode", title: "Mode Change To:", required: true, multiple: false
@@ -189,9 +177,9 @@ def mainPage() {
                 input "t2EndTime", "time", title: "Allowable End Time", required: false
                 input "modeNotifyTarget2", "enum", title: "Who gets the Push Notification?", options: ["User 1", "User 2", "User 3", "User 4", "All Profiles", "No Push Notification"], defaultValue: "All Profiles"
                 input "modeAudio2", "bool", title: "Play Audio Broadcast (TTS)?", defaultValue: true
-                input "modeDelay2", "number", title: "Delay Audio Broadcast (Seconds)", description: "Useful if smart speakers need time to power on and connect to Wi-Fi.", required: false, defaultValue: 0
+                input "modeDelay2", "number", title: "Delay Audio Broadcast (Seconds)", required: false, defaultValue: 0
             }
-            
+
             paragraph "<hr><b>🔘 Manual Switch Triggers</b>"
             input "enableSwitch1", "bool", title: "Enable Switch Trigger 1", submitOnChange: true, defaultValue: false
             if (enableSwitch1) {
@@ -201,10 +189,9 @@ def mainPage() {
                 input "sw1EndTime", "time", title: "Allowable End Time", required: false
                 input "sw1Modes", "mode", title: "Only when in Mode(s)", multiple: true, required: false
                 input "sw1NotifyTarget", "enum", title: "Who gets the Push Notification?", options: ["User 1", "User 2", "User 3", "User 4", "All Profiles", "No Push Notification"], defaultValue: "All Profiles"
-                input "sw1Audio", "bool", title: "Play Audio Broadcast (TTS)?", description: "Turn this OFF if you want a silent push notification so you don't wake the house.", defaultValue: false
+                input "sw1Audio", "bool", title: "Play Audio Broadcast (TTS)?", defaultValue: false
             }
             paragraph "<hr>"
-            
             input "enableSwitch2", "bool", title: "Enable Switch Trigger 2", submitOnChange: true, defaultValue: false
             if (enableSwitch2) {
                 input "triggerSwitch2", "capability.switch", title: "Switch Trigger 2", required: true, multiple: false
@@ -213,10 +200,9 @@ def mainPage() {
                 input "sw2EndTime", "time", title: "Allowable End Time", required: false
                 input "sw2Modes", "mode", title: "Only when in Mode(s)", multiple: true, required: false
                 input "sw2NotifyTarget", "enum", title: "Who gets the Push Notification?", options: ["User 1", "User 2", "User 3", "User 4", "All Profiles", "No Push Notification"], defaultValue: "All Profiles"
-                input "sw2Audio", "bool", title: "Play Audio Broadcast (TTS)?", description: "Turn this OFF if you want a silent push notification so you don't wake the house.", defaultValue: false
+                input "sw2Audio", "bool", title: "Play Audio Broadcast (TTS)?", defaultValue: false
             }
             paragraph "<hr>"
-            
             input "enableSwitch3", "bool", title: "Enable Switch Trigger 3", submitOnChange: true, defaultValue: false
             if (enableSwitch3) {
                 input "triggerSwitch3", "capability.switch", title: "Switch Trigger 3", required: true, multiple: false
@@ -225,34 +211,29 @@ def mainPage() {
                 input "sw3EndTime", "time", title: "Allowable End Time", required: false
                 input "sw3Modes", "mode", title: "Only when in Mode(s)", multiple: true, required: false
                 input "sw3NotifyTarget", "enum", title: "Who gets the Push Notification?", options: ["User 1", "User 2", "User 3", "User 4", "All Profiles", "No Push Notification"], defaultValue: "All Profiles"
-                input "sw3Audio", "bool", title: "Play Audio Broadcast (TTS)?", description: "Turn this OFF if you want a silent push notification so you don't wake the house.", defaultValue: false
+                input "sw3Audio", "bool", title: "Play Audio Broadcast (TTS)?", defaultValue: false
             }
         }
 
         section(title: "<b>6. Outputs & Advanced Devices</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:12px; color:#555;'><b>Setup Tip:</b> You can assign different, personalized personas to your audio speakers and individual family members' push notification devices here.</div>"
-            
             paragraph "<b>Audio Announcements</b>"
-            input "ttsPersona", "enum", title: "TTS Audio Persona", description: "The personality used when playing audio out loud over your speakers.", options: ["Professional", "Casual", "Technical", "Disgruntled", "GenZ"], defaultValue: "Professional"
-            input "ttsSpeakers", "capability.speechSynthesis", title: "Standard TTS Speakers", description: "Standard devices like Echo Dots or Google Homes.", required: false, multiple: true
-            input "advAudio", "capability.audioVolume", title: "Advanced Speakers", description: "Speakers that support volume restoration (like Sonos).", required: false, multiple: true
+            input "ttsPersona", "enum", title: "TTS Audio Persona", options: ["Professional", "Casual", "Technical", "Disgruntled", "GenZ"], defaultValue: "Professional"
+            input "ttsSpeakers", "capability.speechSynthesis", title: "Standard TTS Speakers", required: false, multiple: true
+            input "advAudio", "capability.audioVolume", title: "Advanced Speakers", required: false, multiple: true
             input "advAudioVol", "number", title: "Advanced Speaker Broadcast Volume (1-100)", required: false, range: "1..100"
             
             paragraph "<hr><b>Personalized Push Notifications (Up to 4 Profiles)</b>"
-            input "notifyUser1", "capability.notification", title: "User 1 Device(s)", description: "Select the Hubitat mobile app device for User 1.", required: false, multiple: true
+            input "notifyUser1", "capability.notification", title: "User 1 Device(s)", required: false, multiple: true
             input "personaUser1", "enum", title: "User 1 Persona", options: ["Professional", "Casual", "Technical", "Disgruntled", "GenZ"], defaultValue: "Professional"
-            
             input "notifyUser2", "capability.notification", title: "User 2 Device(s)", required: false, multiple: true
             input "personaUser2", "enum", title: "User 2 Persona", options: ["Professional", "Casual", "Technical", "Disgruntled", "GenZ"], defaultValue: "Professional"
-            
             input "notifyUser3", "capability.notification", title: "User 3 Device(s)", required: false, multiple: true
             input "personaUser3", "enum", title: "User 3 Persona", options: ["Professional", "Casual", "Technical", "Disgruntled", "GenZ"], defaultValue: "Professional"
-            
             input "notifyUser4", "capability.notification", title: "User 4 Device(s)", required: false, multiple: true
             input "personaUser4", "enum", title: "User 4 Persona", options: ["Professional", "Casual", "Technical", "Disgruntled", "GenZ"], defaultValue: "Professional"
             
             paragraph "<hr><b>Visual Indicators</b>"
-            input "visualIndicators", "capability.colorControl", title: "Visual Weather Indicators", description: "Select RGB smart bulbs/switches. They will turn Blue for rain, Red for extreme heat, Cyan for freezing cold, or Green for moderate weather.", required: false, multiple: true
+            input "visualIndicators", "capability.colorControl", title: "Visual Weather Indicators", required: false, multiple: true
             
             paragraph "<hr><b>System Actions</b>"
             input "btnTestTTS", "button", title: "🔊 Test Audio Broadcast"
@@ -261,7 +242,6 @@ def mainPage() {
         }
 
         section(title: "<b>7. Recent Action History</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:12px; color:#555;'><b>Setup Tip:</b> Review this log if your triggers aren't firing to see if the network failed or a mode constraint blocked it.</div>"
             input "txtEnable", "bool", title: "Enable Description Text Logging", defaultValue: true
             if (state.actionHistory) {
                 def historyStr = state.actionHistory.join("<br>")
@@ -306,6 +286,13 @@ def appButtonHandler(btn) {
     else if (btn == "btnCreateDevice") { createChildDevice(); routineSync(); logAction("Child device created.") }
 }
 
+// ----------------- HELPER FUNCTIONS -----------------
+
+def getRandomPhrase(List phrases) {
+    if (!phrases) return ""
+    return phrases[new Random().nextInt(phrases.size())]
+}
+
 def checkDays(daysList) {
     if (!daysList) return true 
     def df = new java.text.SimpleDateFormat("EEEE")
@@ -327,13 +314,12 @@ def checkTime(start, end) {
 def hasInternet() {
     if (state.lastErrorTime) {
         long elapsed = (now() - state.lastErrorTime) / 60000
-        if (elapsed < 15) { 
-            log.warn "Advanced Meteorologist: Network in 15-min cooldown."
-            return false
-        }
+        if (elapsed < 15) return false
     }
     return true
 }
+
+// ----------------- CORE LOGIC -----------------
 
 def routineSync() {
     if (!hasInternet()) {
@@ -377,21 +363,13 @@ def executeTargetedBroadcast(target, playAudio = true) {
     
     if (target == "All Profiles") {
         sendUserPush(1); sendUserPush(2); sendUserPush(3); sendUserPush(4)
-    } else if (target == "User 1") {
-        sendUserPush(1)
-    } else if (target == "User 2") {
-        sendUserPush(2)
-    } else if (target == "User 3") {
-        sendUserPush(3)
-    } else if (target == "User 4") {
-        sendUserPush(4)
-    }
+    } else if (target == "User 1") sendUserPush(1)
+      else if (target == "User 2") sendUserPush(2)
+      else if (target == "User 3") sendUserPush(3)
+      else if (target == "User 4") sendUserPush(4)
 }
 
-def delayedAudioOnlyBroadcast() {
-    logAction("Executing delayed audio broadcast.")
-    executeTargetedBroadcast("No Push Notification", true)
-}
+def delayedAudioOnlyBroadcast() { executeTargetedBroadcast("No Push Notification", true) }
 
 def sendUserPush(userNum) {
     def dev = settings["notifyUser${userNum}"]
@@ -428,16 +406,15 @@ def sendSplitNotification(text, devices) {
             int end = Math.min(i + maxSentences - 1, sentences.size() - 1)
             parts << sentences[i..end].join(" ")
         }
-        parts.eachWithIndex { part, index ->
-            devices.deviceNotification("Part ${index + 1}/${parts.size()}: ${part}")
-        }
+        parts.eachWithIndex { part, index -> devices.deviceNotification("Part ${index + 1}/${parts.size()}: ${part}") }
     }
 }
+
+// ----------------- EVENT HANDLERS -----------------
 
 def timeTrigger1Handler() { 
     if (!checkDays(timeDays1)) return
     if (!checkModes(timeModes1)) return
-    logAction("Time Trigger 1 activated.")
     boolean doAudio = (timeAudio1 != null) ? timeAudio1 : true
     executeTargetedBroadcast(timeNotifyTarget1 ?: "All Profiles", doAudio) 
 }
@@ -445,7 +422,6 @@ def timeTrigger1Handler() {
 def timeTrigger2Handler() { 
     if (!checkDays(timeDays2)) return
     if (!checkModes(timeModes2)) return
-    logAction("Time Trigger 2 activated.")
     boolean doAudio = (timeAudio2 != null) ? timeAudio2 : true
     executeTargetedBroadcast(timeNotifyTarget2 ?: "All Profiles", doAudio) 
 }
@@ -453,7 +429,6 @@ def timeTrigger2Handler() {
 def timeTrigger3Handler() { 
     if (!checkDays(timeDays3)) return
     if (!checkModes(timeModes3)) return
-    logAction("Time Trigger 3 activated.")
     boolean doAudio = (timeAudio3 != null) ? timeAudio3 : true
     executeTargetedBroadcast(timeNotifyTarget3 ?: "All Profiles", doAudio) 
 }
@@ -464,7 +439,6 @@ def modeChangeHandler(evt) {
 
     if (enableMode1 && triggerMode1 && newMode == triggerMode1) {
         if (!t1StartTime || !t1EndTime || timeOfDayIsBetween(toDateTime(t1StartTime), toDateTime(t1EndTime), nowTime, location.timeZone)) {
-            logAction("Mode Trigger 1 activated (${newMode}).")
             boolean doAudio = (modeAudio1 != null) ? modeAudio1 : true
             int delay = modeDelay1 ?: 0
             def target = modeNotifyTarget1 ?: "All Profiles"
@@ -480,7 +454,6 @@ def modeChangeHandler(evt) {
     
     if (enableMode2 && triggerMode2 && newMode == triggerMode2) {
         if (!t2StartTime || !t2EndTime || timeOfDayIsBetween(toDateTime(t2StartTime), toDateTime(t2EndTime), nowTime, location.timeZone)) {
-            logAction("Mode Trigger 2 activated (${newMode}).")
             boolean doAudio = (modeAudio2 != null) ? modeAudio2 : true
             int delay = modeDelay2 ?: 0
             def target = modeNotifyTarget2 ?: "All Profiles"
@@ -500,26 +473,24 @@ def switchTrigger2Handler(evt) { handleSwitchTrigger(2, triggerSwitch2, sw2Start
 def switchTrigger3Handler(evt) { handleSwitchTrigger(3, triggerSwitch3, sw3StartTime, sw3EndTime, sw3Modes, sw3NotifyTarget, sw3Audio, sw3AutoOff) }
 
 def handleSwitchTrigger(num, sw, start, end, modes, target, playAudio, autoOff) {
-    logAction("Virtual Switch ${num} triggered.")
-    if (!checkTime(start, end)) { logAction("Trigger ignored: Outside allowed time window."); return }
-    if (!checkModes(modes)) { logAction("Trigger ignored: Not in allowed mode."); return }
+    if (!checkTime(start, end)) return 
+    if (!checkModes(modes)) return 
     
     boolean doAudio = (playAudio != null) ? playAudio : false
     executeTargetedBroadcast(target ?: "All Profiles", doAudio)
-    
-    if (autoOff) {
-        runIn(2, "turnOffSwitch${num}")
-    }
+    if (autoOff) runIn(2, "turnOffSwitch${num}")
 }
 
 def turnOffSwitch1() { if (triggerSwitch1) triggerSwitch1.off() }
 def turnOffSwitch2() { if (triggerSwitch2) triggerSwitch2.off() }
 def turnOffSwitch3() { if (triggerSwitch3) triggerSwitch3.off() }
 
+// ----------------- DATA FETCHING -----------------
+
 def fetchApiData() {
     def lat = location.latitude
     def lon = location.longitude
-    if (!lat || !lon) { logAction("ERROR: Hub Lat/Lon missing."); state.apiFailed = true; return }
+    if (!lat || !lon) { state.apiFailed = true; return }
 
     def url = "https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,apparent_temperature,weather_code,wind_gusts_10m&hourly=precipitation,cloudcover&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,uv_index_max&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&timezone=auto"
     
@@ -543,14 +514,10 @@ def fetchApiData() {
                 state.apiHourlyRain = data.hourly?.precipitation ?: []
                 state.apiHourlyClouds = data.hourly?.cloudcover ?: []
             } else { 
-                state.apiFailed = true
-                state.lastErrorTime = now() 
+                state.apiFailed = true; state.lastErrorTime = now() 
             }
         }
-    } catch (e) {
-        logAction("ERROR fetching weather API: ${e.message}")
-        state.apiFailed = true; state.lastErrorTime = now()
-    }
+    } catch (e) { state.apiFailed = true; state.lastErrorTime = now() }
 }
 
 def fetchHistoricalData() {
@@ -566,7 +533,7 @@ def fetchHistoricalData() {
                 state.historyHigh = resp.data.daily.temperature_2m_max[0]?.toBigDecimal()?.setScale(0, BigDecimal.ROUND_HALF_UP)
             }
         }
-    } catch (e) { logAction("Failed to fetch historical data: ${e.message}"); state.historyHigh = null }
+    } catch (e) { state.historyHigh = null }
 }
 
 def fetchPollenData() {
@@ -589,6 +556,8 @@ def fetchPollenData() {
         }
     } catch (e) { state.pollenIndex = null }
 }
+
+// ----------------- DYNAMIC SCRIPT GENERATOR -----------------
 
 def generateScript(overridePersona = null) {
     def script = ""
@@ -613,11 +582,11 @@ def generateScript(overridePersona = null) {
     }
     
     if (state.apiFailed) {
-        if (persona == "Technical") script += "Warning: Primary weather API connection failed. Reverting to cached or partial data sets. "
-        else if (persona == "Disgruntled") script += "Of course the weather service is down. Why would anything work today? "
-        else if (persona == "GenZ") script += "Bruh, the weather API is lowkey buggin' right now, so this report is an L. "
-        else if (persona == "Casual") script += "Oops, looks like my connection to the weather service is down right now, so I only have part of your report. "
-        else script += "I currently cannot connect to the weather service, so part of your report is missing. "
+        if (persona == "Technical") script += getRandomPhrase(["Warning: Primary weather API connection failed. ", "Error: Weather dataset is incomplete. "])
+        else if (persona == "Disgruntled") script += getRandomPhrase(["Of course the weather service is down. ", "The weather API is broken, typical. "])
+        else if (persona == "GenZ") script += getRandomPhrase(["Bruh, the weather API is lowkey buggin'. ", "Weather service is taking a massive L right now. "])
+        else if (persona == "Casual") script += getRandomPhrase(["Oops, looks like my connection to the weather service is down right now. ", "I'm having trouble pulling the full forecast right now. "])
+        else script += getRandomPhrase(["I currently cannot connect to the weather service. ", "Part of your report is missing due to a connection issue. "])
     }
     
     if (useGreeting) {
@@ -626,11 +595,11 @@ def generateScript(overridePersona = null) {
         if (hour >= 4 && hour < 12) greetingWord = "Good morning"
         else if (hour >= 12 && hour < 17) greetingWord = "Good afternoon"
         
-        if (persona == "Technical") script += "System initialized. ${greetingWord}. "
-        else if (persona == "Disgruntled") script += "Ugh, ${greetingWord.toLowerCase()}. Is it Friday yet? "
-        else if (persona == "GenZ") script += "Yo chat, ${greetingWord.toLowerCase()}. Let's do a quick vibe check on the weather. "
-        else if (persona == "Casual") script += "Hey there! ${greetingWord} to you! "
-        else script += "${greetingWord}. "
+        if (persona == "Technical") script += getRandomPhrase(["System initialized. ${greetingWord}. ", "Telemetry active. ${greetingWord}. ", "Beginning atmospheric briefing. ${greetingWord}. "])
+        else if (persona == "Disgruntled") script += getRandomPhrase(["Ugh, ${greetingWord.toLowerCase()}. Is it Friday yet? ", "Here we go again. ${greetingWord}. ", "Why am I awake? Anyway, ${greetingWord.toLowerCase()}. "])
+        else if (persona == "GenZ") script += getRandomPhrase(["Yo chat, ${greetingWord.toLowerCase()}. Let's do a quick vibe check on the weather. ", "What's good. ${greetingWord}. ", "Woke up and chose weather. ${greetingWord}. "])
+        else if (persona == "Casual") script += getRandomPhrase(["Hey there! ${greetingWord} to you! ", "Hi! ${greetingWord}! Let's check the weather. ", "Hope you're having a good day! ${greetingWord}. "])
+        else script += getRandomPhrase(["${greetingWord}. ", "Here is your weather update. ${greetingWord}. ", "${greetingWord}. Let's look at the forecast. "])
     }
     
     if (useMicro && localStation) {
@@ -639,19 +608,25 @@ def generateScript(overridePersona = null) {
         def lWind = localStation.currentValue("windSpeed")
         
         if (persona == "Technical") {
-            script += "Local sensor telemetry indicates an ambient temperature of ${lTemp} degrees Fahrenheit with ${lHum} percent relative humidity. "
+            script += getRandomPhrase([
+                "Local sensor telemetry indicates an ambient temperature of ${lTemp} degrees Fahrenheit with ${lHum} percent relative humidity. ",
+                "Current micro-climate data reads ${lTemp} degrees and ${lHum} percent humidity. ",
+                "On-site thermal metrics show ${lTemp} degrees with a humidity index of ${lHum} percent. "
+            ])
             if (lWind != null && lWind > 5) script += "Anemometer readings show localized wind speeds of ${lWind} miles per hour. "
-        } else if (persona == "Disgruntled") {
-            script += "Right outside, where I'd rather be, it's ${lTemp} degrees with ${lHum} percent humidity. "
-            if (lWind != null && lWind > 5) script += "And the wind is blowing at ${lWind} mph. Fantastic. "
-        } else if (persona == "GenZ") {
-            script += "Right outside your door, it's giving ${lTemp} degrees and ${lHum} percent humidity. "
-            if (lWind != null && lWind > 5) script += "We got some wind too, pushing ${lWind} mph. "
         } else if (persona == "Casual") {
-            script += "Stepping right outside your door, it's sitting at ${lTemp} degrees, and humidity is around ${lHum} percent. "
+            script += getRandomPhrase([
+                "Stepping right outside your door, it's sitting at ${lTemp} degrees, and humidity is around ${lHum} percent. ",
+                "Right now, your porch sensor is reading ${lTemp} degrees with ${lHum} percent humidity. ",
+                "Locally, it's currently ${lTemp} degrees out there with a humidity of ${lHum} percent. "
+            ])
             if (lWind != null && lWind > 5) script += "We've got a nice little breeze out there at ${lWind} miles per hour. "
         } else {
-            script += "Right now at your house, it is currently ${lTemp} degrees with a humidity of ${lHum} percent. "
+            script += getRandomPhrase([
+                "Right now at your house, it is currently ${lTemp} degrees with a humidity of ${lHum} percent. ",
+                "Your local sensor indicates it is ${lTemp} degrees and ${lHum} percent humidity. ",
+                "Outside your door, the temperature is ${lTemp} degrees with ${lHum} percent humidity. "
+            ])
             if (lWind != null && lWind > 5) script += "Winds are currently blowing at ${lWind} miles per hour. "
         }
     }
@@ -669,74 +644,67 @@ def generateScript(overridePersona = null) {
         def uvIndex = safeGet(state.apiDailyUV, tIndex, 0)
 
         if (activeProfileName == "Evening") {
-            if (persona == "Technical") script += "Nocturnal models show thermal lows dropping to ${tLow}. Forward projections for tomorrow indicate ${cond} with a thermal peak of ${tHigh}. "
-            else if (persona == "Disgruntled") script += "Overnight it drops to ${tLow}. Tomorrow is just another workday with ${cond} and a high of ${tHigh}. "
-            else if (persona == "GenZ") script += "Tonight we're dropping to ${tLow}. Tomorrow's looking like ${cond} with a high of ${tHigh}, totally valid. "
-            else if (persona == "Casual") script += "Overnight, we'll cool down to around ${tLow}. Looking ahead to tomorrow, it's shaping up to be ${cond} with temperatures topping out near ${tHigh}. "
-            else script += "Overnight, expect temperatures to drop to a low of ${tLow}. Looking ahead to tomorrow, we will see ${cond} with a high of ${tHigh}. "
+            if (persona == "Casual") {
+                script += getRandomPhrase([
+                    "Overnight, we'll cool down to around ${tLow}. Looking ahead to tomorrow, it's shaping up to be ${cond} with temperatures topping out near ${tHigh}. ",
+                    "Expect temperatures to drop to ${tLow} tonight. For tomorrow, we are looking at ${cond} and a high of ${tHigh}. ",
+                    "Tonight's low will hit ${tLow}. Tomorrow's outlook calls for ${cond} with a high around ${tHigh}. "
+                ])
+            } else {
+                script += getRandomPhrase([
+                    "Overnight, expect temperatures to drop to a low of ${tLow}. Looking ahead to tomorrow, we will see ${cond} with a high of ${tHigh}. ",
+                    "Tonight will see a low of ${tLow}. Tomorrow's forecast indicates ${cond} and a high of ${tHigh}. "
+                ])
+            }
         } else {
-            if (persona == "Technical") script += "Macro-forecast models for today indicate ${cond}. Thermal highs will peak at ${tHigh}, before descending to a nocturnal minimum of ${tLow}. "
-            else if (persona == "Disgruntled") script += "Today brings ${cond} and a high of ${tHigh}. Tonight it drops to ${tLow}. Let's just get this over with. "
-            else if (persona == "GenZ") script += "Today's main character energy is ${cond} with a high of ${tHigh}. Dropping to ${tLow} tonight. "
-            else if (persona == "Casual") script += "For the rest of the day, it's looking like ${cond}. We're aiming for a high of ${tHigh}, and cooling down to ${tLow} later tonight. "
-            else script += "Looking at the broader forecast, expect ${cond} today. We will reach a high of ${tHigh}, and drop to a low of ${tLow} tonight. "
+            if (persona == "Casual") {
+                script += getRandomPhrase([
+                    "For the rest of the day, it's looking like ${cond}. We're aiming for a high of ${tHigh}, and cooling down to ${tLow} later tonight. ",
+                    "Today's overall forecast calls for ${cond} with temperatures reaching ${tHigh}. Tonight, we'll drop to ${tLow}. ",
+                    "Moving to the big picture, expect ${cond} today with a peak of ${tHigh}. Tonight's low will be ${tLow}. "
+                ])
+            } else {
+                script += getRandomPhrase([
+                    "Looking at the broader forecast, expect ${cond} today. We will reach a high of ${tHigh}, and drop to a low of ${tLow} tonight. ",
+                    "Today's macro forecast indicates ${cond} and a high of ${tHigh}. The overnight low will be ${tLow}. "
+                ])
+            }
         }
         
         if (infoHistorical && state.historyHigh != null && tHigh != "unknown" && activeProfileName != "Evening") {
             int diff = tHigh.toInteger() - state.historyHigh.toInteger()
             if (Math.abs(diff) >= 3) {
                 def dir = diff > 0 ? "warmer" : "colder"
-                if (persona == "Technical") script += "Historical data indicates today's peak thermal output is ${Math.abs(diff)} degrees ${dir} than this exact date last year. "
-                else if (persona == "Disgruntled") script += "For the record, it's ${Math.abs(diff)} degrees ${dir} than exactly a year ago. Time is a flat circle. "
-                else if (persona == "GenZ") script += "Wait, it's literally ${Math.abs(diff)} degrees ${dir} than this day last year. Crazy character development. "
-                else if (persona == "Casual") script += "Fun fact! Today is actually about ${Math.abs(diff)} degrees ${dir} than this exact same day last year. "
-                else script += "Looking at historical data, today's high is ${Math.abs(diff)} degrees ${dir} compared to this exact date last year. "
+                script += getRandomPhrase([
+                    "Fun fact! Today's high is ${Math.abs(diff)} degrees ${dir} than this exact date last year. ",
+                    "Looking at historical data, today is actually ${Math.abs(diff)} degrees ${dir} compared to this time last year. "
+                ])
             }
         }
         
         if (useClothing && tHigh != "unknown") {
             def tempInt = tHigh.toInteger()
-            if (tempInt < 40) {
-                if (persona == "Disgruntled") script += "It's freezing. Wear a coat. Or don't, whatever. "
-                else if (persona == "GenZ") script += "It's literally freezing out, definitely bundle up. No cap. "
-                else script += "It's going to be freezing out there, so definitely grab a heavy coat. "
-            } else if (tempInt < 60) {
-                if (persona == "Disgruntled") script += "It's chilly. Put on a sweater. "
-                else if (persona == "GenZ") script += "It's a little brick out, grab a jacket for the fit. "
-                else script += "It's a bit chilly, so a light jacket or sweater is recommended. "
-            } else if (tempInt < 80) {
-                if (persona == "Disgruntled") script += "It's fine out. Short sleeves will do. "
-                else if (persona == "GenZ") script += "Weather is bussin', short sleeves are the move today. "
-                else script += "It's very comfortable out, short sleeves should be perfectly fine. "
-            } else {
-                if (persona == "Disgruntled") script += "It's hot. Try not to melt before the weekend. "
-                else if (persona == "GenZ") script += "It's cooking out there, dress light and stay hydrated besties. "
-                else script += "It's going to be hot, so dress lightly to stay cool. "
-            }
+            if (tempInt < 40) script += getRandomPhrase(["It's going to be freezing out there, so definitely grab a heavy coat. ", "Bundle up, a winter coat is necessary today. "])
+            else if (tempInt < 60) script += getRandomPhrase(["It's a bit chilly, so a light jacket or sweater is recommended. ", "You might want to grab a sweater or light jacket before heading out. "])
+            else if (tempInt < 80) script += getRandomPhrase(["It's very comfortable out, short sleeves should be perfectly fine. ", "The temperature is pleasant, a t-shirt will do just fine. "])
+            else script += getRandomPhrase(["It's going to be hot, so dress lightly to stay cool. ", "With the heat today, short sleeves and light clothing are recommended. "])
         }
         
         if (useFeels && state.apiApparentTemp && state.apiCurrentTemp) {
             if (Math.abs(state.apiCurrentTemp - state.apiApparentTemp) >= 4) {
-                if (persona == "Technical") script += "However, apparent temperature algorithms calculate a current heat index of ${state.apiApparentTemp}. "
-                else if (persona == "Disgruntled") script += "But it actually feels like ${state.apiApparentTemp}. Go figure. "
-                else if (persona == "GenZ") script += "But lowkey, it feels more like ${state.apiApparentTemp} out there. "
-                else if (persona == "Casual") script += "Just a heads up though, it actually feels closer to ${state.apiApparentTemp} out there. "
-                else script += "However, it currently feels more like ${state.apiApparentTemp} out there. "
+                script += getRandomPhrase([
+                    "Just a heads up though, it actually feels closer to ${state.apiApparentTemp} out there. ",
+                    "Factoring in the conditions, it feels more like ${state.apiApparentTemp}. "
+                ])
             }
-        }
-        if (useFeels && state.apiWindGust && state.apiWindGust > 20) {
-            if (persona == "Technical") script += "Warning: Wind gusts up to ${state.apiWindGust} miles per hour are currently projected. "
-            else if (persona == "Disgruntled") script += "Watch out for ${state.apiWindGust} mph wind gusts trying to ruin your day. "
-            else if (persona == "GenZ") script += "Wind is acting sus with gusts up to ${state.apiWindGust} mph. "
-            else script += "Watch out for sudden wind gusts reaching up to ${state.apiWindGust} miles per hour. "
         }
         
         if (useRain && rainAmt > 0) {
-            if (persona == "Technical") script += "Precipitation probability models estimate ${rainAmt} inches of accumulation ${dayContext.toLowerCase()}. "
-            else if (persona == "Disgruntled") script += "We're stuck with ${rainAmt} inches of rain ${dayContext.toLowerCase()}. Perfect. "
-            else if (persona == "GenZ") script += "We're getting ${rainAmt} inches of rain ${dayContext.toLowerCase()}, massive L. "
-            else if (persona == "Casual") script += "Looks like we'll be getting about ${rainAmt} inches of rain ${dayContext.toLowerCase()}, so keep an umbrella handy! "
-            else script += "We are expecting about ${rainAmt} inches of rain ${dayContext.toLowerCase()}. "
+            script += getRandomPhrase([
+                "Looks like we'll be getting about ${rainAmt} inches of rain ${dayContext.toLowerCase()}. ",
+                "Expect roughly ${rainAmt} inches of precipitation ${dayContext.toLowerCase()}. ",
+                "Keep an umbrella handy, we are tracking ${rainAmt} inches of rain ${dayContext.toLowerCase()}. "
+            ])
             
             if (infoPlanning && activeProfileName != "Evening") {
                 def currentHourIndex = new Date().format("HH", location.timeZone).toInteger()
@@ -766,64 +734,37 @@ def generateScript(overridePersona = null) {
                 
                 if (maxDryLength >= 3 && dryStartHour != -1) {
                     def displayHour = dryStartHour > 12 ? "${dryStartHour - 12} PM" : (dryStartHour == 12 ? "12 PM" : "${dryStartHour} AM")
-                    if (persona == "Technical") script += "Precipitation models indicate a sustained dry window of ${maxDryLength} hours commencing at ${displayHour}. "
-                    else if (persona == "Disgruntled") script += "If you have to go outside, you have a dry window of ${maxDryLength} hours starting at ${displayHour}. Good luck. "
-                    else if (persona == "GenZ") script += "If you need to touch grass, you've got a solid ${maxDryLength} hour window of zero rain starting at ${displayHour}. W timing. "
-                    else if (persona == "Casual") script += "Even with the rain, it looks like you'll have a nice dry window of about ${maxDryLength} hours starting around ${displayHour}. "
-                    else script += "If you need to plan outdoor activities, our models show a dry window of approximately ${maxDryLength} hours beginning at ${displayHour}. "
+                    script += getRandomPhrase([
+                        "Even with the rain, it looks like you'll have a nice dry window of about ${maxDryLength} hours starting around ${displayHour}. ",
+                        "If you need to plan outdoor activities, our models show a dry gap of approximately ${maxDryLength} hours beginning at ${displayHour}. "
+                    ])
                 }
             }
         }
         
-        if (useUV && uvIndex > 5) {
-            if (persona == "Disgruntled") script += "UV index is at ${uvIndex}, so don't get sunburned on top of everything else. "
-            else if (persona == "GenZ") script += "UV index is peaking at ${uvIndex}, so don't forget the sunscreen. "
-            else if (persona == "Casual") script += "The sun is going to be pretty strong today with a UV index of ${uvIndex}, so sunscreen is a good idea. "
-            else script += "The UV index will peak at ${uvIndex}, so be sure to wear sunscreen. "
-        }
+        if (useUV && uvIndex > 5) script += getRandomPhrase(["The UV index will peak at ${uvIndex}, so be sure to wear sunscreen. ", "Sun intensity is high today with a UV index of ${uvIndex}. "])
     }
     
     if (infoStargazing && state.apiHourlyClouds) {
-        def eveningClouds = 0
-        def count = 0
-        for (int i = 20; i <= 23; i++) {
-             if(state.apiHourlyClouds.size() > i) {
-                 eveningClouds += state.apiHourlyClouds[i]
-                 count++
-             }
-        }
+        def eveningClouds = 0; def count = 0
+        for (int i = 20; i <= 23; i++) { if(state.apiHourlyClouds.size() > i) { eveningClouds += state.apiHourlyClouds[i]; count++ } }
         def avgClouds = count > 0 ? (eveningClouds / count) : 100
         
-        if (avgClouds < 20) {
-             if (persona == "Technical") script += "Nocturnal cloud cover is projected below 20 percent, providing optimal atmospheric transparency for astronomical observations. "
-             else if (persona == "Disgruntled") script += "Skies are mostly clear tonight if you want to go outside and stare into the void of space. "
-             else if (persona == "GenZ") script += "Cloud cover is basically zero tonight, stargazing is gonna be an absolute movie. "
-             else if (persona == "Casual") script += "With barely any clouds tonight, it's going to be a perfect evening to step outside and do some stargazing! "
-             else script += "Expect minimal cloud cover this evening, creating excellent conditions for stargazing and viewing the night sky. "
-        }
+        if (avgClouds < 20) script += getRandomPhrase(["With barely any clouds tonight, it's going to be a perfect evening to step outside and do some stargazing! ", "Expect minimal cloud cover this evening, creating excellent conditions for viewing the night sky. "])
     }
     
-    if (usePollen && state.pollenIndex) {
-        if (persona == "Disgruntled") script += "Pollen is ${state.pollenIndex}. My allergies are already killing me. "
-        else if (persona == "GenZ") script += "Pollen is sitting at ${state.pollenIndex}, which is totally not a vibe. "
-        else script += "The pollen count is currently ${state.pollenIndex}, which is considered ${state.pollenCategory}. "
-    }
-    if (useMoon) {
-        if (persona == "Disgruntled") script += "Tonight's moon is a ${getMoonPhase()}. Who cares. "
-        else if (persona == "GenZ") script += "Tonight's moon is giving ${getMoonPhase()} energy. "
-        else script += "Tonight's moon phase will be a ${getMoonPhase()}. "
-    }
+    if (usePollen && state.pollenIndex) script += getRandomPhrase(["The pollen count is currently ${state.pollenIndex}, which is considered ${state.pollenCategory}. ", "For allergy trackers, pollen levels are sitting at ${state.pollenIndex} today. "])
+    
+    if (useMoon) script += getRandomPhrase(["Tonight's moon phase will be a ${getMoonPhase()}. ", "If you look up tonight, you'll see a ${getMoonPhase()}. "])
     
     if (useWeekly && state.apiDailyDates && state.apiDailyDates.size() >= 5) {
         def day4Name = getDayOfWeek(state.apiDailyDates[3])
         def day4High = safeGet(state.apiDailyHighs, 3, "unknown")
         def day4Cond = safeGet(state.apiDailyConditions, 3, "varying conditions")
-        
-        if (persona == "Technical") script += "Long-term projections indicate ${day4Name} will experience ${day4Cond} with temperatures holding near ${day4High} degrees."
-        else if (persona == "Disgruntled") script += "If we survive until ${day4Name}, expect ${day4Cond} and ${day4High} degrees. Can't wait."
-        else if (persona == "GenZ") script += "Looking ahead to ${day4Name}, it's gonna be ${day4Cond} with temps around ${day4High}. W weather."
-        else if (persona == "Casual") script += "Peeking ahead at the rest of the week, ${day4Name} is looking nice and ${day4Cond} with a high around ${day4High}."
-        else script += "Keep an eye out as we move through the week, ${day4Name} is looking to be ${day4Cond} with temperatures around ${day4High} degrees."
+        script += getRandomPhrase([
+            "Peeking ahead at the rest of the week, ${day4Name} is looking ${day4Cond} with a high around ${day4High}. ",
+            "Looking forward, expect ${day4Cond} and temperatures near ${day4High} on ${day4Name}. "
+        ])
     }
 
     if (!overridePersona) {
