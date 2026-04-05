@@ -737,6 +737,7 @@ def orchestrateHouseSync(data = null) {
     def allNeedToClose = true
     def eligibleCount = 0
     def allReasons = []
+    def actionRequiredCount = 0 // Tracks if any blind actually needs to physically move
     
     // 1. Calculate targets for all rooms without executing
     for (int i = 1; i <= (numRooms as Integer); i++) {
@@ -754,8 +755,24 @@ def orchestrateHouseSync(data = null) {
                 if (roomTarget.reason && !allReasons.contains(roomTarget.reason)) {
                     allReasons << roomTarget.reason
                 }
+                
+                // VERIFICATION: Check if the blind is already in the correct physical state
+                def currentState = settings["blindSensor_${i}"]?.currentValue("contact") ?: state.verifiedState["${i}"]
+                def expectedState = (roomTarget.action == "close") ? "closed" : roomTarget.action
+                
+                if (currentState != expectedState || state.targetState["${i}"] != roomTarget.action) {
+                    actionRequiredCount++ // A blind is out of sync and requires action
+                } else if (state.targetReason["${i}"] != roomTarget.reason) {
+                    // State matches, but the environment reason changed (e.g., Nighttime to Summer Mode). Silently update reason.
+                    state.targetReason["${i}"] = roomTarget.reason
+                }
             }
         }
+    }
+    
+    // If no blinds actually need to change state, exit silently to prevent log spam
+    if (actionRequiredCount == 0) {
+        return
     }
     
     // 2. Decide Execution Strategy
