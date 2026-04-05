@@ -181,7 +181,7 @@ def mainPage() {
                         else if (cState == "detected") displayStatus = "CO DETECTED"
                         else if (sState == "tested" || cState == "tested") displayStatus = "TESTING"
                         
-                         def lifeStatus = !sysEnabled ? "<span style='color:#dc3545; font-size:11px; font-weight:bold;'>🔴 DISABLED</span>" : "<span style='color:#28a745; font-size:11px; font-weight:bold;'>🟢 24/7 ARMED</span>"
+                        def lifeStatus = !sysEnabled ? "<span style='color:#dc3545; font-size:11px; font-weight:bold;'>🔴 DISABLED</span>" : "<span style='color:#28a745; font-size:11px; font-weight:bold;'>🟢 24/7 ARMED</span>"
 
                         dashHTML += "<tr>"
                         dashHTML += "<td><b>${dev.displayName}</b> <span style='font-size:10px; color:gray;'>(Batt: ${batt}%)</span></td>"
@@ -623,7 +623,7 @@ def mainPage() {
             input "pushCritical", "capability.notification", title: "Who receives Critical Alerts?", multiple: true, required: false
             input "pushWarnings", "capability.notification", title: "Who receives Security Warnings?", multiple: true, required: false
             input "warningModes", "mode", title: "Modes to ALLOW Warning notifications (Leave blank for 24/7)", multiple: true, required: false
-            
+          
             input "warnStartTimeType", "enum", title: "Warning Allowed Start", options: ["Specific Time", "Sunrise", "Sunset"], defaultValue: "Specific Time", submitOnChange: true
             if (settings.warnStartTimeType in ["Sunrise", "Sunset"]) input "warnStartOffset", "number", title: "Offset (minutes)", defaultValue: 0
             else input "warningStartTime", "time", title: "Specific Start Time", required: false
@@ -666,6 +666,7 @@ def updated() { logInfo("Updated"); unsubscribe(); unschedule(); initialize() }
 def initialize() {
     if (!state.eventHistory) state.eventHistory = []
     state.activeAlerts = [:] // Formatted as a Map for table deduplication
+    
     if (!state.leftOpenAlertSent) state.leftOpenAlertSent = [:]
   
     state.currentAlertLevel = "Normal"
@@ -718,7 +719,7 @@ def initialize() {
     
     if (bypassButton) subscribe(bypassButton, "pushed", bypassHandler)
     if (bypassSwitch) subscribe(bypassSwitch, "switch.on", bypassHandler)
-    
+   
     if (enableWatchdog) schedule("0 0 12 * * ?", dailyHealthCheck)
     
     logAction("Advanced House Security Initialized.")
@@ -876,7 +877,7 @@ def appButtonHandler(btn) {
             
             def zDev = [zDevs].flatten().findAll{it}.find { it.id == zDevId }
             if (zDev && fileNum) {
-                zDev.playSound(fileNum as Integer)
+                playZoozSound(zDev, fileNum)
                 logAction("Test Speaker: Played file ${fileNum} on ${zDev.displayName}")
             }
         }
@@ -910,7 +911,7 @@ def curfewHandler(evt) {
             if (tts) { applyTTSVolume(tts, true); tts.speak(msg) }
             if (push) push.deviceNotification(msg)
             playGranularZooz("curfewZooz", evt.device)
-    
+            
             triggerAlert("Critical", "Curfew Zone Breached: ${evt.device.displayName} opened during restricted hours!", evt.device.id, evt.device.displayName)
         }
     }
@@ -1046,16 +1047,39 @@ def playGranularZooz(settingPrefix, sourceDevice) {
     def zDevs = settings["${settingPrefix}_${sourceDevice.id}"]
     
     // Flatten ensures that even if only one item is selected (returning an Object instead of a List), it iterates safely
-    [zDevs].flatten().findAll{it}.each { zDev ->
+    [zDevs].flatten().findAll{it}.eachWithIndex { zDev, index ->
+        if (index > 0) pauseExecution(1000)
         def fileNum = settings["${settingPrefix}File_${sourceDevice.id}_${zDev.id}"]
         if (fileNum) { 
-            try {
-                zDev.playSound(fileNum as Integer)
-                played = true 
-            } catch (e) {
-                log.error "Failed to play sound on Zooz device ${zDev.displayName}: ${e}"
-            }
+            if (playZoozSound(zDev, fileNum)) played = true
         }
+    }
+    return played
+}
+
+// --- ROBUST ZOOZ PLAYBACK FIX ---
+def playZoozSound(zDev, soundNum) {
+    if (!zDev || soundNum == null) return false
+    
+    def played = false
+    def isNumeric = soundNum.toString().isNumber()
+    def trackNum = isNumeric ? soundNum.toString().toInteger() : null
+
+    try {
+        if (zDev.hasCommand("playSound") && trackNum != null) {
+            zDev.playSound(trackNum)
+            played = true
+        } else if (zDev.hasCommand("playTrack")) {
+            zDev.playTrack(soundNum.toString())
+            played = true
+        } else if (zDev.hasCommand("chime") && trackNum != null) {
+            zDev.chime(trackNum)
+            played = true
+        } else {
+            log.error "${zDev.displayName} does not support standard audio/siren commands (playSound, playTrack, or chime)."
+        }
+    } catch (e) {
+        log.error "Failed to play sound on Zooz device ${zDev.displayName}: ${e}"
     }
     return played
 }
@@ -1113,9 +1137,10 @@ def individualPresenceHandler(evt) {
         }
 
         if (!isQuiet || settings.qmAllowZooz) {
-            [zooz].flatten().findAll{it}.each { zDev ->
+            [zooz].flatten().findAll{it}.eachWithIndex { zDev, index ->
+                if (index > 0) pauseExecution(1000)
                 def fileNum = isArrival ? settings["arrivalZoozFile${slot}_${zDev.id}"] : settings["departureZoozFile${slot}_${zDev.id}"]
-                if (fileNum) zDev.playSound(fileNum as Integer)
+                if (fileNum) playZoozSound(zDev, fileNum)
             }
         }
     }
@@ -1147,7 +1172,7 @@ def highRiskHandler(evt) {
             if (tts) { applyTTSVolume(tts, true); tts.speak(msg) }
             if (push) push.deviceNotification(msg)
             playGranularZooz("highRiskZooz", evt.device)
-          
+ 
             triggerAlert("Warning", "High-Risk Boundary Breached: ${evt.device.displayName}", evt.device.id, evt.device.displayName)
         }
     }
@@ -1177,9 +1202,10 @@ def executeEmergencyProtocol(alertReason, deviceId = "system", deviceName = "Sys
     def msg = emergencyTTSMessage ?: "Emergency. Evacuation protocol initiated. Please exit the house immediately."
     if (emergencyTTS) emergencyTTS.speak(msg)
     
-    [emergencyZooz].flatten().findAll{it}.each { zDev ->
+    [emergencyZooz].flatten().findAll{it}.eachWithIndex { zDev, index ->
+        if (index > 0) pauseExecution(1000)
         def fileNum = settings["emergencyZoozFile_${zDev.id}"]
-        if (fileNum) zDev.playSound(fileNum as Integer)
+        if (fileNum) playZoozSound(zDev, fileNum)
     }
     
     triggerAlert("Critical", alertReason, deviceId, deviceName)
@@ -1209,7 +1235,7 @@ def contactHandler(evt) {
         def isCurfewDoor = curfewDoors?.find { it.id == evt.device.id } != null
         def curfewMet = isCurfewDoor && isAdvancedConditionMet(
              enableCurfewRules1, curfewModes1, curfewStartTimeType1, curfewStartTime1, curfewStartOffset1, curfewEndTimeType1, curfewEndTime1, curfewEndOffset1,
-            enableCurfewRules2, curfewModes2, curfewStartTimeType2, curfewStartTime2, curfewStartOffset2, curfewEndTimeType2, curfewEndTime2, curfewEndOffset2
+             enableCurfewRules2, curfewModes2, curfewStartTimeType2, curfewStartTime2, curfewStartOffset2, curfewEndTimeType2, curfewEndTime2, curfewEndOffset2
         )
         if (curfewMet) return
         
@@ -1224,7 +1250,7 @@ def contactHandler(evt) {
         }
         
          if (state.currentAlertLevel == "Warning" && state.lastGlassBreakTime > (now() - 60000)) triggerAlert("Critical", "Glass break followed by perimeter breach at ${evt.device.displayName}!", evt.device.id, evt.device.displayName)
-        else if (isWindow) triggerAlert("Warning", "${evt.device.displayName} was opened.", evt.device.id, evt.device.displayName)
+         else if (isWindow) triggerAlert("Warning", "${evt.device.displayName} was opened.", evt.device.id, evt.device.displayName)
     } else {
         logContextEvent("${evt.device.displayName} Closed")
     }
