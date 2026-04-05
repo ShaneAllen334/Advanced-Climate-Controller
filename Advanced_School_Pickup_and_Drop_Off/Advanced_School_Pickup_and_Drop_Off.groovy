@@ -268,25 +268,33 @@ def isItRaining() {
 
 // --- Audio Helper Engine ---
 
+// FIX APPLIED: Routing Zooz commands through an eachWithIndex loop and 1000ms pause to protect the Z-Wave mesh.
 def playSirenSound(soundNum, force = false) {
     if (!settings.zoozSirens || soundNum == null) return
     if (!force && !isAudioAllowedMode()) return
     
     logAction("Playing sound file ${soundNum} on selected Zooz Sirens.")
-    settings.zoozSirens.each { siren ->
+    
+    def isNumeric = soundNum.toString().isNumber()
+    def trackNum = isNumeric ? soundNum.toString().toInteger() : null
+
+    def devList = settings.zoozSirens instanceof List ? settings.zoozSirens : [settings.zoozSirens]
+
+    devList.eachWithIndex { siren, index ->
+        if (index > 0) pauseExecution(1000)
         try {
-            // Attempt standard Chime capability command
-            siren.playSound(soundNum as Integer)
-        } catch (MissingMethodException e) {
-            try {
-                // Fallback to AudioNotification capability command
-                siren.playTrack(soundNum as String)
-            } catch (Exception ex) {
-                log.error "${siren.displayName} failed to play sound: ${ex.message}"
+            if (siren.hasCommand("playSound") && trackNum != null) {
+                siren.playSound(trackNum)
+            } else if (siren.hasCommand("playTrack")) {
+                siren.playTrack(soundNum.toString())
+            } else if (siren.hasCommand("chime") && trackNum != null) {
+                siren.chime(trackNum)
+            } else {
+                log.error "${siren.displayName} does not support standard audio/siren commands (playSound, playTrack, or chime)."
                 logAction("Error playing Zooz sound ${soundNum} on ${siren.displayName}. See logs.")
             }
-        } catch (Exception e) {
-            log.error "${siren.displayName} failed to play sound: ${e.message}"
+        } catch (e) {
+            log.error "${siren.displayName} failed to play sound: ${e.message ?: e}"
         }
     }
 }
