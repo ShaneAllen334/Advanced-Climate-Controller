@@ -219,7 +219,6 @@ def initialize() {
     if (arrivalSensors) subscribe(arrivalSensors, "presence.present", homeActivityHandler)
     if (priorityYieldSwitch) subscribe(priorityYieldSwitch, "switch", priorityYieldHandler)
     
-    // NEW: Subscribe to Inovelli switches turning off
     if (inovelliSwitches) subscribe(inovelliSwitches, "switch.off", inovelliMailSwitchOffHandler)
     
     schedule("0 0 0 * * ?", "midnightReset")
@@ -230,25 +229,20 @@ def initialize() {
 }
 
 def inovelliMailSwitchOffHandler(evt) {
-    // If the switch turns off, but the Mail Switch is still ON, re-issue the alert
     if (mailSwitch && mailSwitch.currentValue("switch") == "on") {
         log.info "Switch '${evt.device.displayName}' turned off, but Mail is still waiting. Re-applying Mail LED indicator."
-        // We wrap evt.device in brackets to pass it as a list to your existing setLightColor function
         setLightColor([evt.device], deliveryColor, lightLevel ?: 100, inovelliTarget ?: "All")
     }
 }
 
 def priorityYieldHandler(evt) {
-    // If the priority sequence (like School Bus) just ended, check if we missed a delivery!
     if (evt.value == "off") {
         if (mailSwitch.currentValue("switch") == "on") {
             log.info "Priority sequence ended. Mail is waiting. Activating indicators."
             addToHistory("RESUMING: Priority ended. Turning on mail lights.")
             
-            // CAPTURE STATE BEFORE CHANGING
             if (indicatorLight) captureLightState(indicatorLight)
             
-            // FREEZE Motion App
             if (overrideSwitch && overrideSwitch.currentValue("switch") != "on") {
                 overrideSwitch.on()
             }
@@ -263,7 +257,7 @@ def appButtonHandler(btn) {
     if (btn == "btnClearMail") {
         log.info "Manually clearing mail status..."
         if (mailSwitch) mailSwitch.off()
-     
+      
         if (indicatorLight) {
             if (retrievalLightAction == "Turn Off") restoreLightState(indicatorLight)
         }
@@ -280,7 +274,7 @@ def appButtonHandler(btn) {
         if (overrideSwitch) overrideSwitch.off()
         state.lastValidStateChange = new Date().time 
         addToHistory("MANUAL CLEAR: System reset via app dashboard.")
-       
+        
     } else if (btn == "btnForceReset") {
         log.info "Resetting historical data..."
         state.historyLog = []
@@ -299,35 +293,50 @@ def homeActivityHandler(evt) { state.lastHomeActivity = new Date().time }
 
 def sensorOpenHandler(evt) {
     def now = new Date().time
+    def switchState = mailSwitch.currentValue("switch")
+    def tz = location.timeZone ?: TimeZone.getDefault()
     
-    // HARD DEBOUNCE - Changed to atomicState for concurrent sensor safety
+    // 1. HARD LOCKOUT CHECK FIRST
+    def lastStateChange = state.lastValidStateChange ?: 0
+    def lockoutMillis = (deliveryLockout != null ? deliveryLockout.toInteger() : 2) * 60000
+    
+    if ((now - lastStateChange) < lockoutMillis) {
+        log.debug "Ignored: Sensor opened during the ${deliveryLockout} minute lockout window."
+        return
+    }
+
+    // 2. DELIVERY WINDOW RESTRICTION CHECK
+    if (switchState != "on" && enableDeliveryWindow && deliveryStartTime && deliveryEndTime) {
+        def isWithinWindow = timeOfDayIsBetween(deliveryStartTime, deliveryEndTime, new Date(), tz)
+        if (!isWithinWindow) {
+            log.info "Mailbox opened outside delivery window. Ignoring delivery event."
+            addToHistory("IGNORED: Opened outside of delivery window.")
+            return 
+        }
+    }
+
+    // 3. CONCURRENCY DEBOUNCE LAST (Only updates if event is valid)
     def lastEvt = atomicState.lastSensorEvent ?: 0
     if ((now - lastEvt) < 5000) return 
     atomicState.lastSensorEvent = now
 
-    def switchState = mailSwitch.currentValue("switch")
-    def tz = location.timeZone ?: TimeZone.getDefault()
+    // --- PAST ALL GATES: PROCESS THE EVENT ---
     def currentTimeStr = new Date().format("h:mm a", tz)
-   
     def currentMinutes = getMinutesSinceMidnight(new Date(), tz)
-    
-    def lastStateChange = state.lastValidStateChange ?: 0
-    def lockoutMillis = (deliveryLockout != null ? deliveryLockout.toInteger() : 2) * 60000
-    
-    if ((now - lastStateChange) < lockoutMillis) return
 
     if (switchState == "on") {
         // --- MAIL RETRIEVAL LOGIC ---
         if (enableSecondaryCheck && (exteriorDoors || arrivalSensors)) {
             def lastActivity = state.lastHomeActivity ?: 0
             def window = (activityTimeWindow ?: 10) * 60000
-           
+            
             if ((now - lastActivity) > window) {
                 state.lastValidStateChange = now
                 
                 if (sendPushDelivery) sendMessage("📫 More mail was delivered!")
-                if (zoozChimes && zoozSoundMore != null) {
-                    zoozChimes.each { if (it.hasCommand("playSound")) it.playSound(zoozSoundMore as Integer) }
+                
+                if (settings.zoozChimes && settings.zoozSoundMore != null) {
+                    playZoozChime(settings.zoozSoundMore)
                 }
                 
                 addToHistory("SECONDARY DELIVERY: No home activity detected.")
@@ -356,7 +365,6 @@ def sensorOpenHandler(evt) {
             if (inovelliSwitches) {
                 inovelliSwitches.each { device -> 
                     def target = inovelliTarget ?: "All"
-            
                     if (target == "All") {
                         if (device.hasCommand("ledEffectAll")) device.ledEffectAll(255, 0, 0, 0)
                     } else {
@@ -366,29 +374,16 @@ def sensorOpenHandler(evt) {
             }
         }
         
-        // UNFREEZE Motion App
         if (overrideSwitch) overrideSwitch.off()
   
         if (sendPushRetrieval) sendMessage("📬 Mail retrieved!")
-        
         if (ttsSpeakers && ttsRetrievalText) ttsSpeakers.speak(ttsRetrievalText)
-        if (zoozChimes && zoozSoundRetrieval != null) {
-            zoozChimes.each { if (it.hasCommand("playSound")) it.playSound(zoozSoundRetrieval as Integer) }
+        if (settings.zoozChimes && settings.zoozSoundRetrieval != null) {
+            playZoozChime(settings.zoozSoundRetrieval)
         }
  
     } else {
         // --- MAIL DELIVERY LOGIC ---
-        
-        // Check Delivery Window if enabled
-        if (enableDeliveryWindow && deliveryStartTime && deliveryEndTime) {
-            def isWithinWindow = timeOfDayIsBetween(deliveryStartTime, deliveryEndTime, new Date(), tz)
-            if (!isWithinWindow) {
-                log.info "Mailbox opened outside delivery window. Ignoring delivery event."
-                addToHistory("IGNORED: Opened outside of delivery window.")
-                return 
-            }
-        }
-        
         mailSwitch.on()
         
         state.lastValidStateChange = now
@@ -398,20 +393,18 @@ def sensorOpenHandler(evt) {
         
         if (sendPushDelivery) sendMessage("📫 Mail delivered!")
         if (ttsSpeakers && ttsDeliveryText) ttsSpeakers.speak(ttsDeliveryText)
-        if (zoozChimes && zoozSoundDelivery != null) {
-            zoozChimes.each { if (it.hasCommand("playSound")) it.playSound(zoozSoundDelivery as Integer) }
+        
+        if (settings.zoozChimes && settings.zoozSoundDelivery != null) {
+            playZoozChime(settings.zoozSoundDelivery)
         }
 
-        // PRIORITY YIELD CHECK
         if (priorityYieldSwitch && priorityYieldSwitch.currentValue("switch") == "on") {
             addToHistory("YIELD: Priority sequence active. Delaying lights.")
-            return // Skip freezing other apps and skip turning on the indicator lights
+            return 
         }
         
-        // CAPTURE STATE BEFORE CHANGING
         if (indicatorLight) captureLightState(indicatorLight)
-        
-        // FREEZE Motion App
+ 
         if (overrideSwitch && overrideSwitch.currentValue("switch") != "on") {
             overrideSwitch.on()
         }
@@ -421,7 +414,7 @@ def sensorOpenHandler(evt) {
     }
 }
 
-// --- STATE CAPTURE ENGINE ---
+// === STATE CAPTURE ENGINE ---
 def captureLightState(devices) {
     if (!state.savedLightStates) state.savedLightStates = [:]
     
@@ -458,10 +451,10 @@ def restoreLightState(devices) {
                 log.info "Restored ${dev.displayName} to OFF state."
             }
         } else {
-            dev.off() // Fallback if no state saved
+            dev.off() 
         }
     }
-    state.savedLightStates = [:] // Clear saved states
+    state.savedLightStates = [:] 
 }
 
 def setLightColor(devices, colorName, level, target = "All") {
@@ -507,7 +500,31 @@ def tempHandler(evt) {
     }
 }
 
-// --- SINGLE DAILY NAG HANDLER ---
+// === AUDIO PLAYBACK LOGIC ===
+def playZoozChime(soundNum) {
+    if (!settings.zoozChimes || soundNum == null) return
+    
+    def isNumeric = soundNum.toString().isNumber()
+    def trackNum = isNumeric ? soundNum.toString().toInteger() : null
+
+    settings.zoozChimes.eachWithIndex { chime, index ->
+        if (index > 0) pauseExecution(1000)
+        try {
+            if (chime.hasCommand("playSound") && trackNum != null) {
+                chime.playSound(trackNum)
+            } else if (chime.hasCommand("playTrack")) {
+                chime.playTrack(soundNum.toString())
+            } else if (chime.hasCommand("chime") && trackNum != null) {
+                chime.chime(trackNum)
+            } else {
+                log.error "${chime.displayName} does not support standard audio/siren commands (playSound, playTrack, or chime)."
+            }
+        } catch (e) {
+            log.error "${chime.displayName} failed to play sound: ${e.message ?: e}"
+        }
+    }
+}
+
 def nagHandler() {
     if (enableNag && mailSwitch?.currentValue("switch") == "on") {
         log.info "Nag scheduled task running: Mail has not been retrieved."
@@ -518,7 +535,6 @@ def nagHandler() {
     }
 }
 
-// --- HOURLY MODE-RESTRICTED NAG HANDLER ---
 def hourlyNagHandler() {
     if (enableHourlyNag && mailSwitch?.currentValue("switch") == "on") {
         def currentMode = location.mode
@@ -530,8 +546,8 @@ def hourlyNagHandler() {
             if (ttsSpeakers && ttsHourlyText) {
                 ttsSpeakers.speak(ttsHourlyText)
             }
-            if (zoozChimes && zoozSoundHourly != null) {
-                zoozChimes.each { if (it.hasCommand("playSound")) it.playSound(zoozSoundHourly as Integer) }
+            if (settings.zoozChimes && settings.zoozSoundHourly != null) {
+                playZoozChime(settings.zoozSoundHourly)
             }
             
             addToHistory("HOURLY NAG ALERT: Announcement triggered.")
@@ -541,7 +557,7 @@ def hourlyNagHandler() {
     }
 }
 
-def sendMessage(msg) { pushDevices ? pushDevices*.deviceNotification(msg) : sendPush(msg) }
+def sendMessage(msg) { settings.pushDevices ? settings.pushDevices*.deviceNotification(msg) : sendPush(msg) }
 
 def updateAverage(type, currentMinutes) {
     def count = state."${type}Count" ?: 0
@@ -581,7 +597,7 @@ def addToHistory(msg) {
 
 def midnightReset() {
     state.todayDeliveryTime = state.todayRetrievalTime = state.lastTempAlertDate = null
-    state.lastRetrievalWalkTime = null // Clear the walk timer for the new day
+    state.lastRetrievalWalkTime = null 
     if (mailSwitch.currentValue("switch") == "on") {
         addToHistory("SYSTEM RESET: Mail left overnight.")
     }
