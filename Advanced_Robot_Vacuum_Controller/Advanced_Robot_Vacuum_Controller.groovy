@@ -148,6 +148,11 @@ def mainPage() {
             input "fullCleanSuction", "enum", title: "Override Base Suction Power", options: ["Quiet", "Balanced", "Turbo", "Max"], required: false
             input "fullCleanWater", "enum", title: "Override Base Mop Water", options: ["Off", "Low", "Medium", "High"], required: false
             
+            paragraph "<b>Post-Meal Cleanup (Ecosystem Link):</b>"
+            paragraph "<div style='font-size:13px; color:#555;'>Links to the Advanced Meal Time app. When the meal switch turns OFF, the vacuum deploys. The app will automatically run exactly 1 time per morning and 1 time per evening to prevent spamming.</div>"
+            input "mealTimeSwitch", "capability.switch", title: "Meal Time Virtual Switch", required: false
+            input "mealTimeRooms", "enum", title: "Rooms to clean after Meal Time ends", options: availableRooms, required: false, multiple: true
+            
             paragraph "<b>Other Triggers:</b>"
             input "schoolRunSwitch", "capability.switch", title: "School Drop-Off/Pickup Switch", required: false
             input "schoolRunRooms", "enum", title: "Rooms to clean during School Run", options: availableRooms, required: false, multiple: true
@@ -158,7 +163,7 @@ def mainPage() {
             input "allowedModes", "mode", title: "Allowed Operating Modes (Leave blank for any)", required: false, multiple: true
             input "allowedStartTime", "time", title: "Quiet Hours: Do NOT run BEFORE", required: false
             input "allowedEndTime", "time", title: "Quiet Hours: Do NOT run AFTER", required: false
-            input "maxIdleDays", "number", title: "Max days without a clean before forcing a Deep Clean", defaultValue: 3, required: false
+            input "maxIdleDays", "number", title: "Max days without a FULL clean before forcing a Deep Clean", defaultValue: 3, required: false
         }
 
         section("<b>5. Scheduled Mop-Only Routines</b>", hideable: true, hidden: true) {
@@ -246,6 +251,7 @@ def installed() {
     logInfo "Installed with settings: ${settings}"
     state.history = []
     state.lastCleanTime = now() 
+    state.lastFullCleanTime = now()
     initialize()
 }
 
@@ -253,6 +259,7 @@ def updated() {
     logInfo "Updated with settings: ${settings}"
     if (!state.history) state.history = []
     if (!state.lastCleanTime) state.lastCleanTime = now()
+    if (!state.lastFullCleanTime) state.lastFullCleanTime = now()
     if (!state.lastDispatchLog) state.lastDispatchLog = [:]
     
     if (settings.clearHistory) {
@@ -313,6 +320,8 @@ def initialize() {
     if (masterSwitch) subscribe(masterSwitch, "switch", masterSwitchHandler)
     if (fullCleanSwitch) subscribe(fullCleanSwitch, "switch.on", fullCleanHandler)
     if (schoolRunSwitch) subscribe(schoolRunSwitch, "switch.on", schoolRunHandler)
+    if (mealTimeSwitch) subscribe(mealTimeSwitch, "switch.off", postMealHandler)
+    
     subscribe(location, "mode", modeHandler)
     
     if (dockPlug1) {
@@ -707,11 +716,11 @@ def mopRoutineHandler() {
 
 def overdueCheckHandler() {
     if (isAppPaused()) return
-    if (!maxIdleDays || !state.lastCleanTime) return
-    long daysIdle = (now() - state.lastCleanTime) / 86400000
+    if (!maxIdleDays || !state.lastFullCleanTime) return
+    long daysIdle = (now() - state.lastFullCleanTime) / 86400000
     if (daysIdle >= maxIdleDays) {
         if (canRunAutomated()) {
-            addToHistory("<span style='color:purple;'><b>Overdue Catcher: ${daysIdle} days idle. Forcing Deep Clean!</b></span>")
+            addToHistory("<span style='color:purple;'><b>Overdue Catcher: ${daysIdle} days since last FULL clean. Forcing Deep Clean!</b></span>")
             requestDispatch(["All"], [ignoreSkip: true, suction: "Max", water: "High"])
         }
     }
@@ -1034,6 +1043,41 @@ def schoolRunHandler(evt) {
     requestDispatch(schoolRunRooms, [ignoreSkip: false])
 }
 
+def postMealHandler(evt) {
+    if (isAppPaused()) return
+    if (!canRunAutomated()) {
+        addToHistory("Post-Meal Cleanup Blocked: Global Constraints Active.")
+        return
+    }
+    if (!settings.mealTimeRooms) return
+
+    def tz = location.timeZone ?: TimeZone.getDefault()
+    def cal = Calendar.getInstance(tz)
+    cal.setTime(new Date())
+    int currentHour = cal.get(Calendar.HOUR_OF_DAY)
+    String todayDate = cal.getTime().format("yyyy-MM-dd", tz)
+
+    // Mathematically define the split (Before 2:00 PM = Breakfast, After 2:00 PM = Dinner)
+    if (currentHour < 14) {
+        if (state.lastBreakfastCleanDate == todayDate) {
+            addToHistory("Post-Meal Cleanup Skipped: Morning sweep already ran today.")
+            return
+        }
+        state.lastBreakfastCleanDate = todayDate
+        addToHistory("Triggered: Ecosystem Post-Breakfast Cleanup")
+    } else {
+        if (state.lastDinnerCleanDate == todayDate) {
+            addToHistory("Post-Meal Cleanup Skipped: Evening sweep already ran today.")
+            return
+        }
+        state.lastDinnerCleanDate = todayDate
+        addToHistory("Triggered: Ecosystem Post-Dinner Cleanup")
+    }
+
+    // Deploy to the targeted rooms. ignoreSkip is true because lingering motion in adjacent rooms shouldn't stop the dining room sweep.
+    requestDispatch(settings.mealTimeRooms, [ignoreSkip: true])
+}
+
 def errorHandler(evt) {
     if (isAppPaused()) return
     String errorCode = evt.value?.toString()
@@ -1079,7 +1123,11 @@ void executeRoomClean(List selectedRoomNames, Map options = [:]) {
 
     if (!selectedRoomNames) return
 
+    // Track if this is a Full Clean request before we expand the "All" flag
+    boolean isFullCleanRequest = false
+    
     if (selectedRoomNames.contains("All")) {
+        isFullCleanRequest = true
         List<String> allActive = []
         for (int i = 1; i <= 12; i++) {
             if (settings["enableRoom_${i}"] && settings["roomName_${i}"]) allActive << settings["roomName_${i}"]
@@ -1113,7 +1161,7 @@ void executeRoomClean(List selectedRoomNames, Map options = [:]) {
                 int occMins = (occSecs / 60) as Integer
                 int minThreshold = settings["roomOccupancyThreshold_${i}"] ?: 15
                 int heavyThreshold = settings["roomHeavyTraffic_${i}"] ?: 120
-              
+               
                 if (!ignoreSkip && occMins < minThreshold) {
                     dispatchLog[targetName] = "<span style='color:gray;'>Skipped (Clean: ${occMins}/${minThreshold}m)</span>"
                     continue 
@@ -1157,8 +1205,12 @@ void executeRoomClean(List selectedRoomNames, Map options = [:]) {
     state.ignoreIntrusions = ignoreSkip 
     state.lastDispatchLog = dispatchLog
 
+    // Set the timers based on the request type
     if (v1Queue.size() > 0 || v2Queue.size() > 0) {
         state.lastCleanTime = now()
+        if (isFullCleanRequest) {
+            state.lastFullCleanTime = now()
+        }
     }
 
     if (v1Queue.size() > 0 && vacuum1) {
@@ -1340,8 +1392,12 @@ String buildDashboardHTML() {
         
     html += "<div style='margin-top: 10px; padding: 8px; background: #e9e9e9; border-radius: 4px; font-size: 13px;'><b>Hardware Interlock:</b> ${globalStatus}</div>"
     
-    long daysIdle = state.lastCleanTime ? ((now() - state.lastCleanTime) / 86400000) : 0
-    html += "<div style='margin-top: 10px; padding: 8px; background: #fff3e0; border: 1px solid #ffe0b2; border-radius: 4px; font-size: 13px; color: #e65100;'><b>Time Since Last Dispatch:</b> ${daysIdle} Days</div>"
+    long daysIdleAny = state.lastCleanTime ? ((now() - state.lastCleanTime) / 86400000) : 0
+    long daysIdleFull = state.lastFullCleanTime ? ((now() - state.lastFullCleanTime) / 86400000) : 0
+    html += "<div style='margin-top: 10px; padding: 8px; background: #fff3e0; border: 1px solid #ffe0b2; border-radius: 4px; font-size: 13px; color: #e65100;'>"
+    html += "<b>Time Since Last Dispatch (Any):</b> ${daysIdleAny} Days<br>"
+    html += "<b style='color: #d84315;'>Time Since Last Full House Clean:</b> ${daysIdleFull} Days (Max Allowed: ${settings.maxIdleDays ?: 'Disabled'})"
+    html += "</div>"
 
     String roomHtml = "<div style='margin-top: 15px;'><table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc;'>"
     roomHtml += "<tr style='background-color: #eee; border-bottom: 2px solid #ccc; text-align: left;'><th style='padding: 8px;'>Room Name</th><th style='padding: 8px;'>Total Activity</th><th style='padding: 8px;'>Motion Events</th><th style='padding: 8px;'>Last Dispatch Status</th></tr>"
