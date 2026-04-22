@@ -125,13 +125,13 @@ def mainPage() {
             
             paragraph "<br>"
             input "btnCalibrate", "button", title: "Calibrate Spatial Baseline (Close Lid First)"
-            input "btnResetFinance", "button", title: "💳 Reset Financial Audit Ledger to $0.00"
+            input "btnResetFinance", "button", title: "💳 Reset Financial Audit Ledger to \$0.00"
             input "btnHoliday", "button", title: state.holidayShift ? "Cancel Manual Holiday Shift" : "Force Manual Holiday Shift (+1 Day)"
         }
         
         section("<b>Utility Financial Auditor</b>") {
             paragraph "<div style='font-size:13px; color:#555;'>Enter your quarterly waste management cost. The app will calculate prorated refunds for missed collection days.</div>"
-            input "quarterlyCost", "decimal", title: "Quarterly Trash Bill Cost ($)", description: "e.g., 90.00", required: false, submitOnChange: true
+            input "quarterlyCost", "decimal", title: "Quarterly Trash Bill Cost (\$)", description: "e.g., 90.00", required: false, submitOnChange: true
         }
 
         section("<b>Predictive AI Scheduling & Recycling</b>") {
@@ -307,7 +307,7 @@ def appButtonHandler(btn) {
         logAction("MANUAL OVERRIDE: Bin forced to 'Missed Pickup'.")
     } else if (btn == "btnResetFinance") {
         state.lifetimeMissedHours = 0.0
-        logAction("FINANCIAL AUDIT: Ledger reset to $0.00.")
+        logAction("FINANCIAL AUDIT: Ledger reset to \$0.00.")
     } else if (btn == "btnRecalculate") {
         updateSchedule()
     } else if (btn == "btnHoliday") {
