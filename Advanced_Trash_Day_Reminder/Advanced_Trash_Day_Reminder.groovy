@@ -134,14 +134,14 @@ def mainPage() {
         section("<b>Automated Physical Tracking (Samsung Multi-Sensor)</b>") {
             input "binMultiSensor", "capability.threeAxis", title: "Samsung Multipurpose Sensor", required: true
             
-            paragraph "<div style='font-size:13px; color:#555;'><b>Driveway Surface Engine:</b> Evaluates motions only after movement completely stops. Adjusting the surface type dynamically alters the internal noise floor to prevent gravel from creating false alarms.</div>"
+            paragraph "<div style='font-size:13px; color:#555;'><b>Driveway Surface Engine:</b> Dynamically alters the internal noise floor to prevent gravel from creating false alarms, while automatically locking a relative baseline to prevent curb-slope false alarms.</div>"
             
             input "drivewaySurface", "enum", title: "Driveway Surface Profile", options: ["Smooth Pavement", "Mixed / Patchy", "Fine Gravel", "Chunky / Rough Gravel", "Custom (Manual Overrides)"], defaultValue: "Smooth Pavement", required: true, submitOnChange: true
             
             if (drivewaySurface == "Custom (Manual Overrides)") {
                 input "transitMinTime", "number", title: "Minimum Transit Duration (Seconds)", description: "Movement/Tilt longer than this is classified as rolling the bin (Default 10).", defaultValue: 10, required: true
                 input "transitTiltThreshold", "number", title: "Transit Tilt Threshold", description: "Minimum tilt to register rolling (Default 150).", defaultValue: 150, required: true
-                input "lidOpenThreshold", "number", title: "Lid Open Tilt Threshold", description: "Minimum tilt to register a partial lid open (Default 100).", defaultValue: 100, required: true
+                input "lidOpenThreshold", "number", title: "Lid Open Tilt Threshold", description: "Minimum tilt to register a 90-degree lid open (Default 600).", defaultValue: 600, required: true
             }
             
             input "estimatedMaxOpens", "number", title: "Bag Capacity (Opens to Full)", description: "Default is 8 (96g cart / 13g bags)", defaultValue: 8, required: true
@@ -530,28 +530,27 @@ def calibrateSpatialBaseline() {
         state.baselineZ = xyz.z as Integer
         
         state.isSensorDead = false 
-        logAction("SYSTEM: 3D Calibration complete. Locked to [${dominantAxis.toUpperCase()}] axis. (X:${state.baselineX}, Y:${state.baselineY}, Z:${state.baselineZ})")
+        logAction("SYSTEM: 3D Calibration complete. Locked to global [${dominantAxis.toUpperCase()}] axis for Truck Dumps.")
     } else {
         logAction("ERROR: Could not read 3-Axis data for calibration.")
     }
 }
 
-// Helper to fetch thresholds dynamically based on Surface Profile
 def getSurfaceProfile() {
-    def profile = [transitTime: 10, transitTilt: 150, lidTilt: 100]
+    def profile = [transitTime: 10, transitTilt: 150, lidTilt: 600]
     
     if (settings.drivewaySurface == "Smooth Pavement") {
-        profile = [transitTime: 8, transitTilt: 120, lidTilt: 100]
+        profile = [transitTime: 8, transitTilt: 120, lidTilt: 600]
     } else if (settings.drivewaySurface == "Mixed / Patchy") {
-        profile = [transitTime: 12, transitTilt: 150, lidTilt: 130]
+        profile = [transitTime: 12, transitTilt: 150, lidTilt: 600]
     } else if (settings.drivewaySurface == "Fine Gravel") {
-        profile = [transitTime: 15, transitTilt: 180, lidTilt: 150]
+        profile = [transitTime: 15, transitTilt: 180, lidTilt: 600]
     } else if (settings.drivewaySurface == "Chunky / Rough Gravel") {
-        profile = [transitTime: 20, transitTilt: 220, lidTilt: 180]
+        profile = [transitTime: 20, transitTilt: 220, lidTilt: 600]
     } else if (settings.drivewaySurface == "Custom (Manual Overrides)") {
         profile.transitTime = settings.transitMinTime ?: 10
         profile.transitTilt = settings.transitTiltThreshold ?: 150
-        profile.lidTilt = settings.lidOpenThreshold ?: 100
+        profile.lidTilt = settings.lidOpenThreshold ?: 600
     }
     
     return profile
@@ -560,31 +559,46 @@ def getSurfaceProfile() {
 def binMoveActiveHandler(evt) {
     state.isSensorDead = false
     state.motionStartTime = now()
-    state.maxTiltDuringMotion = 0
+    state.maxRelativeDevDuringMotion = 0
     state.wasFlippedDuringMotion = false
-    state.lidOpenedDuringMotion = false
-    state.isTilted = false
+    
+    // Lock the relative baseline for THIS specific motion event
+    if (state.lastKnownXYZ) {
+        state.restX = state.lastKnownXYZ.x
+        state.restY = state.lastKnownXYZ.y
+        state.restZ = state.lastKnownXYZ.z
+    }
 }
 
 def axisSpatialHandler(evt) {
     def xyz = binMultiSensor.currentValue("threeAxis")
-    if (!xyz || state.baselineX == null) return
+    if (!xyz) return
     
+    // Constantly update resting position when NOT moving
+    if (!state.motionStartTime) {
+        state.lastKnownXYZ = [x: xyz.x as Integer, y: xyz.y as Integer, z: xyz.z as Integer]
+        return
+    }
+    
+    // --- We ARE moving! Calculate Relative Gravity Deviation ---
     int curX = xyz.x as Integer
     int curY = xyz.y as Integer
     int curZ = xyz.z as Integer
     
-    int devX = Math.abs(curX - state.baselineX)
-    int devY = Math.abs(curY - state.baselineY)
-    int devZ = Math.abs(curZ - state.baselineZ)
-    int maxDev = Math.max(devX, Math.max(devY, devZ))
+    int rX = state.restX != null ? state.restX : (state.baselineX ?: 0)
+    int rY = state.restY != null ? state.restY : (state.baselineY ?: 0)
+    int rZ = state.restZ != null ? state.restZ : (state.baselineZ ?: 0)
     
-    if (state.motionStartTime) {
-        if (maxDev > (state.maxTiltDuringMotion ?: 0)) {
-            state.maxTiltDuringMotion = maxDev
-        }
+    int devX = Math.abs(curX - rX)
+    int devY = Math.abs(curY - rY)
+    int devZ = Math.abs(curZ - rZ)
+    int maxRelative = Math.max(devX, Math.max(devY, devZ))
+    
+    if (maxRelative > (state.maxRelativeDevDuringMotion ?: 0)) {
+        state.maxRelativeDevDuringMotion = maxRelative
     }
-    
+
+    // --- Absolute Global Flipped Check (For Garbage Trucks Only) ---
     boolean isFlipped = false
     if (state.activeAxis && state.baselineValue != null) {
         int currentDom = xyz[state.activeAxis] as Integer
@@ -593,17 +607,15 @@ def axisSpatialHandler(evt) {
         if (isFlipped) state.wasFlippedDuringMotion = true
     }
 
-    // TRUCK DUMP (Unrestricted by Tracking Modes) - Left Live for instant reaction
+    // TRUCK DUMP (Left live for instant audio reaction)
     if (isFlipped && (state.binStatus == "curb_full" || state.binStatus == "curb_missed")) {
         if (!state.isCurrentlyDumped) {
             state.isCurrentlyDumped = true
-            processTruckDump(maxDev)
+            processTruckDump()
         }
     } else if (!isFlipped) {
         state.isCurrentlyDumped = false
     }
-    
-    // We intentionally removed the live Lid-Open math here. It is now handled safely in the Inactive Handler.
 }
 
 def binMoveInactiveHandler(evt) {
@@ -617,20 +629,34 @@ def binMoveInactiveHandler(evt) {
     int reqTransitTilt = profile.transitTilt
     int lidThresh = profile.lidTilt
     
-    int maxTilt = state.maxTiltDuringMotion ?: 0
+    int maxTilt = state.maxRelativeDevDuringMotion ?: 0
     boolean isFlipped = state.wasFlippedDuringMotion ?: false
     
     state.motionStartTime = null // clean up
     
-    logAction("Motion Event Ended: Duration: ${durationSec}s | Max Peak Tilt: ${maxTilt} | Profile: ${settings.drivewaySurface}")
+    logAction("Motion Event Ended: Duration: ${durationSec}s | Max Relative Tilt: ${maxTilt} | Flipped: ${isFlipped}")
     
     // 1. TRUCK DUMP 
     if (isFlipped && (state.binStatus == "curb_full" || state.binStatus == "curb_missed")) {
-        // Handled instantly by Spatial Handler, but keeping failsafe
+        // Handled instantly by Spatial Handler
+        return
+    }
+    
+    // 2. TRASH TOSS / LID OPEN (Massive 90-degree shift trumps all)
+    if (maxTilt >= lidThresh) {
+        if (isTrackingAllowed()) {
+            // Allows adding trash at the house OR at the curb!
+            int opens = (state.lidOpens ?: 0) + 1
+            state.lidOpens = opens
+            logAction("Action Processed: Trash Toss (Lid Flipped 90°). Capacity updated to (${opens}).")
+            syncChildDevice()
+        } else {
+            logAction("Action Processed: Trash Toss detected, but ignored (Raccoon Filter: Tracking mode restricted).")
+        }
         return
     }
 
-    // 2. CURB TRANSIT (Long duration + minimum tilt)
+    // 3. CURB TRANSIT (Long duration + moderate rolling tilt)
     if (durationSec >= reqTransitTime && maxTilt >= reqTransitTilt) {
         if (isTrackingAllowed()) {
             logAction("Action Processed: Sustained Transit to/from Curb.")
@@ -641,26 +667,11 @@ def binMoveInactiveHandler(evt) {
         return
     }
     
-    // 3. TRASH TOSS (Short duration + lid tilt)
-    if (durationSec < reqTransitTime && maxTilt >= lidThresh) {
-        if (isTrackingAllowed()) {
-            if (state.binStatus == "house" || state.binStatus == "curb_full") {
-                int opens = (state.lidOpens ?: 0) + 1
-                state.lidOpens = opens
-                logAction("Action Processed: Trash Toss. Capacity updated to (${opens}).")
-                syncChildDevice()
-            }
-        } else {
-            logAction("Action Processed: Trash Toss, but ignored (Raccoon Filter: Tracking mode restricted).")
-        }
-        return
-    }
-    
     // 4. IGNORED BUMP / WIND 
-    logAction("Action Processed: Ignored bump/wind. (Did not meet Transit or Toss criteria).")
+    logAction("Action Processed: Ignored bump/wind. (Relative tilt of ${maxTilt} did not meet thresholds).")
 }
 
-def processTruckDump(maxTilt) {
+def processTruckDump() {
     logAction("AUTOMATION: 180-Degree Flip Detected. Trash Dumped!")
     
     if (state.binStatus == "curb_missed" && state.missedTime) {
