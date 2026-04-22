@@ -8,7 +8,7 @@ definition(
     name: "Advanced Ceiling Fan Climate Control",
     namespace: "ShaneAllen",
     author: "ShaneAllen",
-    description: "Multi-zone ceiling fan controller supporting 3-Speed, 5-Speed, 6-Speed, and Simple fans, with Wet/Dry Bulb options, configurable speed thresholds, dynamic occupancy, and Smart Lighting Relay overrides.",
+    description: "Multi-zone ceiling fan controller supporting 3-Speed, 5-Speed, 6-Speed, and Simple fans, with Wet/Dry Bulb options, configurable speed thresholds, dynamic occupancy, Smart Lighting Relay overrides, and Button Controllers.",
     category: "Comfort",
     iconUrl: "",
     iconX2Url: "",
@@ -28,7 +28,7 @@ def mainPage() {
             input "btnClearROI", "button", title: "🗑️ Clear ROI Data"
             
             paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Provides a real-time view of your ceiling fans, comparing actual states to target states, alongside Occupancy and Temperature data.</div>"
-           
+            
             def appStatus = (appEnableSwitch && appEnableSwitch.currentValue("switch") == "off") ? "<span style='color:red;'><b>DISABLED</b> (Master Switch is OFF)</span>" : "<span style='color:green;'><b>ACTIVE</b></span>"
             
             paragraph "<div style='background-color:#e9ecef; padding:10px; border-radius:5px; border-left:5px solid #007bff;'><b>App Status:</b> ${appStatus}</div>"
@@ -40,7 +40,7 @@ def mainPage() {
                 .dash-table th { background-color: #343a40; color: white; }
                 .dash-hl { background-color: #f8f9fa; font-weight:bold; }
             </style>
-      
+       
             <table class="dash-table">
                 <thead><tr><th>Room</th><th>Type</th><th>Occupied?</th><th>Dry Bulb</th><th>Wet Bulb</th><th>Target</th><th>Actual State</th><th>Master Relay</th><th>Status</th></tr></thead>
                 <tbody>
@@ -72,7 +72,7 @@ def mainPage() {
                     def tDev = settings["z${i}Temp"]
                     def hDev = settings["z${i}Hum"]
                     def cMethod = settings["z${i}ControlMethod"] ?: "wetBulb"
-              
+  
                     def zTemp = tDev ? (tDev.currentValue("temperature") ?: "--") : "--"
                     def zHum = hDev ? (hDev.currentValue("humidity") ?: "--") : "--"
                     
@@ -112,7 +112,7 @@ def mainPage() {
                     }
                     
                     def isOccupiedDisplay = "No"
-              
+     
                     if (isActivityOverride) {
                         isOccupiedDisplay = "<span style='color:blue;'>Yes (Override)</span>"
                     } else if (isOccupiedFlag) {
@@ -161,7 +161,7 @@ def mainPage() {
                         else if (fanType == "speed6") typeDisplay = "6-Speed Fan"
                         else if (fanType == "speed5") typeDisplay = "5-Speed Fan"
                         else typeDisplay = "3-Speed Fan"
-                        
+                      
                         def fDev = settings["z${i}Fan"]
                         def pDev = settings["z${i}Power"]
                         def zSpeed = fDev.currentValue("speed") ?: "unknown"
@@ -203,7 +203,7 @@ def mainPage() {
                         
                         actualDisplay = "<span style='color:gray;'>N/A</span>"
                         relayDisplay = sState
-                        
+              
                         if (isManualOverrideActive) {
                             gnStatus = "<span style='color:red;'><b>Override Active</b><br><span style='font-size:11px;'>(${overrideRemainStr} left)</span></span>"
                         } else if (settings["z${i}GnSwitch"] && settings["z${i}GnSwitch"].currentValue("switch") == "on") {
@@ -280,7 +280,7 @@ def mainPage() {
 
         section("<b>Manual Overrides (Global)</b>") {
             paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Pauses automation for a specific room if a user manually changes the fan via a wall switch or dashboard. Resets automatically upon Mode change or after the defined timeout.</div>"
-            input "overrideTimeoutHours", "decimal", title: "Manual Override Timeout (Hours)", required: true, defaultValue: 2.0
+            input "overrideTimeoutHours", "decimal", title: "Global Manual Override Timeout (Hours)", required: true, defaultValue: 2.0
         }
         
         section("<b>Smart Lighting Support (Global)</b>") {
@@ -362,6 +362,7 @@ def mainPage() {
                         
                         if (settings["z${i}Power"]) {
                             input "z${i}RelayAlwaysOn", "bool", title: "Keep power relay ON 24/7 (Prevents fan light from defaulting to ON after power loss)", defaultValue: false, submitOnChange: true
+                            
                             if (!settings["z${i}RelayAlwaysOn"]) {
                                 input "z${i}KeepRelayUnoccupied", "bool", title: "Keep power relay ON when Unoccupied (Only turn off blades)", defaultValue: false
                                 input "z${i}SmartRelay", "bool", title: "Keep power relay ON for Lighting Needs (Evaluates Sunset, Overcast, and Shades)", defaultValue: true, submitOnChange: true
@@ -388,6 +389,20 @@ def mainPage() {
                     input "z${i}ControlMethod", "enum", title: "Control Method", options: ["wetBulb":"Wet Bulb (Feels Like)", "dryBulb":"Dry Bulb (Standard Temp)"], required: true, defaultValue: "wetBulb"
                     input "z${i}Setpoint", "decimal", title: "Target Setpoint (°F)", required: true, defaultValue: 72.0
                     input "z${i}GnSwitch", "capability.switch", title: "Good Night Override Switch (Optional)", required: false
+
+                    // --- NEW BUTTON CONTROLLER SECTION ---
+                    paragraph "<hr><b>Button Controller Overrides</b>"
+                    input "z${i}Button", "capability.pushableButton", title: "Optional Button Controller", required: false, submitOnChange: true
+                    if (settings["z${i}Button"]) {
+                        input "z${i}BtnNum", "number", title: "Button Number to watch", required: true, defaultValue: 1
+                        input "z${i}BtnOverrideHours", "decimal", title: "Button Override Duration (Hours)", required: false, defaultValue: 2.0
+                        input "z${i}BtnAllowedModes", "mode", title: "Modes to allow Button Control (Leave blank for all)", multiple: true, required: false
+                        
+                        def speedOpts = ["off", "low", "medium-low", "medium", "medium-high", "high", "on"]
+                        input "z${i}BtnPush", "enum", title: "Action: Pushed", options: speedOpts, required: false
+                        input "z${i}BtnHold", "enum", title: "Action: Held", options: speedOpts, required: false
+                        input "z${i}BtnDouble", "enum", title: "Action: Double Tapped", options: speedOpts, required: false
+                    }
                 }
             }
         }
@@ -435,6 +450,8 @@ def initialize() {
     if (!state.zoneLastActive) state.zoneLastActive = [:]
     if (!state.overrideUntil) state.overrideUntil = [:]
     if (!state.ignoreOverridesUntil) state.ignoreOverridesUntil = [:]
+    if (!state.wiggleResetTime) state.wiggleResetTime = [:]
+    if (!state.wasOccupied) state.wasOccupied = [:]
     
     if (!state.dailyCost) state.dailyCost = [:]
     if (!state.dailySaved) state.dailySaved = [:]
@@ -463,6 +480,12 @@ def initialize() {
             if (settings["z${i}ShadeContact"]) subscribe(settings["z${i}ShadeContact"], "contact", sensorHandler)
             if (settings["z${i}ActivitySwitch"]) subscribe(settings["z${i}ActivitySwitch"], "switch", sensorHandler)
             
+            if (settings["z${i}Button"]) {
+                subscribe(settings["z${i}Button"], "pushed", buttonHandler)
+                subscribe(settings["z${i}Button"], "held", buttonHandler)
+                subscribe(settings["z${i}Button"], "doubleTapped", buttonHandler)
+            }
+            
             if ((fanType.startsWith("speed") || fanType == "fixed") && settings["z${i}Fan"]) {
                 state["z${i}ExpectedSpeed"] = settings["z${i}Fan"].currentValue("speed") ?: "off"
                 state["z${i}PreviousSpeed"] = state["z${i}ExpectedSpeed"]
@@ -472,6 +495,7 @@ def initialize() {
                 state["z${i}PreviousSimple"] = state["z${i}ExpectedSimple"]
                 subscribe(settings["z${i}SimpleFan"], "switch", simpleFanHandler)
             }
+    
             if (settings["z${i}Power"]) {
                 state["z${i}ExpectedPower"] = settings["z${i}Power"].currentValue("switch") ?: "off"
                 state["z${i}PreviousPower"] = state["z${i}ExpectedPower"]
@@ -487,6 +511,89 @@ def initialize() {
     
     logAction("Ceiling Fan Engine Initialized. Overrides Active.")
     evaluateFans()
+}
+
+// === BUTTON HANDLER ===
+def buttonHandler(evt) {
+    def btnDev = evt.device.id
+    def btnNum = evt.value
+    def eventType = evt.name 
+    
+    for (int i = 1; i <= 8; i++) {
+        if (settings["enableZ${i}"] && settings["z${i}Button"]?.id == btnDev) {
+            if (settings["z${i}BtnNum"]?.toString() == btnNum?.toString()) {
+                
+                def allowedModes = settings["z${i}BtnAllowedModes"]
+                if (allowedModes && !(allowedModes as List).contains(location.mode)) {
+                    logInfo("Button command ignored for Room ${i} due to mode restriction.")
+                    return
+                }
+                
+                def requestedSpeed = null
+                if (eventType == "pushed") requestedSpeed = settings["z${i}BtnPush"]
+                else if (eventType == "held") requestedSpeed = settings["z${i}BtnHold"]
+                else if (eventType == "doubleTapped") requestedSpeed = settings["z${i}BtnDouble"]
+                
+                if (requestedSpeed) {
+                    def zName = settings["z${i}Name"] ?: "Room ${i}"
+                    def rawFanType = settings["z${i}FanType"] ?: "speed3"
+                    def fanType = (rawFanType == "speed") ? "speed3" : rawFanType
+                    
+                    def currentTarget = state["z${i}Target"] ?: "off"
+                    def isOverridden = isOverrideActive(i)
+                    
+                    // TOGGLE LOGIC: Release override if button pressed matches current override state
+                    if (isOverridden && currentTarget == requestedSpeed) {
+                        logAction("Button toggle detected for ${zName}. Releasing manual override.")
+                        def map = state.overrideUntil ?: [:]
+                        map.remove(i.toString())
+                        state.overrideUntil = map
+                        evaluateFans()
+                    } else {
+                        logAction("Button ${btnNum} ${eventType} on ${evt.device.displayName}. Setting ${zName} to ${requestedSpeed.toUpperCase()}.")
+                        
+                        // Pass specific button timeout length
+                        def customHrs = settings["z${i}BtnOverrideHours"]
+                        setManualOverride(i, "Button ${requestedSpeed.toUpperCase()}", customHrs)
+                        
+                        if (fanType == "switch") {
+                            def sDev = settings["z${i}SimpleFan"]
+                            if (sDev) {
+                                pauseOverrideDetection(i, 30) // Setup Blind Spot
+                                if (requestedSpeed == "off") {
+                                    setExpectedState(i, "simpleFan", "off")
+                                    sDev.off()
+                                } else {
+                                    setExpectedState(i, "simpleFan", "on")
+                                    sDev.on()
+                                }
+                                runIn(5, "refreshSwitch", [data: [room: i, type: "simple"], overwrite: false])
+                            }
+                        } else {
+                            def fDev = settings["z${i}Fan"]
+                            def pDev = settings["z${i}Power"]
+                            
+                            if (state["z${i}Target"] != requestedSpeed) {
+                                state["z${i}Target"] = requestedSpeed
+                                updateWiggleReset(i)
+                            }
+                            
+                            // If relay is off, trigger it to ON, wait, then step fan
+                            if (requestedSpeed != "off" && pDev && pDev.currentValue("switch") != "on") {
+                                pauseOverrideDetection(i, 30) // Setup Blind Spot
+                                setExpectedState(i, "power", "on")
+                                pDev.on()
+                                runIn(5, "refreshSwitch", [data: [room: i, type: "power"], overwrite: false])
+                                runInMillis(1500, "stepFanTrigger", [data: [room: i], overwrite: false])
+                            } else {
+                                stepFan(i)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 // === ENERGY ROI TRACKING ===
@@ -558,7 +665,7 @@ def dailyEnergyRollover() {
             listCost.add(dCost[iStr] ?: 0.0)
             if (listCost.size() > 7) listCost = listCost.takeRight(7)
             hCost[iStr] = listCost
-            
+         
             def listSaved = hSaved[iStr] ?: []
             listSaved.add(dSaved[iStr] ?: 0.0)
             if (listSaved.size() > 7) listSaved = listSaved.takeRight(7)
@@ -601,6 +708,18 @@ def modeChangeHandler(evt) {
     logAction("Location mode changed to: ${evt.value}. Clearing all manual overrides.")
     state.overrideUntil = [:]
     state.ignoreOverridesUntil = [:]
+    
+    def isNight = nightModes ? (nightModes as List).contains(evt.value) : false
+    
+    if (!isNight) {
+        logAction("Mode transition to ${evt.value}. Enforcing a 10-minute manual override lockout to allow mesh to settle.")
+        for (int i = 1; i <= 8; i++) {
+            if (settings["enableZ${i}"]) {
+                pauseOverrideDetection(i, 600)
+            }
+        }
+    }
+
     evaluateFans()
 }
 
@@ -618,8 +737,14 @@ def sensorHandler(evt) {
 }
 
 // ==============================================================================
-// OVERRIDE DETECTION
+// OVERRIDE & STATE HELPERS
 // ==============================================================================
+
+def updateWiggleReset(roomId) {
+    def map = state.wiggleResetTime ?: [:]
+    map[roomId.toString()] = now()
+    state.wiggleResetTime = map
+}
 
 def pauseOverrideDetection(roomId, seconds = 15) {
     def map = state.ignoreOverridesUntil ?: [:]
@@ -656,6 +781,7 @@ def setExpectedState(roomId, type, val) {
         if (currentE && currentE != val) state["z${roomId}PreviousSimple"] = currentE
         state["z${roomId}ExpectedSimple"] = val
     }
+    
     if (type == "power") {
         def currentE = state["z${roomId}ExpectedPower"]
         if (currentE && currentE != val) state["z${roomId}PreviousPower"] = currentE
@@ -663,8 +789,8 @@ def setExpectedState(roomId, type, val) {
     }
 }
 
-def setManualOverride(roomId, actionVal) {
-    def timeoutHrs = settings.overrideTimeoutHours != null ? settings.overrideTimeoutHours.toBigDecimal() : 2.0
+def setManualOverride(roomId, actionVal, customHours = null) {
+    def timeoutHrs = customHours != null ? customHours.toBigDecimal() : (settings.overrideTimeoutHours != null ? settings.overrideTimeoutHours.toBigDecimal() : 2.0)
     def ms = (timeoutHrs * 3600000).toLong()
     
     def map = state.overrideUntil ?: [:]
@@ -680,7 +806,7 @@ def setManualOverride(roomId, actionVal) {
 def isOverrideActive(roomId) {
     def map = state.overrideUntil ?: [:]
     def expireTime = map[roomId.toString()]
-    
+ 
     if (expireTime) {
         if (now() < expireTime.toLong()) {
             return true
@@ -724,10 +850,12 @@ def fanSpeedHandler(evt) {
     if (evt.value != "unknown") {
         def gnSwitch = settings["z${roomId}GnSwitch"]
         if (gnSwitch && gnSwitch.currentValue("switch") == "on") {
+            if (state["z${roomId}Target"] != evt.value) updateWiggleReset(roomId)
             state["z${roomId}ExpectedSpeed"] = evt.value
             state["z${roomId}Target"] = evt.value
         } else {
             setManualOverride(roomId, evt.value)
+            if (state["z${roomId}Target"] != evt.value) updateWiggleReset(roomId)
             state["z${roomId}ExpectedSpeed"] = evt.value
             state["z${roomId}Target"] = evt.value 
         }
@@ -848,6 +976,14 @@ def evaluateFans() {
             def zTimeoutMs = (settings["z${i}OccupancyTimeout"] ?: 30) * 60000
             def isOccupied = getRoomOccupancy(i, zTimeoutMs)
             
+            // TRACK OCCUPANCY CHANGES FOR WIGGLE RESET
+            def prevOccMap = state.wasOccupied ?: [:]
+            if (prevOccMap[i.toString()] != isOccupied) {
+                updateWiggleReset(i)
+                prevOccMap[i.toString()] = isOccupied
+                state.wasOccupied = prevOccMap
+            }
+            
             // IF NOT OVERRIDDEN BY USER, PROCEED WITH AUTOMATION
             if (!isOverrideActive(i)) {
                 
@@ -958,6 +1094,7 @@ def turnRoomOff(roomId, fanType, roomName, reason) {
             if (state["z${roomId}Target"] != "off") {
                 logAction("Mode is ${isAway ? 'Away' : 'Good Night'}. Killing ${roomName} Master Relay directly (skipping fan speed commands to save hub resources).")
                 state["z${roomId}Target"] = "off"
+                updateWiggleReset(roomId)
                 setExpectedState(roomId, "fan", "off")
             }
             
@@ -1054,6 +1191,10 @@ def setFanTarget(roomId, fDev, pDev, roomName, newTargetSpeed, reason) {
     def rawFanType = settings["z${roomId}FanType"] ?: "speed3"
     def fanType = (rawFanType == "speed") ? "speed3" : rawFanType
     
+    // FIX: Stop processing if the fan is already exactly where it needs to be.
+    def currentSpeed = fDev ? (fDev.currentValue("speed") ?: "off") : "off"
+    if (currentTarget == newTargetSpeed && currentSpeed == newTargetSpeed) return
+
     if (currentTarget != newTargetSpeed) {
         if (fanType == "fixed") {
             def actionStr = newTargetSpeed == "off" ? "Stopping" : "Starting"
@@ -1073,6 +1214,7 @@ def setFanTarget(roomId, fDev, pDev, roomName, newTargetSpeed, reason) {
         }
         
         state["z${roomId}Target"] = newTargetSpeed
+        updateWiggleReset(roomId)
     }
 
     if (newTargetSpeed != "off" && pDev && pDev.currentValue("switch") != "on") {
@@ -1125,9 +1267,14 @@ def stepFan(roomId) {
             runIn(rfStepDelay ?: 3, "stepFanTrigger", [data: [room: roomId], overwrite: false])
         } else if (currentSpeed == "off" && targetSpeed == "off") {
             if (pDev && pDev.currentValue("switch") != "off") {
+                // FIX: Check Smart Lighting requirements before scheduling a kill task
+                def timeoutMs = (settings["z${roomId}OccupancyTimeout"] ?: 30) * 60000
+                def isOccupied = getRoomOccupancy(roomId, timeoutMs)
+                if (shouldKeepRelayOn(roomId, isOccupied, isAway, isNight)) return 
+
                 def spinDelay = relaySpinDown ?: 15
                 logAction("${settings["z${roomId}Name"]} blades are OFF. Scheduling power relay check in ${spinDelay} seconds.")
-                runIn(spinDelay, "killPowerRelay", [data: [room: roomId], overwrite: false])
+                runIn(spinDelay, "killPowerRelay", [data: [room: roomId], overwrite: true])
             }
         }
         return
@@ -1158,9 +1305,14 @@ def stepFan(roomId) {
     } 
     else if (currentInt == 0 && targetInt == 0) {
         if (pDev && pDev.currentValue("switch") != "off") {
+            // FIX: Check Smart Lighting requirements before scheduling a kill task
+            def timeoutMs = (settings["z${roomId}OccupancyTimeout"] ?: 30) * 60000
+            def isOccupied = getRoomOccupancy(roomId, timeoutMs)
+            if (shouldKeepRelayOn(roomId, isOccupied, isAway, isNight)) return 
+
             def spinDelay = relaySpinDown ?: 15
             logAction("${settings["z${roomId}Name"]} blades are OFF. Scheduling power relay check in ${spinDelay} seconds.")
-            runIn(spinDelay, "killPowerRelay", [data: [room: roomId], overwrite: false])
+            runIn(spinDelay, "killPowerRelay", [data: [room: roomId], overwrite: true])
         }
     }
 }
@@ -1204,10 +1356,23 @@ def doHourlyWiggle() {
         if (settings["enableZ${i}"] && fanType.startsWith("speed") && settings["z${i}Fan"]) {
             def gnSwitch = settings["z${i}GnSwitch"]
             if (gnSwitch && gnSwitch.currentValue("switch") == "on") continue 
-            if (isOverrideActive(i)) continue 
             
             def pDev = settings["z${i}Power"]
             if (pDev && pDev.currentValue("switch") == "off") continue // Skip if power is cut
+            
+            // --- NEW STABILITY CHECK ---
+            def zTimeoutMs = (settings["z${i}OccupancyTimeout"] ?: 30) * 60000
+            def isOccupied = getRoomOccupancy(i, zTimeoutMs)
+            def resetTime = state.wiggleResetTime ? state.wiggleResetTime[i.toString()] : null
+
+            if (isOccupied && resetTime) {
+                def elapsedHrs = (now() - resetTime.toLong()) / 3600000.0
+                if (elapsedHrs >= 2.0) {
+                    logInfo("Skipping wiggle for ${settings["z${i}Name"]}. Occupancy and target speed have been stable for ${elapsedHrs.setScale(1, BigDecimal.ROUND_HALF_UP)} hours.")
+                    continue
+                }
+            }
+            // ---------------------------
             
             def sMap = getSpeedLevels(fanType)
             def lMap = getLevelSpeeds(fanType)
@@ -1233,7 +1398,19 @@ def doHourlyWiggle() {
         }
     }
     
-    runIn(10, "evaluateFans", [overwrite: true])
+    runIn(10, "restoreWiggleSpeeds")
+}
+
+def restoreWiggleSpeeds() {
+    logInfo("Wiggle delay complete. Restoring fan speeds...")
+    evaluateFans()
+    
+    // Explicitly restore speeds for overridden zones since evaluateFans ignores them
+    for (int i = 1; i <= 8; i++) {
+        if (settings["enableZ${i}"] && isOverrideActive(i)) {
+            stepFan(i) 
+        }
+    }
 }
 
 def getWetBulbF(tempF, rh) {
