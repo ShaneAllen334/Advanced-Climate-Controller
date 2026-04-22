@@ -7,7 +7,7 @@ definition(
     name: "Advanced Trash Day Reminder",
     namespace: "ShaneAllen",
     author: "ShaneAllen",
-    description: "Advanced trash day scheduling with predictive AI timing, omni-axis spatial tracking, Eco-Impact telemetry, and Hygiene Tracking.",
+    description: "Advanced trash day scheduling with predictive AI, omni-axis spatial tracking, Utility Financial Auditing, and Bi-Weekly Recycling logic.",
     category: "Convenience",
     iconUrl: "",
     iconX2Url: "",
@@ -28,7 +28,9 @@ def mainPage() {
             paragraph "<div style='background-color:#e9ecef; padding:10px; border-radius:5px; border-left:5px solid #007bff;'><b>System Status:</b> ${statusExplanation}</div>"
 
             def nPickup = state.nextPickupStr ?: "Not Calculated"
-            def nReminder = state.nextReminderStr ?: "Not Calculated"
+            
+            def isRecycleWeek = checkRecyclingWeek()
+            def recycleStr = isRecycleWeek ? "<b style='color:#2980b9;'>YES (Trash + Recycling)</b>" : "No (Trash Only)"
             
             def physicalBinState = "<b>At House</b>"
             if (state.binStatus == "curb_full") physicalBinState = "<b style='color:#e67e22;'>At Curb (Awaiting Truck)</b>"
@@ -61,13 +63,15 @@ def mainPage() {
                 missedStr = "Last cycle was late by ${state.lastMissedDuration} hours."
             }
             
+            // Financial Math
+            def refundStr = calculateRefundOwed()
+            
             def avgPutOut = getAverageTimeStr("historyPutOut")
             def avgEmptied = getAverageTimeStr("historyEmptied")
             def avgReturned = getAverageTimeStr("historyReturned")
             
             def baselineStatus = (state.activeAxis && state.baselineValue != null) ? "<b style='color:green;'>Calibrated (${state.activeAxis.toUpperCase()}: ${state.baselineValue})</b>" : "<b style='color:red;'>Requires Calibration</b>"
 
-            // Hygiene Data
             def hygStatus = state.hygieneStatus ?: "Clean ✨"
             int daysWashed = state.lastWashed ? ((now() - state.lastWashed) / 86400000) as Integer : 0
             def maxT = state.maxTempSinceWash ?: "N/A"
@@ -87,10 +91,15 @@ def mainPage() {
                 <thead><tr><th>Metric</th><th colspan="3">Current Value</th></tr></thead>
                 <tbody>
                     <tr><td colspan="4" class="dash-sub">Schedule & Status</td></tr>
+                    <tr><td class="dash-hl">Next Collection Target</td><td colspan="3" class="dash-val" style="font-size:16px;"><b>${nPickup}</b></td></tr>
+                    <tr><td class="dash-hl">Includes Recycling?</td><td colspan="3" class="dash-val">${recycleStr}</td></tr>
                     <tr><td class="dash-hl">Scheduling Mode</td><td colspan="3" class="dash-val">${schedMode}</td></tr>
-                    <tr><td class="dash-hl">Holiday Shift</td><td colspan="3" class="dash-val">${holidayStatus}</td></tr>
-                    <tr><td class="dash-hl">Next Collection Target</td><td colspan="3" class="dash-val"><b>${nPickup}</b></td></tr>
                     <tr><td class="dash-hl">Task Status</td><td colspan="3" class="dash-val">${tStatus}</td></tr>
+                    
+                    <tr><td colspan="4" class="dash-sub">Utility Audit & Financial Failsafe</td></tr>
+                    <tr><td class="dash-hl">Current Tracker Status</td><td colspan="3" class="dash-val">${missedStr}</td></tr>
+                    <tr><td class="dash-hl">Total Time Missed (Lifetime)</td><td colspan="3" class="dash-val">${state.lifetimeMissedHours ?: 0} Hours</td></tr>
+                    <tr><td class="dash-hl">Prorated Refund Owed</td><td colspan="3" class="dash-val" style="color:red; font-size:16px;"><b>\$${refundStr}</b></td></tr>
                     
                     <tr><td colspan="4" class="dash-sub">Hygiene & Environmental Impact</td></tr>
                     <tr><td class="dash-hl">Household Waste Rating</td><td colspan="3" class="dash-val" style="font-size:16px;">${ecoScore}</td></tr>
@@ -103,11 +112,6 @@ def mainPage() {
                     <tr><td class="dash-hl">Physical Bin Location</td><td colspan="3" class="dash-val">${physicalBinState}</td></tr>
                     <tr><td class="dash-hl">Sensor Battery</td><td colspan="3" class="dash-val"><b>${battDisplay}</b></td></tr>
                     <tr><td class="dash-hl">Spatial Calibration</td><td colspan="3" class="dash-val">${baselineStatus}</td></tr>
-                    
-                    <tr><td colspan="4" class="dash-sub">Historical Averages (Last 10 Cycles)</td></tr>
-                    <tr><td class="dash-hl">Avg. Time Taken to Curb</td><td colspan="3" class="dash-val"><b>${avgPutOut}</b></td></tr>
-                    <tr><td class="dash-hl">Avg. Time Emptied by Truck</td><td colspan="3" class="dash-val"><b>${avgEmptied}</b></td></tr>
-                    <tr><td class="dash-hl">Avg. Time Returned to House</td><td colspan="3" class="dash-val"><b>${avgReturned}</b></td></tr>
                 </tbody>
             </table>
             """
@@ -120,31 +124,46 @@ def mainPage() {
             input "btnSetMissed", "button", title: "Set Bin: Missed Pickup"
             
             paragraph "<br>"
-            input "btnMarkWashed", "button", title: "🧼 Mark Bin as Washed / Sanitized"
             input "btnCalibrate", "button", title: "Calibrate Spatial Baseline (Close Lid First)"
+            input "btnResetFinance", "button", title: "💳 Reset Financial Audit Ledger to $0.00"
             input "btnHoliday", "button", title: state.holidayShift ? "Cancel Manual Holiday Shift" : "Force Manual Holiday Shift (+1 Day)"
-            input "btnRecalculate", "button", title: "Force Schedule Recalculation"
-            input "btnCreateChild", "button", title: "⚙️ Create Virtual Companion Device"
+        }
+        
+        section("<b>Utility Financial Auditor</b>") {
+            paragraph "<div style='font-size:13px; color:#555;'>Enter your quarterly waste management cost. The app will calculate prorated refunds for missed collection days.</div>"
+            input "quarterlyCost", "decimal", title: "Quarterly Trash Bill Cost ($)", description: "e.g., 90.00", required: false, submitOnChange: true
         }
 
-        section("<b>Predictive AI Scheduling</b>") {
+        section("<b>Predictive AI Scheduling & Recycling</b>") {
             input "usePredictiveTiming", "bool", title: "Enable Predictive Smart Schedule", defaultValue: true, submitOnChange: true
+            
+            input "enableRecycling", "bool", title: "Enable Bi-Weekly Recycling Logic", defaultValue: false, submitOnChange: true
+            if (enableRecycling) {
+                input "recycleWeek", "enum", title: "Recycling is collected on:", options: ["Even Weeks", "Odd Weeks"], required: true
+                input "ttsRecycleText", "text", title: "Recycling Announcement Text", defaultValue: "Reminder, it is time to take the trash and the recycling out to the road."
+            }
         }
 
         section("<b>Automated Physical Tracking (Samsung Multi-Sensor)</b>") {
             input "binMultiSensor", "capability.threeAxis", title: "Samsung Multipurpose Sensor", required: true
             
-            paragraph "<div style='font-size:13px; color:#555;'><b>Driveway Surface Engine:</b> Dynamically alters the internal noise floor to prevent gravel from creating false alarms, while automatically locking a relative baseline to prevent curb-slope false alarms.</div>"
-            
             input "drivewaySurface", "enum", title: "Driveway Surface Profile", options: ["Smooth Pavement", "Mixed / Patchy", "Fine Gravel", "Chunky / Rough Gravel", "Custom (Manual Overrides)"], defaultValue: "Smooth Pavement", required: true, submitOnChange: true
-            
             if (drivewaySurface == "Custom (Manual Overrides)") {
-                input "transitMinTime", "number", title: "Minimum Transit Duration (Seconds)", description: "Movement/Tilt longer than this is classified as rolling the bin (Default 10).", defaultValue: 10, required: true
-                input "transitTiltThreshold", "number", title: "Transit Tilt Threshold", description: "Minimum tilt to register rolling (Default 150).", defaultValue: 150, required: true
-                input "lidOpenThreshold", "number", title: "Lid Open Tilt Threshold", description: "Minimum tilt to register a 90-degree lid open (Default 600).", defaultValue: 600, required: true
+                input "transitMinTime", "number", title: "Minimum Transit Duration (Seconds)", defaultValue: 10, required: true
+                input "transitTiltThreshold", "number", title: "Transit Tilt Threshold", defaultValue: 150, required: true
+                input "lidOpenThreshold", "number", title: "Lid Open Tilt Threshold", defaultValue: 600, required: true
             }
+            input "estimatedMaxOpens", "number", title: "Bag Capacity (Opens to Full)", defaultValue: 8, required: true
             
-            input "estimatedMaxOpens", "number", title: "Bag Capacity (Opens to Full)", description: "Default is 8 (96g cart / 13g bags)", defaultValue: 8, required: true
+            input "enableFallenBin", "bool", title: "Enable Severe Weather Failsafe (Fallen Bin Alerts)", defaultValue: true
+        }
+
+        section("<b>HOA Compliance (Return Nag)</b>") {
+            input "enableHoaNag", "bool", title: "Enable HOA Return Nag", defaultValue: false, submitOnChange: true
+            if (enableHoaNag) {
+                input "hoaNagTime", "number", title: "Hours to wait after truck dumps before nagging:", defaultValue: 4, required: true
+                input "ttsHoaText", "text", title: "HOA Return Announcement Text", defaultValue: "The garbage truck has collected the trash. Please return the bin to the house."
+            }
         }
 
         section("<b>Automated Holiday Tracking</b>") {
@@ -157,7 +176,7 @@ def mainPage() {
         section("<b>Collection Schedule & Offset</b>") {
             input "trashDays", "enum", title: "Trash Collection Day(s)", options: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"], multiple: true, required: true, submitOnChange: true
             input "pickupTime", "time", title: "Baseline Estimated Time (Used if Predictive is off)", required: true, submitOnChange: true
-            input "reminderOffset", "decimal", title: "Reminder Offset (Hours before calculated pickup)", required: true, defaultValue: 12.0, submitOnChange: true
+            input "reminderOffset", "decimal", title: "Reminder Offset (Hours before pickup)", required: true, defaultValue: 12.0, submitOnChange: true
         }
 
         section("<b>Acknowledgment & Nags</b>") {
@@ -166,24 +185,19 @@ def mainPage() {
         }
         
         section("<b>Operating Modes (Granular Restrictions)</b>") {
-            paragraph "<div style='font-size:13px; color:#555;'>The system will always arm the reminder internally, but it will only trigger alerts if your home is in one of the allowed modes below.</div>"
-            input "pushModes", "mode", title: "Modes allowing Push Notifications (Leave blank for all)", multiple: true, required: false
-            input "audioModes", "mode", title: "Modes allowing Audio/Zooz Announcements (Leave blank for all)", multiple: true, required: false
-            input "nagModes", "mode", title: "Modes allowing Hourly Nags (Leave blank for all)", multiple: true, required: false
-            
-            paragraph "<div style='font-size:13px; color:#555;'><b>The Raccoon Filter:</b> Only allow the app to track human interactions (opening the lid or rolling the bin to the curb) during these modes. The Garbage Truck Dump is never restricted.</div>"
-            input "trackingModes", "mode", title: "Modes allowing Physical Tracking (Leave blank for all)", multiple: true, required: false
+            input "pushModes", "mode", title: "Modes allowing Push Notifications", multiple: true, required: false
+            input "audioModes", "mode", title: "Modes allowing Audio/Zooz Announcements", multiple: true, required: false
+            input "nagModes", "mode", title: "Modes allowing Hourly Nags", multiple: true, required: false
+            input "trackingModes", "mode", title: "Modes allowing Physical Tracking (The Raccoon Filter)", multiple: true, required: false
         }
 
         section("<b>Audio Announcements & Notifications</b>") {
             input "notifyDevice", "capability.notification", title: "Push Notification Devices", required: false, multiple: true
-            
-            paragraph "<b>Smart Speakers (TTS)</b>"
-            paragraph "<div style='font-size:13px; color:#555;'>Separate multiple phrases with commas to have the system randomly select one.</div>"
             input "ttsSpeakers", "capability.speechSynthesis", title: "Smart Speakers", multiple: true, required: false
-            input "ttsReminderText", "text", title: "Reminder Announcement Text", defaultValue: "Reminder, it is time to take the trash out to the road."
-            input "ttsEmptiedText", "text", title: "Bin Emptied Announcement Text", defaultValue: "The garbage truck has emptied your bin."
-            input "ttsReturnedText", "text", title: "Bin Returned Announcement Text", defaultValue: "The trash bin has been returned to the house."
+            
+            input "ttsReminderText", "text", title: "Standard Reminder Text", defaultValue: "Reminder, it is time to take the trash out to the road."
+            input "ttsEmptiedText", "text", title: "Bin Emptied Text", defaultValue: "The garbage truck has emptied your bin."
+            input "ttsReturnedText", "text", title: "Bin Returned Text", defaultValue: "The trash bin has been returned to the house."
             
             paragraph "<b>Zooz Siren & Chime</b>"
             input "zoozChimes", "capability.chime", title: "Zooz Chime Devices", multiple: true, required: false, submitOnChange: true
@@ -192,38 +206,22 @@ def mainPage() {
                 input "zoozSoundEmptied", "number", title: "Sound File #: Bin Emptied", required: false
                 input "zoozSoundReturned", "number", title: "Sound File #: Bin Returned", required: false
             }
-            
-            paragraph "<br>"
-            input "btnTestReminder", "button", title: "🔊 Test Reminder Audio (Bypasses Motion & Modes)"
-            input "btnTestEmptied", "button", title: "🔊 Test Emptied Audio (Bypasses Motion & Modes)"
-            input "btnTestReturned", "button", title: "🔊 Test Returned Audio (Bypasses Motion & Modes)"
         }
 
         section("<b>Global Audio Room Mapping</b>") {
-            paragraph "<div style='font-size:13px; color:#555;'><b>1-to-1 Motion Filtering:</b> Map your speakers to motion sensors here. Devices not mapped will play unconditionally.</div>"
             input "audioMotionTimeout", "number", title: "Audio Motion Timeout (Minutes)", defaultValue: 5
             input "alwaysOnRoom", "enum", title: "Select ONE room to ALWAYS announce (Ignores motion)", options: ["1": "Room 1", "2": "Room 2", "3": "Room 3", "4": "Room 4", "5": "Room 5", "6": "Room 6", "7": "Room 7"], required: false
             
             input "room1Speaker", "capability.actuator", title: "Room 1 Speaker/Chime(s)", required: false, multiple: true
             input "room1Motion", "capability.motionSensor", title: "Room 1 Motion Sensor(s)", required: false, multiple: true
-            
             input "room2Speaker", "capability.actuator", title: "Room 2 Speaker/Chime(s)", required: false, multiple: true
             input "room2Motion", "capability.motionSensor", title: "Room 2 Motion Sensor(s)", required: false, multiple: true
-            
             input "room3Speaker", "capability.actuator", title: "Room 3 Speaker/Chime(s)", required: false, multiple: true
             input "room3Motion", "capability.motionSensor", title: "Room 3 Motion Sensor(s)", required: false, multiple: true
-            
             input "room4Speaker", "capability.actuator", title: "Room 4 Speaker/Chime(s)", required: false, multiple: true
             input "room4Motion", "capability.motionSensor", title: "Room 4 Motion Sensor(s)", required: false, multiple: true
-            
             input "room5Speaker", "capability.actuator", title: "Room 5 Speaker/Chime(s)", required: false, multiple: true
             input "room5Motion", "capability.motionSensor", title: "Room 5 Motion Sensor(s)", required: false, multiple: true
-            
-            input "room6Speaker", "capability.actuator", title: "Room 6 Speaker/Chime(s)", required: false, multiple: true
-            input "room6Motion", "capability.motionSensor", title: "Room 6 Motion Sensor(s)", required: false, multiple: true
-            
-            input "room7Speaker", "capability.actuator", title: "Room 7 Speaker/Chime(s)", required: false, multiple: true
-            input "room7Motion", "capability.motionSensor", title: "Room 7 Motion Sensor(s)", required: false, multiple: true
         }
 
         section("<b>Recent Action History</b>") {
@@ -252,6 +250,7 @@ def initialize() {
     if (!state.lastWashed) state.lastWashed = now()
     if (!state.maxTempSinceWash) state.maxTempSinceWash = 70
     if (state.isSensorDead == null) state.isSensorDead = false
+    if (!state.lifetimeMissedHours) state.lifetimeMissedHours = 0.0
     
     if (!state.historyPutOut) state.historyPutOut = []
     if (!state.historyEmptied) state.historyEmptied = []
@@ -263,8 +262,6 @@ def initialize() {
     if (settings.room3Motion) subscribe(settings.room3Motion, "motion.active", "room3MotionHandler")
     if (settings.room4Motion) subscribe(settings.room4Motion, "motion.active", "room4MotionHandler")
     if (settings.room5Motion) subscribe(settings.room5Motion, "motion.active", "room5MotionHandler")
-    if (settings.room6Motion) subscribe(settings.room6Motion, "motion.active", "room6MotionHandler")
-    if (settings.room7Motion) subscribe(settings.room7Motion, "motion.active", "room7MotionHandler")
     
     if (trashSwitch) subscribe(trashSwitch, "switch.off", ackHandler)
     
@@ -290,42 +287,27 @@ def appButtonHandler(btn) {
     } else if (btn == "btnSetHouse") {
         state.binStatus = "house"
         state.lidOpens = 0
+        unschedule("hoaNagHandler")
         logAction("MANUAL OVERRIDE: Bin forced to 'House'.")
-        syncChildDevice()
-        
-        def msg = ttsReturnedText ?: "The trash bin has been returned to the house."
-        sendAlert(msg)
-        if (ttsSpeakers && ttsReturnedText) playTTS(ttsSpeakers, ttsReturnedText)
-        if (zoozChimes && zoozSoundReturned != null) playZoozChime(zoozSoundReturned)
-        
     } else if (btn == "btnSetCurbFull") {
         state.binStatus = "curb_full"
         if (trashSwitch && trashSwitch.currentValue("switch") != "off") trashSwitch.off()
         state.isNagging = false
+        unschedule("hoaNagHandler")
         logAction("MANUAL OVERRIDE: Bin forced to 'At Curb (Full)'.")
-        syncChildDevice()
-        
-        sendAlert("MANUAL OVERRIDE: Trash logged at curb.")
-        
     } else if (btn == "btnSetCurbEmptied") {
         state.binStatus = "curb_emptied"
         state.lidOpens = 0
+        if (enableHoaNag && hoaNagTime) runIn((hoaNagTime as Integer) * 3600, "hoaNagHandler")
         logAction("MANUAL OVERRIDE: Bin forced to 'At Curb (Emptied)'.")
-        syncChildDevice()
-        
-        def msg = ttsEmptiedText ?: "The garbage truck has emptied your bin!"
-        sendAlert(msg)
-        if (ttsSpeakers && ttsEmptiedText) playTTS(ttsSpeakers, ttsEmptiedText)
-        if (zoozChimes && zoozSoundEmptied != null) playZoozChime(zoozSoundEmptied)
-        
     } else if (btn == "btnSetMissed") {
         state.binStatus = "curb_missed"
         state.missedTime = now()
+        unschedule("hoaNagHandler")
         logAction("MANUAL OVERRIDE: Bin forced to 'Missed Pickup'.")
-        syncChildDevice()
-        
-        sendAlert("ALERT: MANUAL OVERRIDE logged as Missed Pickup!")
-        
+    } else if (btn == "btnResetFinance") {
+        state.lifetimeMissedHours = 0.0
+        logAction("FINANCIAL AUDIT: Ledger reset to $0.00.")
     } else if (btn == "btnRecalculate") {
         updateSchedule()
     } else if (btn == "btnHoliday") {
@@ -339,73 +321,61 @@ def appButtonHandler(btn) {
         state.maxTempSinceWash = binMultiSensor?.currentValue("temperature") ?: 70
         state.hygieneStatus = "Clean ✨"
         logAction("SYSTEM: Bin marked as washed and sanitized. Timers reset.")
-        syncChildDevice()
-    } else if (btn == "btnCreateChild") {
-        def childDNI = "trashCompanion-${app.id}"
-        def child = getChildDevice(childDNI)
-        if (!child) {
-            try {
-                addChildDevice("hubitat", "Virtual Switch", childDNI, [name: "Trash Companion", isComponent: false])
-                logAction("SYSTEM: Virtual Companion Device Created Successfully!")
-                syncChildDevice()
-            } catch (e) { log.error "Failed to create child device: ${e}" }
-        } else {
-            logAction("SYSTEM: Virtual Companion Device already exists.")
-        }
-    }
-    else if (btn == "btnTestReminder") {
-        logAction("TEST: Firing Reminder Audio (Bypassing Filters).")
-        def msg = ttsReminderText ?: "Reminder, it is time to take the trash out to the road."
-        if (ttsSpeakers) playTTS(ttsSpeakers, msg, true)
-        if (zoozChimes && zoozSoundReminder != null) playZoozChime(zoozSoundReminder, true)
-    } else if (btn == "btnTestEmptied") {
-        logAction("TEST: Firing Emptied Audio (Bypassing Filters).")
-        def msg = ttsEmptiedText ?: "The garbage truck has emptied your bin."
-        if (ttsSpeakers) playTTS(ttsSpeakers, msg, true)
-        if (zoozChimes && zoozSoundEmptied != null) playZoozChime(zoozSoundEmptied, true)
-    } else if (btn == "btnTestReturned") {
-        logAction("TEST: Firing Returned Audio (Bypassing Filters).")
-        def msg = ttsReturnedText ?: "The trash bin has been returned to the house."
-        if (ttsSpeakers) playTTS(ttsSpeakers, msg, true)
-        if (zoozChimes && zoozSoundReturned != null) playZoozChime(zoozSoundReturned, true)
+    } 
+}
+
+// ------------------------------------------------------------------------------
+// FINANCIAL MATH & RECYCLING
+// ------------------------------------------------------------------------------
+
+boolean checkRecyclingWeek() {
+    if (!settings.enableRecycling || !settings.recycleWeek) return false
+    def cal = Calendar.getInstance(location.timeZone ?: TimeZone.getDefault())
+    int weekNum = cal.get(Calendar.WEEK_OF_YEAR)
+    boolean isEven = (weekNum % 2 == 0)
+    if (settings.recycleWeek == "Even Weeks" && isEven) return true
+    if (settings.recycleWeek == "Odd Weeks" && !isEven) return true
+    return false
+}
+
+String calculateRefundOwed() {
+    if (!settings.quarterlyCost || !state.lifetimeMissedHours) return "0.00"
+    def qCost = settings.quarterlyCost.toDouble()
+    def dailyRate = qCost / 91.25
+    def hourlyRate = dailyRate / 24.0
+    def refund = (state.lifetimeMissedHours.toDouble() * hourlyRate)
+    return String.format("%.2f", refund)
+}
+
+def hoaNagHandler() {
+    if (state.binStatus == "curb_emptied") {
+        logAction("HOA COMPLIANCE: Sending return nag.")
+        def msg = settings.ttsHoaText ?: "The garbage truck has collected the trash. Please return the bin to the house."
+        sendAlert("HOA ALERT: " + msg)
+        if (ttsSpeakers) playTTS(ttsSpeakers, msg)
+        if (zoozChimes && zoozSoundReturned != null) playZoozChime(zoozSoundReturned)
     }
 }
 
 // ------------------------------------------------------------------------------
-// MODE HELPERS & COMPANION SYNC
+// MODE HELPERS 
 // ------------------------------------------------------------------------------
 
 boolean isPushAllowed() {
     if (!settings.pushModes) return true
     return (settings.pushModes as List).contains(location.mode)
 }
-
 boolean isAudioAllowed() {
     if (!settings.audioModes) return true
     return (settings.audioModes as List).contains(location.mode)
 }
-
 boolean isNagAllowed() {
     if (!settings.nagModes) return true
     return (settings.nagModes as List).contains(location.mode)
 }
-
 boolean isTrackingAllowed() {
     if (!settings.trackingModes) return true
     return (settings.trackingModes as List).contains(location.mode)
-}
-
-def syncChildDevice() {
-    def child = getChildDevice("trashCompanion-${app.id}")
-    if (child) {
-        try {
-            child.sendEvent(name: "switch", value: (state.binStatus == "house" ? "off" : "on"))
-            child.sendEvent(name: "binStatus", value: state.binStatus)
-            child.sendEvent(name: "fillPercent", value: getFillPct())
-            child.sendEvent(name: "ecoScore", value: getEcoScoreBadgeText())
-            child.sendEvent(name: "hygieneStatus", value: state.hygieneStatus ?: "Clean ✨")
-        } catch (e) { log.error "Companion Sync Error: ${e}" }
-    }
 }
 
 int getFillPct() {
@@ -425,22 +395,14 @@ String getEcoScoreBadgeText() {
     return "F"
 }
 
-// ------------------------------------------------------------------------------
-// TELEMETRY, HYGIENE, & ECO-SCORE ENGINE
-// ------------------------------------------------------------------------------
-
 def checkSensorHealth() {
     boolean isDead = false
     if (binMultiSensor) {
         def lastEvt = binMultiSensor.currentState("temperature")?.date
         if (lastEvt) {
             long hrsSince = (now() - lastEvt.time) / 3600000
-            if (hrsSince > 48) {
-                isDead = true
-            }
-        } else {
-            isDead = true
-        }
+            if (hrsSince > 48) isDead = true
+        } else { isDead = true }
     }
     state.isSensorDead = isDead
 }
@@ -448,34 +410,26 @@ def checkSensorHealth() {
 def tempHandler(evt) {
     state.isSensorDead = false 
     def t = evt.numericValue
-    if (t != null && t > (state.maxTempSinceWash ?: 0)) {
-        state.maxTempSinceWash = t
-    }
+    if (t != null && t > (state.maxTempSinceWash ?: 0)) state.maxTempSinceWash = t
 }
 
 def updateHygiene() {
     long daysSince = state.lastWashed ? ((now() - state.lastWashed) / 86400000) as Integer : 0
     int maxT = state.maxTempSinceWash ?: 70
-    
     String status = "Clean ✨"
     if (daysSince > 30 || (maxT > 90 && daysSince > 14)) status = "Bio-Hazard ☣️"
     else if (daysSince > 21 || (maxT > 85 && daysSince > 10)) status = "Gross 🤢"
     else if (daysSince > 14 || (maxT > 80 && daysSince > 7)) status = "Needs Washing 🧽"
-    
     state.hygieneStatus = status
-    syncChildDevice()
 }
 
 def recordTelemetryTime(String stateKey) {
     def tz = location.timeZone ?: TimeZone.getDefault()
     def cal = Calendar.getInstance(tz)
     cal.setTime(new Date())
-    
     int minutes = (cal.get(Calendar.HOUR_OF_DAY) * 60) + cal.get(Calendar.MINUTE)
-    
     def list = state[stateKey] ?: []
     list.add(0, minutes)
-    
     if (list.size() > 10) list = list[0..9]
     state[stateKey] = list
 }
@@ -483,32 +437,26 @@ def recordTelemetryTime(String stateKey) {
 String getAverageTimeStr(String stateKey) {
     def list = state[stateKey]
     if (!list || list.size() == 0) return "<span style='color:#888;'>Insufficient Data</span>"
-    
     def sum = list.sum()
     int avgMins = Math.round(sum / list.size()) as Integer
-    
     int h = avgMins.intdiv(60)
     int m = avgMins % 60
-    
     def tz = location.timeZone ?: TimeZone.getDefault()
     def cal = Calendar.getInstance(tz)
     cal.set(Calendar.HOUR_OF_DAY, h)
     cal.set(Calendar.MINUTE, m)
-    
     return cal.getTime().format("h:mm a", tz)
 }
 
 String getEcoScoreBadge() {
     def hist = state.historyFullness ?: []
     if (hist.size() == 0) return "<span style='color:grey;'>Pending Truck Dump Data</span>"
-    
     int avgFill = Math.round(hist.sum() / hist.size()) as Integer
-
-    if (avgFill <= 25) return "<b style='color:#27ae60;'>A+ (Eco-Warrior)</b> <span style='font-size:12px;color:#555;'>Excellent impact reduction.</span>"
-    if (avgFill <= 50) return "<b style='color:#2ecc71;'>A (Great)</b> <span style='font-size:12px;color:#555;'>Low waste generation.</span>"
-    if (avgFill <= 75) return "<b style='color:#f1c40f;'>B (Average)</b> <span style='font-size:12px;color:#555;'>Standard family waste footprint.</span>"
-    if (avgFill <= 99) return "<b style='color:#e67e22;'>C (High)</b> <span style='font-size:12px;color:#555;'>Needs improvement on recycling.</span>"
-    return "<b style='color:#c0392b;'>D/F (Max)</b> <span style='font-size:12px;color:#555;'>Severe environmental impact.</span>"
+    if (avgFill <= 25) return "<b style='color:#27ae60;'>A+ (Eco-Warrior)</b>"
+    if (avgFill <= 50) return "<b style='color:#2ecc71;'>A (Great)</b>"
+    if (avgFill <= 75) return "<b style='color:#f1c40f;'>B (Average)</b>"
+    if (avgFill <= 99) return "<b style='color:#e67e22;'>C (High)</b>"
+    return "<b style='color:#c0392b;'>D/F (Max)</b>"
 }
 
 // ------------------------------------------------------------------------------
@@ -521,24 +469,18 @@ def calibrateSpatialBaseline() {
     if (xyz) {
         def axes = ["x": xyz.x, "y": xyz.y, "z": xyz.z]
         def dominantAxis = axes.max { Math.abs(it.value as Integer) }.key
-        
         state.activeAxis = dominantAxis
         state.baselineValue = axes[dominantAxis]
-        
         state.baselineX = xyz.x as Integer
         state.baselineY = xyz.y as Integer
         state.baselineZ = xyz.z as Integer
-        
         state.isSensorDead = false 
         logAction("SYSTEM: 3D Calibration complete. Locked to global [${dominantAxis.toUpperCase()}] axis for Truck Dumps.")
-    } else {
-        logAction("ERROR: Could not read 3-Axis data for calibration.")
     }
 }
 
 def getSurfaceProfile() {
     def profile = [transitTime: 10, transitTilt: 150, lidTilt: 600]
-    
     if (settings.drivewaySurface == "Smooth Pavement") {
         profile = [transitTime: 8, transitTilt: 120, lidTilt: 600]
     } else if (settings.drivewaySurface == "Mixed / Patchy") {
@@ -552,7 +494,6 @@ def getSurfaceProfile() {
         profile.transitTilt = settings.transitTiltThreshold ?: 150
         profile.lidTilt = settings.lidOpenThreshold ?: 600
     }
-    
     return profile
 }
 
@@ -562,7 +503,6 @@ def binMoveActiveHandler(evt) {
     state.maxRelativeDevDuringMotion = 0
     state.wasFlippedDuringMotion = false
     
-    // Lock the relative baseline for THIS specific motion event
     if (state.lastKnownXYZ) {
         state.restX = state.lastKnownXYZ.x
         state.restY = state.lastKnownXYZ.y
@@ -574,13 +514,11 @@ def axisSpatialHandler(evt) {
     def xyz = binMultiSensor.currentValue("threeAxis")
     if (!xyz) return
     
-    // Constantly update resting position when NOT moving
     if (!state.motionStartTime) {
         state.lastKnownXYZ = [x: xyz.x as Integer, y: xyz.y as Integer, z: xyz.z as Integer]
         return
     }
     
-    // --- We ARE moving! Calculate Relative Gravity Deviation ---
     int curX = xyz.x as Integer
     int curY = xyz.y as Integer
     int curZ = xyz.z as Integer
@@ -598,7 +536,6 @@ def axisSpatialHandler(evt) {
         state.maxRelativeDevDuringMotion = maxRelative
     }
 
-    // --- Absolute Global Flipped Check (For Garbage Trucks Only) ---
     boolean isFlipped = false
     if (state.activeAxis && state.baselineValue != null) {
         int currentDom = xyz[state.activeAxis] as Integer
@@ -607,7 +544,6 @@ def axisSpatialHandler(evt) {
         if (isFlipped) state.wasFlippedDuringMotion = true
     }
 
-    // TRUCK DUMP (Left live for instant audio reaction)
     if (isFlipped && (state.binStatus == "curb_full" || state.binStatus == "curb_missed")) {
         if (!state.isCurrentlyDumped) {
             state.isCurrentlyDumped = true
@@ -619,6 +555,8 @@ def axisSpatialHandler(evt) {
 }
 
 def binMoveInactiveHandler(evt) {
+    if (settings.enableFallenBin) runIn(300, "fallenBinCheck", [overwrite: true])
+
     if (!state.motionStartTime) return
     
     long durationMs = now() - state.motionStartTime
@@ -632,43 +570,47 @@ def binMoveInactiveHandler(evt) {
     int maxTilt = state.maxRelativeDevDuringMotion ?: 0
     boolean isFlipped = state.wasFlippedDuringMotion ?: false
     
-    state.motionStartTime = null // clean up
+    state.motionStartTime = null 
     
     logAction("Motion Event Ended: Duration: ${durationSec}s | Max Relative Tilt: ${maxTilt} | Flipped: ${isFlipped}")
     
-    // 1. TRUCK DUMP 
-    if (isFlipped && (state.binStatus == "curb_full" || state.binStatus == "curb_missed")) {
-        // Handled instantly by Spatial Handler
-        return
-    }
+    if (isFlipped && (state.binStatus == "curb_full" || state.binStatus == "curb_missed")) return
     
-    // 2. TRASH TOSS / LID OPEN (Massive 90-degree shift trumps all)
     if (maxTilt >= lidThresh) {
         if (isTrackingAllowed()) {
-            // Allows adding trash at the house OR at the curb!
             int opens = (state.lidOpens ?: 0) + 1
             state.lidOpens = opens
             logAction("Action Processed: Trash Toss (Lid Flipped 90°). Capacity updated to (${opens}).")
-            syncChildDevice()
         } else {
-            logAction("Action Processed: Trash Toss detected, but ignored (Raccoon Filter: Tracking mode restricted).")
+            logAction("Action Processed: Trash Toss detected, but ignored (Raccoon Filter).")
         }
         return
     }
 
-    // 3. CURB TRANSIT (Long duration + moderate rolling tilt)
     if (durationSec >= reqTransitTime && maxTilt >= reqTransitTilt) {
         if (isTrackingAllowed()) {
             logAction("Action Processed: Sustained Transit to/from Curb.")
             processValidTransit()
         } else {
-            logAction("Action Processed: Transit detected, but ignored (Raccoon Filter: Tracking mode restricted).")
+            logAction("Action Processed: Transit detected, but ignored (Raccoon Filter).")
         }
         return
     }
     
-    // 4. IGNORED BUMP / WIND 
     logAction("Action Processed: Ignored bump/wind. (Relative tilt of ${maxTilt} did not meet thresholds).")
+}
+
+def fallenBinCheck() {
+    def xyz = binMultiSensor.currentValue("threeAxis")
+    if (!xyz || !state.baselineValue || !state.activeAxis) return
+    
+    int curDom = xyz[state.activeAxis] as Integer
+    
+    // If the dominant axis is reading near 0, gravity is pulling sideways (It fell over 90 degrees)
+    if (Math.abs(curDom) < 400 && !state.isCurrentlyDumped) {
+        logAction("SEVERE WEATHER ALERT: Bin has fallen over!")
+        sendAlert("SEVERE WEATHER ALERT: Your outdoor trash bin has been knocked over.")
+    }
 }
 
 def processTruckDump() {
@@ -677,7 +619,9 @@ def processTruckDump() {
     if (state.binStatus == "curb_missed" && state.missedTime) {
         long hrsLate = (now() - state.missedTime) / 3600000
         state.lastMissedDuration = hrsLate
-        sendAlert("FINANCIAL TRACKER: Your missed trash was finally collected ${hrsLate} hours late.")
+        def oldMissed = state.lifetimeMissedHours ?: 0.0
+        state.lifetimeMissedHours = oldMissed + hrsLate
+        sendAlert("FINANCIAL TRACKER: Your missed trash was finally collected ${hrsLate} hours late. Ledger updated.")
         state.missedTime = null
     }
     
@@ -693,8 +637,9 @@ def processTruckDump() {
     recordTelemetryTime("historyEmptied")
     state.binStatus = "curb_emptied"
     
+    if (enableHoaNag && hoaNagTime) runIn((hoaNagTime as Integer) * 3600, "hoaNagHandler")
+    
     updateSchedule()
-    syncChildDevice()
     
     def msg = ttsEmptiedText ?: "The garbage truck has emptied your bin!"
     sendAlert(msg)
@@ -712,7 +657,6 @@ def processValidTransit() {
         state.binStatus = "curb_full" 
         
         sendAlert("Trash movement detected. Logged at curb.")
-        syncChildDevice()
     }
     else if (state.binStatus == "curb_full") {
         logAction("AUTOMATION: Bin shifted at curb. Ignored to prevent false return state.")
@@ -722,12 +666,12 @@ def processValidTransit() {
         recordTelemetryTime("historyReturned")
         state.binStatus = "house" 
         state.lidOpens = 0 
+        unschedule("hoaNagHandler")
         
         def msg = ttsReturnedText ?: "The trash bin has been returned to the house."
         sendAlert(msg)
         if (ttsSpeakers && ttsReturnedText) playTTS(ttsSpeakers, ttsReturnedText)
         if (zoozChimes && zoozSoundReturned != null) playZoozChime(zoozSoundReturned)
-        syncChildDevice()
     }
 }
 
@@ -736,7 +680,6 @@ def ackHandler(evt) {
         state.isNagging = false
         state.binStatus = "curb_full"
         logAction("System Acknowledged: Switch turned OFF.")
-        syncChildDevice()
     }
 }
 
@@ -922,10 +865,14 @@ def triggerReminder() {
     if (trashSwitch) trashSwitch.on()
     state.isNagging = true
     if (state.binStatus != "curb_missed") state.binStatus = "house" 
-    syncChildDevice()
     
-    sendAlert(ttsReminderText ?: "It is time to take the trash out.")
-    if (ttsSpeakers && ttsReminderText) playTTS(ttsSpeakers, ttsReminderText)
+    String finalMsg = ttsReminderText ?: "Reminder, it is time to take the trash out to the road."
+    if (checkRecyclingWeek()) {
+        finalMsg = settings.ttsRecycleText ?: "Reminder, it is time to take the trash and the recycling out to the road."
+    }
+    
+    sendAlert(finalMsg)
+    if (ttsSpeakers) playTTS(ttsSpeakers, finalMsg)
     if (zoozChimes && zoozSoundReminder != null) playZoozChime(zoozSoundReminder)
 }
 
@@ -952,7 +899,6 @@ def nagCheck() {
     if (!enableNag || !state.isNagging) return
     if (trashSwitch && trashSwitch.currentValue("switch") == "off") {
         state.isNagging = false
-        syncChildDevice()
         return
     }
     
@@ -961,8 +907,13 @@ def nagCheck() {
         return
     }
     
-    sendAlert("NAG: " + (ttsReminderText ?: "Don't forget the trash!"))
-    if (ttsSpeakers && ttsReminderText) playTTS(ttsSpeakers, "Nag. " + ttsReminderText)
+    String finalMsg = ttsReminderText ?: "Don't forget the trash!"
+    if (checkRecyclingWeek()) {
+        finalMsg = settings.ttsRecycleText ?: "Don't forget the trash and the recycling!"
+    }
+    
+    sendAlert("NAG: " + finalMsg)
+    if (ttsSpeakers) playTTS(ttsSpeakers, "Nag. " + finalMsg)
     if (zoozChimes && zoozSoundReminder != null) playZoozChime(zoozSoundReminder)
 }
 
@@ -985,7 +936,6 @@ def autoResetHandler() {
     }
     
     updateSchedule()
-    syncChildDevice()
 }
 
 // ------------------------------------------------------------------------------
@@ -997,8 +947,6 @@ def room2MotionHandler(evt) { state.lastMotionRoom2 = now() }
 def room3MotionHandler(evt) { state.lastMotionRoom3 = now() }
 def room4MotionHandler(evt) { state.lastMotionRoom4 = now() }
 def room5MotionHandler(evt) { state.lastMotionRoom5 = now() }
-def room6MotionHandler(evt) { state.lastMotionRoom6 = now() }
-def room7MotionHandler(evt) { state.lastMotionRoom7 = now() }
 
 def isSpeakerMotionActive(speaker) {
     boolean isMapped = false
@@ -1010,11 +958,9 @@ def isSpeakerMotionActive(speaker) {
             def mappedList = mappedSpeaker instanceof List ? mappedSpeaker : [mappedSpeaker]
             if (mappedList.any { it.id == speaker.id }) {
                 isMapped = true
-                
                 if (settings.alwaysOnRoom && settings.alwaysOnRoom.toString() == i.toString()) {
                     hasMotion = true
                 }
-                
                 if (!hasMotion) {
                     def motion = settings["room${i}Motion"]
                     if (!motion) {
@@ -1038,7 +984,6 @@ def isSpeakerMotionActive(speaker) {
             }
         }
     }
-    
     if (!isMapped) return true 
     return hasMotion
 }
@@ -1049,7 +994,6 @@ def playTTS(speakers, msg, forcePlay = false) {
         logInfo("Skipping TTS: Current mode restricts audio announcements.")
         return
     }
-
     def msgList = msg.split(",").collect{ it.trim() }
     def selectedMsg = msgList[new Random().nextInt(msgList.size())]
 
@@ -1072,7 +1016,6 @@ def playZoozChime(soundNum, forcePlay = false) {
         logInfo("Skipping Zooz Chime: Current mode restricts audio announcements.")
         return
     }
-    
     def isNumeric = soundNum.toString().isNumber()
     def trackNum = isNumeric ? soundNum.toString().toInteger() : null
 
