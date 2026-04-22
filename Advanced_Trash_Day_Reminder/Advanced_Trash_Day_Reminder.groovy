@@ -134,10 +134,15 @@ def mainPage() {
         section("<b>Automated Physical Tracking (Samsung Multi-Sensor)</b>") {
             input "binMultiSensor", "capability.threeAxis", title: "Samsung Multipurpose Sensor", required: true
             
-            paragraph "<div style='font-size:13px; color:#555;'><b>End-of-Action Engine:</b> Differentiates between a partial lid open and rolling the bin based on tilt duration and angle.</div>"
-            input "transitMinTime", "number", title: "Minimum Transit Duration (Seconds)", description: "Movement/Tilt longer than this is classified as rolling the bin (Default 10).", defaultValue: 10, required: true
-            input "transitTiltThreshold", "number", title: "Transit Tilt Threshold", description: "Minimum tilt to register rolling (Default 150).", defaultValue: 150, required: true
-            input "lidOpenThreshold", "number", title: "Lid Open Tilt Threshold", description: "Minimum tilt to register a partial lid open (Default 100).", defaultValue: 100, required: true
+            paragraph "<div style='font-size:13px; color:#555;'><b>Driveway Surface Engine:</b> Evaluates motions only after movement completely stops. Adjusting the surface type dynamically alters the internal noise floor to prevent gravel from creating false alarms.</div>"
+            
+            input "drivewaySurface", "enum", title: "Driveway Surface Profile", options: ["Smooth Pavement", "Mixed / Patchy", "Fine Gravel", "Chunky / Rough Gravel", "Custom (Manual Overrides)"], defaultValue: "Smooth Pavement", required: true, submitOnChange: true
+            
+            if (drivewaySurface == "Custom (Manual Overrides)") {
+                input "transitMinTime", "number", title: "Minimum Transit Duration (Seconds)", description: "Movement/Tilt longer than this is classified as rolling the bin (Default 10).", defaultValue: 10, required: true
+                input "transitTiltThreshold", "number", title: "Transit Tilt Threshold", description: "Minimum tilt to register rolling (Default 150).", defaultValue: 150, required: true
+                input "lidOpenThreshold", "number", title: "Lid Open Tilt Threshold", description: "Minimum tilt to register a partial lid open (Default 100).", defaultValue: 100, required: true
+            }
             
             input "estimatedMaxOpens", "number", title: "Bag Capacity (Opens to Full)", description: "Default is 8 (96g cart / 13g bags)", defaultValue: 8, required: true
         }
@@ -531,11 +536,34 @@ def calibrateSpatialBaseline() {
     }
 }
 
+// Helper to fetch thresholds dynamically based on Surface Profile
+def getSurfaceProfile() {
+    def profile = [transitTime: 10, transitTilt: 150, lidTilt: 100]
+    
+    if (settings.drivewaySurface == "Smooth Pavement") {
+        profile = [transitTime: 8, transitTilt: 120, lidTilt: 100]
+    } else if (settings.drivewaySurface == "Mixed / Patchy") {
+        profile = [transitTime: 12, transitTilt: 150, lidTilt: 130]
+    } else if (settings.drivewaySurface == "Fine Gravel") {
+        profile = [transitTime: 15, transitTilt: 180, lidTilt: 150]
+    } else if (settings.drivewaySurface == "Chunky / Rough Gravel") {
+        profile = [transitTime: 20, transitTilt: 220, lidTilt: 180]
+    } else if (settings.drivewaySurface == "Custom (Manual Overrides)") {
+        profile.transitTime = settings.transitMinTime ?: 10
+        profile.transitTilt = settings.transitTiltThreshold ?: 150
+        profile.lidTilt = settings.lidOpenThreshold ?: 100
+    }
+    
+    return profile
+}
+
 def binMoveActiveHandler(evt) {
     state.isSensorDead = false
     state.motionStartTime = now()
     state.maxTiltDuringMotion = 0
     state.wasFlippedDuringMotion = false
+    state.lidOpenedDuringMotion = false
+    state.isTilted = false
 }
 
 def axisSpatialHandler(evt) {
@@ -565,7 +593,7 @@ def axisSpatialHandler(evt) {
         if (isFlipped) state.wasFlippedDuringMotion = true
     }
 
-    // TRUCK DUMP (Unrestricted by Tracking Modes)
+    // TRUCK DUMP (Unrestricted by Tracking Modes) - Left Live for instant reaction
     if (isFlipped && (state.binStatus == "curb_full" || state.binStatus == "curb_missed")) {
         if (!state.isCurrentlyDumped) {
             state.isCurrentlyDumped = true
@@ -574,37 +602,8 @@ def axisSpatialHandler(evt) {
     } else if (!isFlipped) {
         state.isCurrentlyDumped = false
     }
-
-    // TILT DURATION LOGIC (The Ninja / Partial-Open Filter)
-    int lidThresh = settings.lidOpenThreshold ?: 100
-
-    if (maxDev > lidThresh && !isFlipped) {
-        if (!state.isTilted) {
-            state.isTilted = true
-            state.tiltStartTime = now()
-        }
-    } else if (maxDev <= lidThresh && state.isTilted) {
-        state.isTilted = false
-        long tiltDurationSec = (now() - state.tiltStartTime) / 1000
-        int reqTransitTime = settings.transitMinTime ?: 10
-
-        // If it was a quick tilt, it was a lid open/trash toss!
-        if (tiltDurationSec < reqTransitTime) {
-            state.lidOpenedDuringMotion = true // Set Interlock to prevent rolling false alarm
-            if (isTrackingAllowed()) {
-                if (state.binStatus == "house" || state.binStatus == "curb_full") {
-                    int opens = (state.lidOpens ?: 0) + 1
-                    state.lidOpens = opens
-                    logAction("Lid opened and closed (${tiltDurationSec}s). Capacity updated to (${opens}).")
-                    syncChildDevice()
-                }
-            } else {
-                logAction("Lid open detected (${tiltDurationSec}s), but ignored (Raccoon Filter).")
-            }
-        } else {
-            logAction("Bin returned to flat after sustained tilt (${tiltDurationSec}s). Handled by Transit Engine.")
-        }
-    }
+    
+    // We intentionally removed the live Lid-Open math here. It is now handled safely in the Inactive Handler.
 }
 
 def binMoveInactiveHandler(evt) {
@@ -613,29 +612,25 @@ def binMoveInactiveHandler(evt) {
     long durationMs = now() - state.motionStartTime
     long durationSec = durationMs / 1000
     
-    int reqTransitTime = settings.transitMinTime ?: 10
-    int reqTransitTilt = settings.transitTiltThreshold ?: 150
+    def profile = getSurfaceProfile()
+    int reqTransitTime = profile.transitTime
+    int reqTransitTilt = profile.transitTilt
+    int lidThresh = profile.lidTilt
+    
     int maxTilt = state.maxTiltDuringMotion ?: 0
     boolean isFlipped = state.wasFlippedDuringMotion ?: false
     
     state.motionStartTime = null // clean up
     
-    logAction("Motion Event Ended: Duration: ${durationSec}s | Max Tilt: ${maxTilt} | Flipped: ${isFlipped}")
+    logAction("Motion Event Ended: Duration: ${durationSec}s | Max Peak Tilt: ${maxTilt} | Profile: ${settings.drivewaySurface}")
     
     // 1. TRUCK DUMP 
     if (isFlipped && (state.binStatus == "curb_full" || state.binStatus == "curb_missed")) {
-        // Handled instantly by Spatial Handler now, but keeping failsafe
+        // Handled instantly by Spatial Handler, but keeping failsafe
         return
     }
 
-    // 2. INTERLOCK CHECK
-    if (state.lidOpenedDuringMotion) {
-        logAction("Ignored Transit Check: A Lid Open was confirmed during this motion window.")
-        state.lidOpenedDuringMotion = false 
-        return
-    }
-    
-    // 3. CURB TRANSIT 
+    // 2. CURB TRANSIT (Long duration + minimum tilt)
     if (durationSec >= reqTransitTime && maxTilt >= reqTransitTilt) {
         if (isTrackingAllowed()) {
             logAction("Action Processed: Sustained Transit to/from Curb.")
@@ -646,8 +641,23 @@ def binMoveInactiveHandler(evt) {
         return
     }
     
+    // 3. TRASH TOSS (Short duration + lid tilt)
+    if (durationSec < reqTransitTime && maxTilt >= lidThresh) {
+        if (isTrackingAllowed()) {
+            if (state.binStatus == "house" || state.binStatus == "curb_full") {
+                int opens = (state.lidOpens ?: 0) + 1
+                state.lidOpens = opens
+                logAction("Action Processed: Trash Toss. Capacity updated to (${opens}).")
+                syncChildDevice()
+            }
+        } else {
+            logAction("Action Processed: Trash Toss, but ignored (Raccoon Filter: Tracking mode restricted).")
+        }
+        return
+    }
+    
     // 4. IGNORED BUMP / WIND 
-    logAction("Action Processed: Ignored bump/wind. (Did not meet Transit or Dump criteria).")
+    logAction("Action Processed: Ignored bump/wind. (Did not meet Transit or Toss criteria).")
 }
 
 def processTruckDump(maxTilt) {
