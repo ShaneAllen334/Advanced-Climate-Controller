@@ -1,14 +1,14 @@
 /**
- * Advanced Climate Controller
+ * Advanced Ceiling Fan Climate Control
  *
  * Author: ShaneAllen
  */
 
 definition(
-    name: "Advanced Climate Controller",
+    name: "Advanced Ceiling Fan Climate Control",
     namespace: "ShaneAllen",
     author: "ShaneAllen",
-    description: "Commercial-grade BMS app with Live Diagnostics, Maintenance Tracking, Service Contacts, ROI Savings, Auto-Swap, Free Cooling Economizer, Failsafes, and Cycle Tracking.",
+    description: "Multi-zone ceiling fan controller supporting 3-Speed, 5-Speed, 6-Speed, and Simple fans, with Wet/Dry Bulb options, configurable speed thresholds, dynamic occupancy, Smart Lighting Relay overrides, and Button Controllers.",
     category: "Comfort",
     iconUrl: "",
     iconX2Url: "",
@@ -20,575 +20,391 @@ preferences {
 }
 
 def mainPage() {
-    dynamicPage(name: "mainPage", title: "<b>Advanced Climate Controller</b>", install: true, uninstall: true) {
-        
-        section("<b>Live System Dashboard</b>") {
+    dynamicPage(name: "mainPage", title: "<b>Advanced Ceiling Fan Climate Control</b>", install: true, uninstall: true) {
+  
+        section("<b>Live Fan Dashboard</b>") {
             input "btnRefresh", "button", title: "🔄 Refresh Data"
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Provides a real-time, top-down view of your entire HVAC system, including active setpoints, dynamic averages, and the current logic state of the BMS engine.</div>"
+            input "btnResetOverrides", "button", title: "❌ Clear All Overrides"
+            input "btnClearROI", "button", title: "🗑️ Clear ROI Data"
             
-            def statusExplanation = getHumanReadableStatus()
-   
-            paragraph "<div style='background-color:#e9ecef; padding:10px; border-radius:5px; border-left:5px solid #007bff;'>" +
-                      "<b>System Status:</b> ${statusExplanation}</div>"
-
-            if (thermostat) {
-                // Gather Core Metrics
-                def tstatTemp = thermostat.currentValue("temperature") ?: "--"
-                def tstatHum = thermostat.currentValue("humidity") ?: "--"
-                def tstatCool = thermostat.currentValue("coolingSetpoint") ?: "--"
-                def tstatHeat = thermostat.currentValue("heatingSetpoint") ?: "--"
-                def tstatMode = thermostat.currentValue("thermostatMode")?.toUpperCase() ?: "UNKNOWN"
-                def tstatState = thermostat.currentValue("thermostatOperatingState")?.toUpperCase() ?: "IDLE"
-                def tstatFan = thermostat.currentValue("thermostatFanMode")?.toUpperCase() ?: "UNKNOWN"
+            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Provides a real-time view of your ceiling fans, comparing actual states to target states, alongside Occupancy and Temperature data.</div>"
             
-                def stateColor = "black"
-                if (tstatState == "COOLING") stateColor = "blue"
-                if (tstatState == "HEATING") stateColor = "#d9534f" 
-                if (tstatState.contains("AUX") || tstatState.contains("EMERGENCY")) stateColor = "red" 
-         
-                def avgTemp = getAverageTemp()
-                def avgHum = getAverageHumidity()
-                
-                // Gather Diagnostics
-                def currentLocMode = location.mode ?: "Unknown"
+            def appStatus = (appEnableSwitch && appEnableSwitch.currentValue("switch") == "off") ? "<span style='color:red;'><b>DISABLED</b> (Master Switch is OFF)</span>" : "<span style='color:green;'><b>ACTIVE</b></span>"
             
-                // Free Cooling Dashboard Updates
-                def fcStatusStr = "Idle / Not Favorable"
-                if (state.freeCoolState == "pending") {
-                    def fcRemaining = state.freeCoolTargetTime ? Math.max(0, Math.round((state.freeCoolTargetTime - now()) / 60000)) : 0
-                    fcStatusStr = "<span style='color:orange;'><b>Available & Recommended!</b> (Open windows to start - ${fcRemaining} mins remaining)</span>"
-                } else if (state.freeCoolState == "active") {
-                    def fanStatus = freeCoolFan ? "ON" : "Auto"
-                    fcStatusStr = "<span style='color:green;'><b>Active</b> (AC Paused, Fan: ${fanStatus})</span>"
-                } else if (state.freeCoolState == "lockedOut") {
-                    fcStatusStr = "<span style='color:red;'>Locked Out (Timeout Reached)</span>"
-                }
+            paragraph "<div style='background-color:#e9ecef; padding:10px; border-radius:5px; border-left:5px solid #007bff;'><b>App Status:</b> ${appStatus}</div>"
 
-                // System Load Score (Indoor vs Outdoor)
-                def loadStr = "N/A (Outdoor Sensor Missing)"
-                if (outdoorSensor && outdoorSensor.currentValue("temperature") != null) {
-                    def outT = outdoorSensor.currentValue("temperature").toBigDecimal()
-                  
-                    def delta = Math.abs(outT - avgTemp.toBigDecimal()).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
-                    def loadWord = "Low"
-                    def loadColor = "green"
-                    
-                    if (delta > 20.0) { loadWord = "Extreme"; loadColor = "red" }
-                    else if (delta > 10.0) { loadWord = "Moderate"; loadColor = "orange" }
-                    
-                    loadStr = "<span style='color:${loadColor};'><b>${delta}°F Delta (${loadWord} Load)</b></span> (Out: ${outT}°)"
-                }
+            def dashHTML = """
+            <style>
+                .dash-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top:10px; }
+                .dash-table th, .dash-table td { border: 1px solid #ccc; padding: 6px; text-align: center; }
+                .dash-table th { background-color: #343a40; color: white; }
+                .dash-hl { background-color: #f8f9fa; font-weight:bold; }
+            </style>
+       
+            <table class="dash-table">
+                <thead><tr><th>Room</th><th>Type</th><th>Occupied?</th><th>Dry Bulb</th><th>Wet Bulb</th><th>Target</th><th>Actual State</th><th>Master Relay</th><th>Status</th></tr></thead>
+                <tbody>
+            """
+            
+            def roiHTML = """
+            <table class="dash-table" style="margin-top: 15px;">
+                <thead><tr><th style='background-color:#28a745;'>Room</th><th style='background-color:#28a745;'>Current Draw</th><th style='background-color:#28a745;'>Today's Cost</th><th style='background-color:#28a745;'>7-Day Avg Cost</th><th style='background-color:#17a2b8;'>Today Saved (Off)</th><th style='background-color:#17a2b8;'>7-Day Avg Saved</th></tr></thead>
+                <tbody>
+            """
+            
+            def hasZones = false
+            def hasRoi = false
+            
+            def isAwayDash = awayModes ? (awayModes as List).contains(location.mode) : false
+            def isNightDash = nightModes ? (nightModes as List).contains(location.mode) : false
+            
+            for (int i = 1; i <= 8; i++) {
+                def rawFanType = settings["z${i}FanType"] ?: "speed3"
+                def fanType = (rawFanType == "speed") ? "speed3" : rawFanType 
+                def hasDevice = ((fanType.startsWith("speed") || fanType == "fixed") && settings["z${i}Fan"]) || (fanType == "switch" && settings["z${i}SimpleFan"])
                 
-                // --- Timer Calculations for Dashboard ---
-                def yoyoRemaining = (state.yoyoCooldownEnds && now() < state.yoyoCooldownEnds) ? Math.max(0, Math.round((state.yoyoCooldownEnds - now()) / 60000)) : 0
-                def yoyoStr = ""
-                def isAlignmentModeAllowed = !alignmentModes || (alignmentModes as List).contains(location.mode)
-                
-                if (!enableAverageSync) {
-                    yoyoStr = "<span style='color:gray;'>Disabled</span>"
-                } else if (!isAlignmentModeAllowed) {
-                    yoyoStr = "<span style='color:orange;'><b>Disabled by Mode (${currentLocMode})</b></span>"
-                } else if (state.alignmentLockout) {
-                    yoyoStr = "<span style='color:red;'><b>Aborted (Waiting for local temp to reach ${state.alignmentLockoutTarget}°)</b></span>"
-                } else if (yoyoRemaining > 0) {
-                    yoyoStr = "<span style='color:orange;'><b>Paused (${yoyoRemaining} mins remaining)</b></span>"
-                } else if (enableHysteresis && state.activeHysteresis == "idle") {
-                    yoyoStr = "<span style='color:blue;'><b>Floating in Deadband (System Idle)</b></span>"
-                } else if (enableHysteresis && state.activeHysteresis != "idle") {
-                    yoyoStr = "<span style='color:green;'><b>Active Recovery (${state.activeHysteresis.capitalize()})</b></span>"
-                } else {
-                    yoyoStr = "<span style='color:green;'>Ready</span>"
-                }
+                if (settings["enableZ${i}"] && hasDevice) {
+                    hasZones = true
+                    def zName = settings["z${i}Name"] ?: "Room ${i}"
+            
+                    def zTimeoutMs = (settings["z${i}OccupancyTimeout"] ?: 30) * 60000
 
-                def bufferStr = "<span style='color:gray;'>Inactive</span>"
-                if (state.isBuffering && state.cycleStartTime) {
-                    def elapsedMins = (now() - state.cycleStartTime) / 60000.0
-                    def remaining = Math.max(0, Math.round((minRunTime ?: 10) - elapsedMins))
-                    bufferStr = "<span style='color:blue;'><b>Engaged (${remaining} mins remaining)</b></span>"
-                }
-   
-                def swapText = "N/A (Disabled)"
-                if (enableAutoSwap && !(state.freeCoolState in ["pending", "active"])) {
-                    def safeSwapDB = autoSwapDeadband ?: 1.0
+                    def tDev = settings["z${i}Temp"]
+                    def hDev = settings["z${i}Hum"]
+                    def cMethod = settings["z${i}ControlMethod"] ?: "wetBulb"
+  
+                    def zTemp = tDev ? (tDev.currentValue("temperature") ?: "--") : "--"
+                    def zHum = hDev ? (hDev.currentValue("humidity") ?: "--") : "--"
                     
-                    if (enableAverageSync && enableHysteresis) {
-                        def drift = hysteresisDrift ?: 1.0
-                        if (safeSwapDB <= drift) safeSwapDB = drift + 0.5
+                    def zWetBulb = "--"
+                    if (tDev && hDev && zTemp != "--" && zHum != "--") {
+                        zWetBulb = getWetBulbF(zTemp.toBigDecimal(), zHum.toBigDecimal())
                     }
-   
-                    def distToCool = tstatCool != "--" ? Math.round(( (tstatCool.toBigDecimal() + safeSwapDB) - avgTemp.toBigDecimal() ) * 10) / 10.0 : 0
-                    def distToHeat = tstatHeat != "--" ? Math.round(( avgTemp.toBigDecimal() - (tstatHeat.toBigDecimal() - safeSwapDB) ) * 10) / 10.0 : 0
                     
-                    if (tstatMode == "HEAT") swapText = "<span style='color:blue;'>↑ ${distToCool}° until Swap to COOL (DB: ${safeSwapDB}°)</span>"
-                    else if (tstatMode == "COOL") swapText = "<span style='color:red;'>↓ ${distToHeat}° until Swap to HEAT (DB: ${safeSwapDB}°)</span>"
-                    else swapText = "Thermostat not in Heat/Cool mode"
-                }
+                    // --- OCCUPANCY COUNTDOWN LOGIC ---
+                    def actSwitch = settings["z${i}ActivitySwitch"]
+                    def isActivityOverride = (actSwitch && actSwitch.currentValue("switch") == "on")
+                    def mDevs = settings["z${i}Motion"]
+                    def isOccupiedFlag = false
+                    def lastMotionTime = 0L
+                    def isActivelyMoving = false
 
-                def deltaTStr = "N/A (Disabled or Missing Sensors)"
-                if (enableDeltaT && returnSensor && dischargeSensor) {
-            
-                    def retT = returnSensor.currentValue("temperature")
-                    def disT = dischargeSensor.currentValue("temperature")
-                    if (retT != null && disT != null) {
-                        def dT = 0.0
-          
-                        if (tstatState == "COOLING") {
-                            dT = (retT - disT).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
-                        } else if (tstatState == "HEATING") {
-                            dT = (disT - retT).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
-                        } else {
-                            if (tstatMode == "COOL" && disT > retT) {
-                                dT = (retT - disT).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
+                    if (settings["enableOccupancy"] && mDevs) {
+                        for (mDev in mDevs) {
+                            if (mDev.currentValue("motion") == "active") {
+                                isOccupiedFlag = true
+                                isActivelyMoving = true
+                                lastMotionTime = now()
                             } else {
-                                dT = Math.abs(retT - disT).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP) 
+                                def mTime = state.zoneLastActive ? state.zoneLastActive[mDev.id] : null
+                                if (mTime) {
+                                    def t = mTime.toLong()
+                                    if (t > lastMotionTime) lastMotionTime = t
+                                }
                             }
                         }
-            
-                        def health = ""
-                        if (tstatState == "COOLING" && dT < (minCoolingDeltaT ?: 12.0)) health = " <span style='color:red;'>(Warning: Low)</span>"
-                        else if (tstatState == "HEATING" && dT < (minHeatingDeltaT ?: 15.0)) health = " <span style='color:red;'>(Warning: Low)</span>"
-                        else if (tstatState in ["COOLING", "HEATING"]) health = " <span style='color:green;'>(Good)</span>"
-                        else health = " <span style='color:gray;'>(System Idle)</span>"
-                       
-                        deltaTStr = "${dT}°F (Return: ${retT}° | Supply: ${disT}°)${health}"
-                    } else {
-                        deltaTStr = "Waiting for sensor data..."
                     }
-                }
 
-                // Calculated Deadband Metric
-                def currentDeadbandStr = "N/A"
-                if (tstatCool != "--" && tstatHeat != "--") {
-                    def gap = (tstatCool.toBigDecimal() - tstatHeat.toBigDecimal()).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
-                    if (gap < 3.0) {
-                        currentDeadbandStr = "<span style='color:red;'><b>${gap}° (Violation - Conflict Detected)</b></span>"
-                    } else if (gap == 3.0) {
-                        currentDeadbandStr = "<span style='color:orange;'><b>${gap}° (Minimum Enforced)</b></span>"
-                    } else {
-                        currentDeadbandStr = "<span style='color:green;'>${gap}° (Healthy Gap)</span>"
+                    if (!isOccupiedFlag && lastMotionTime > 0) {
+                        if ((now() - lastMotionTime) <= zTimeoutMs) isOccupiedFlag = true
+                    } else if (!settings["enableOccupancy"] || !mDevs) {
+                        isOccupiedFlag = true 
                     }
-                }
-
-                // Gather Maintenance
-                def filterLifeStr = "Disabled"
-                if (enableFilterTracker) {
-                    def maxMins = (maxFilterHours ?: 300) * 60
-                    def usedMins = state.filterRunMinutes ?: 0.0
-                    def percentLeft = Math.max(0.0, 100.0 - ((usedMins / maxMins) * 100)).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
-                    filterLifeStr = "${percentLeft}%"
-                    if (percentLeft < 10.0) filterLifeStr = "<span style='color:red; font-weight:bold;'>${percentLeft}% (Change Soon)</span>"
-                }
-                
-                def hvacContactStr = "Not Configured"
-                if (hvacCompanyName || hvacCompanyPhone) {
-                    hvacContactStr = "${hvacCompanyName ?: 'N/A'} ${hvacCompanyPhone ? '(' + hvacCompanyPhone + ')' : ''}"
-                }
-
-                // --- 7-Day Compressor Runs Calculation ---
-                def sevenDayRuns = 0
-                def sevenDayRuntime = 0.0
-                if (state.runHistory) {
-                    state.runHistory.each { date, data ->
-                        sevenDayRuns += (data.runs ?: 0)
-                        sevenDayRuntime += (data.cool ?: 0.0) + (data.heat ?: 0.0) + (data.aux ?: 0.0)
-                    }
-                }
-                def totalRunHours = (sevenDayRuntime / 60.0).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
-                def compressorRunsStr = "${sevenDayRuns} Cycles (${totalRunHours} Total Hours)"
-                
-                // Unified Dashboard HTML
-                def dashHTML = """
-                <style>
-                    .dash-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top:10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-                    .dash-table th, .dash-table td { border: 1px solid #ccc; padding: 8px; text-align: center; }
-                    .dash-table th { background-color: #343a40; color: white; }
-                    .dash-hl { background-color: #f8f9fa; font-weight:bold; text-align: left !important; padding-left: 15px !important; width: 28%; }
-                    .dash-subhead { background-color: #e9ecef; font-weight: bold; text-align: left !important; padding-left: 15px !important; text-transform: uppercase; font-size: 12px; color: #495057; }
-                    .dash-val { text-align: left !important; padding-left: 15px !important; }
-                </style>
-                <table class="dash-table">
-                    <thead><tr><th>Metric</th><th>Calculated Average (Rooms)</th><th>Thermostat Sensor</th><th>Target Setpoint</th></tr></thead>
-                    <tbody>
                     
-                        <tr><td class="dash-hl">Temperature</td><td><b>${avgTemp}°</b></td><td>${tstatTemp}°</td><td>Cool: ${tstatCool}° | Heat: ${tstatHeat}°</td></tr>
-                        <tr><td class="dash-hl">Humidity</td><td><b>${avgHum}%</b></td><td>${tstatHum}%</td><td>Limit: ${maxHumidity ?: '--'}%</td></tr>
-                        <tr><td class="dash-hl">HVAC State</td><td><b>Mode: ${tstatMode}</b></td><td colspan="2" style="color:${stateColor};"><b>Status: ${tstatState}</b> (Fan: ${tstatFan})</td></tr>
+                    def isOccupiedDisplay = "No"
+     
+                    if (isActivityOverride) {
+                        isOccupiedDisplay = "<span style='color:blue;'>Yes (Override)</span>"
+                    } else if (isOccupiedFlag) {
+                        if (settings["enableOccupancy"] && mDevs && lastMotionTime > 0) {
+                            if (isActivelyMoving) {
+                                isOccupiedDisplay = "Yes <br><span style='font-size:11px;color:green;'>(Motion Active)</span>"
+                            } else {
+                                def elapsed = now() - lastMotionTime
+                                def remainMs = zTimeoutMs - elapsed
+                                if (remainMs > 0) {
+                                    def remainMins = Math.ceil(remainMs / 60000).toInteger()
+                                    isOccupiedDisplay = "Yes <br><span style='font-size:11px;color:gray;'>(Clear in ${remainMins}m)</span>"
+                                } else {
+                                    isOccupiedDisplay = "Yes"
+                                }
+                            }
+                        } else {
+                            isOccupiedDisplay = "Yes"
+                        }
+                    }
+                    
+                    // --- OVERRIDE COUNTDOWN LOGIC ---
+                    def expireTime = state.overrideUntil ? state.overrideUntil[i.toString()] : null
+                    def isManualOverrideActive = false
+                    def overrideRemainStr = ""
+                    
+                    if (expireTime && now() < expireTime.toLong()) {
+                        isManualOverrideActive = true
+                        def remainMs = expireTime.toLong() - now()
+                        def rMins = Math.ceil(remainMs / 60000).toInteger()
+                        def rHrs = Math.floor(rMins / 60).toInteger()
+                        def rMinRem = rMins % 60
+                        overrideRemainStr = rHrs > 0 ? "${rHrs}h ${rMinRem}m" : "${rMins}m"
+                    }
+                
+                    def emptyOverride = (!isOccupiedFlag && settings["enableOccupancy"])
+                    def typeDisplay = ""
+                    def targetDisplay = "<b>${settings["z${i}Setpoint"]}° (${cMethod == 'dryBulb' ? 'DB' : 'WB'})</b>"
+                    def actualDisplay = ""
+                    def relayDisplay = ""
+                    def gnStatus = ""
+                    def currentSpeedStr = "off"
+                    
+                    if (fanType.startsWith("speed") || fanType == "fixed") {
+                        if (fanType == "fixed") typeDisplay = "Non-Controllable Fan"
+                        else if (fanType == "speed6") typeDisplay = "6-Speed Fan"
+                        else if (fanType == "speed5") typeDisplay = "5-Speed Fan"
+                        else typeDisplay = "3-Speed Fan"
+                      
+                        def fDev = settings["z${i}Fan"]
+                        def pDev = settings["z${i}Power"]
+                        def zSpeed = fDev.currentValue("speed") ?: "unknown"
+                        def zTargetSpeed = state["z${i}Target"] ?: "off"
+                        def pwrState = pDev ? pDev.currentValue("switch") : "N/A"
                         
-                        <tr><td colspan="4" class="dash-subhead">Internal Diagnostics</td></tr>
-                        <tr><td class="dash-hl">Location Mode</td><td colspan="3" class="dash-val">${currentLocMode}</td></tr>
-                        <tr><td class="dash-hl">System Load (HVAC Strain)</td><td colspan="3" class="dash-val">${loadStr}</td></tr>
-                        <tr><td class="dash-hl">Economizer Status</td><td colspan="3" class="dash-val">${fcStatusStr}</td></tr>
-                        <tr><td class="dash-hl">Auto-Swap Distance</td><td colspan="3" class="dash-val">${swapText}</td></tr>
-                        <tr><td class="dash-hl">Calculated Deadband</td><td colspan="3" class="dash-val">${currentDeadbandStr}</td></tr>
-                        <tr><td class="dash-hl">Live Delta-T</td><td colspan="3" class="dash-val">${deltaTStr}</td></tr>
-                        <tr><td class="dash-hl">Dynamic Alignment Status</td><td colspan="3" class="dash-val">${yoyoStr}</td></tr>
-                        <tr><td class="dash-hl">Compressor Protection</td><td colspan="3" class="dash-val">${bufferStr}</td></tr>
+                        if (pwrState == "off") {
+                            currentSpeedStr = "off"
+                            actualDisplay = "<span style='color:gray;'>Off (No Pwr)</span>"
+                        } else {
+                            currentSpeedStr = zSpeed
+                            actualDisplay = zSpeed.capitalize()
+                        }
                         
-                        <tr><td colspan="4" class="dash-subhead">Maintenance & Service</td></tr>
-                        <tr><td class="dash-hl">7-Day Compressor Runs</td><td colspan="3" class="dash-val">${compressorRunsStr}</td></tr>
-                        <tr><td class="dash-hl">Filter Life Remaining</td><td colspan="3" class="dash-val">${filterLifeStr}</td></tr>
-                        <tr><td class="dash-hl">Last Filter Change</td><td colspan="3" class="dash-val">${state.lastFilterDate ?: "Not Recorded"}</td></tr>
-                        <tr><td class="dash-hl">Last HVAC Service</td><td colspan="3" class="dash-val">${state.lastServiceDate ?: "Not Recorded"}</td></tr>
-                        <tr><td class="dash-hl">Service Contact</td><td colspan="3" class="dash-val">${hvacContactStr}</td></tr>
-                    </tbody>
-                </table>
-                """
-                paragraph dashHTML
-             
-                if (enableCostTracker && state.runHistory) {
-                    paragraph "<b>7-Day Energy Cost & Savings Estimate</b>"
-                    paragraph renderCostDashboard()
+                        relayDisplay = pDev ? pwrState?.toUpperCase() : "<span style='color:gray;'>NONE</span>"
+                        
+                        if (isManualOverrideActive) {
+                            gnStatus = "<span style='color:red;'><b>Override Active</b><br><span style='font-size:11px;'>(${overrideRemainStr} left)</span></span>"
+                        } else if (settings["z${i}GnSwitch"] && settings["z${i}GnSwitch"].currentValue("switch") == "on") {
+                            gnStatus = "<span style='color:orange;'>Isolated (GN)</span>"
+                        } else if (settings["z${i}RelayAlwaysOn"] && currentSpeedStr == "off" && zTargetSpeed == "off" && pwrState == "on") {
+                            gnStatus = "<span style='color:purple;'>Relay 24/7 Active</span>"
+                        } else if (currentSpeedStr == "off" && zTargetSpeed == "off" && pwrState == "on") {
+                            gnStatus = "<span style='color:purple;'>Lighting Override (Relay ON)</span>"
+                        } else if (emptyOverride) {
+                            gnStatus = "<span style='color:gray;'>Empty (Ignored)</span>"
+                        } else if (currentSpeedStr != zTargetSpeed && fanType != "fixed") {
+                            gnStatus = "<span style='color:blue;'>Stepping to ${zTargetSpeed.capitalize()}...</span>"
+                        } else if (currentSpeedStr != zTargetSpeed && fanType == "fixed") {
+                            gnStatus = "<span style='color:blue;'>Commanding to ${zTargetSpeed.capitalize()}...</span>"
+                        } else {
+                            gnStatus = "<span style='color:green;'>Target Reached</span>"
+                        }
+                    } else {
+                        typeDisplay = "On/Off Relay"
+                        def sDev = settings["z${i}SimpleFan"]
+                        def sState = sDev.currentValue("switch")?.toUpperCase() ?: "UNKNOWN"
+                        currentSpeedStr = sState == "ON" ? "high" : "off"
+                        
+                        actualDisplay = "<span style='color:gray;'>N/A</span>"
+                        relayDisplay = sState
+              
+                        if (isManualOverrideActive) {
+                            gnStatus = "<span style='color:red;'><b>Override Active</b><br><span style='font-size:11px;'>(${overrideRemainStr} left)</span></span>"
+                        } else if (settings["z${i}GnSwitch"] && settings["z${i}GnSwitch"].currentValue("switch") == "on") {
+                            gnStatus = "<span style='color:orange;'>Isolated (GN)</span>"
+                        } else if (emptyOverride) {
+                            gnStatus = "<span style='color:gray;'>Empty (Ignored)</span>"
+                        } else {
+                            gnStatus = "<span style='color:green;'>Auto Tracking</span>"
+                        }
+                    }
+
+                    def dbDisplay = (cMethod == "dryBulb") ? "<b>${zTemp}°</b>" : "${zTemp}°"
+                    def wbDisplay = (cMethod == "wetBulb") ? "<b>${zWetBulb}°</b>" : "${zWetBulb}°"
+
+                    dashHTML += "<tr><td class='dash-hl'>${zName}</td><td>${typeDisplay}</td><td>${isOccupiedDisplay}</td><td>${dbDisplay}</td><td>${wbDisplay}</td><td>${targetDisplay}</td><td>${actualDisplay}</td><td><b>${relayDisplay}</b></td><td>${gnStatus}</td></tr>"
+                    
+                    // ROI Data Gathering
+                    if (settings["z${i}WattMax"]) {
+                        hasRoi = true
+                        def maxW = settings["z${i}WattMax"].toBigDecimal()
+                        def minW = (settings["z${i}WattMin"] ?: (maxW / 3.0)).toBigDecimal()
+                        def cWatts = getWattsForSpeed(currentSpeedStr, fanType, minW, maxW)
+                        
+                        def todayC = state.dailyCost ? (state.dailyCost[i.toString()] ?: 0.0) : 0.0
+                        def todayS = state.dailySaved ? (state.dailySaved[i.toString()] ?: 0.0) : 0.0
+                        
+                        def avgC = 0.0
+                        if (state.historyCost && state.historyCost[i.toString()]) {
+                            def hist = state.historyCost[i.toString()]
+                            if (hist.size() > 0) avgC = hist.sum() / hist.size()
+                        }
+                        
+                        def avgS = 0.0
+                        if (state.historySaved && state.historySaved[i.toString()]) {
+                            def hist = state.historySaved[i.toString()]
+                            if (hist.size() > 0) avgS = hist.sum() / hist.size()
+                        }
+                        
+                        def cWattsDisplay = cWatts > 0 ? "<b>${cWatts.setScale(1, BigDecimal.ROUND_HALF_UP)} W</b>" : "0 W"
+                        
+                        roiHTML += "<tr><td class='dash-hl'>${zName}</td><td>${cWattsDisplay}</td><td>&#36;${todayC.setScale(2, BigDecimal.ROUND_HALF_UP)}</td><td>&#36;${avgC.setScale(2, BigDecimal.ROUND_HALF_UP)}</td><td style='color:green;'><b>&#36;${todayS.setScale(2, BigDecimal.ROUND_HALF_UP)}</b></td><td style='color:green;'><b>&#36;${avgS.setScale(2, BigDecimal.ROUND_HALF_UP)}</b></td></tr>"
+                    }
                 }
-            } else {
-                paragraph "<i>Please select a thermostat below to populate the dashboard.</i>"
+            }
+            
+            dashHTML += "</tbody></table>"
+            roiHTML += "</tbody></table>"
+            
+            if (hasZones) paragraph dashHTML else paragraph "<i>No rooms configured yet.</i>"
+            
+            if (hasRoi) {
+                paragraph "<br><div style='font-size:14px; color:#555;'><b>Live Energy & ROI Dashboard</b></div>"
+                paragraph roiHTML
             }
         }
 
-        section("<b>Zone Breakdown</b>") {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Displays real-time data from all configured room sensors. <i>In Night mode, only rooms with the Good Night Switch active are averaged.</i></div>"
-            def zoneHTML = "<table class='dash-table' style='margin-top:0px;'><thead><tr><th>Zone Name</th><th>Temp</th><th>Humidity</th><th>Occupied?</th><th>Status</th></tr></thead><tbody>"
-            def timeoutMs = (occupancyTimeout ?: 60) * 60000
-            def hasZones = false
-            def maxAgeMs = 24 * 60 * 60 * 1000 
-            def isNight = nightModes ? (nightModes as List).contains(location.mode) : false
-            
-            for (int i = 1; i <= 12; i++) {
-                if (settings["enableZ${i}"] && settings["z${i}Temp"]) {
-                    hasZones = true
-                  
-                    def zName = settings["z${i}Name"] ?: "Zone ${i}"
-                    def zTempDev = settings["z${i}Temp"]
-                    
-                    def tempState = zTempDev.currentState("temperature")
-                    def tVal = tempState?.value != null ? tempState.value.toBigDecimal() : null
-                    def lastUpdate = tempState?.date?.time ?: now()
-                    
-                    def isError = tVal == null || tVal < 40.0 || tVal > 100.0 || (now() - lastUpdate) > maxAgeMs
-                    def zTempStr = tVal != null ? "${tVal}°" : "--"
-                    
-                    def zHum = settings["z${i}Hum"] ? (settings["z${i}Hum"].currentValue("humidity") ?: "--") : "N/A"
-                    def zMotion = settings["z${i}Motion"]
-                    
-                    def isOccupied = "N/A"
-                    def zStatus = "<span style='color:green;'>Averaging</span>"
-       
-                    if (isError) {
-                        zStatus = "<span style='color:red;'>Sensor Error (Ignored)</span>"
-                        isOccupied = "N/A"
-         
-                    } else if (isNight) {
-                        def nSwitch = settings["z${i}NightSwitch"]
-                        def isNightForced = nSwitch && nSwitch.currentValue("switch") == "on"
-                        if (isNightForced) {
-                            isOccupied = "Yes (Night Lock)"
-                            zStatus = "<span style='color:blue;'>Averaging (Night Lock)</span>"
-                        } else {
-                            isOccupied = "N/A (Night Mode)"
-                            zStatus = "<span style='color:gray;'>Ignored (Not Night Room)</span>"
-                        }
-                    } else if (enableOccupancy && zMotion) {
-                        def lastActive = state.zoneLastActive ? state.zoneLastActive[zMotion.id] : null
-                        if (lastActive && (now() - lastActive) < timeoutMs) {
-                            isOccupied = "Yes"
-                        } else {
-                            isOccupied = "No"
-                            zStatus = "<span style='color:gray;'>Ignored (Empty)</span>"
-                        }
-                    }
-    
-                    zoneHTML += "<tr><td><b>${zName}</b></td><td>${zTempStr}</td><td>${zHum}%</td><td>${isOccupied}</td><td>${zStatus}</td></tr>"
-                }
-            }
-            zoneHTML += "</tbody></table>"
-            if (hasZones) paragraph zoneHTML else paragraph "<i>No zones configured yet.</i>"
-        }
-
-        section("<b>Recent Action History</b>") {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Provides a transparent, rolling log of every command the BMS sends to your thermostat, including mode swaps, failsafe triggers, and setpoint adjustments.</div>"
+        section("<b>Action History</b>") {
             input "txtEnable", "bool", title: "Enable Description Text Logging", defaultValue: true
             if (state.actionHistory) {
-                def historyStr = state.actionHistory.join("<br>")
-                paragraph "<span style='font-size: 13px; font-family: monospace;'>${historyStr}</span>"
+                paragraph "<span style='font-size: 13px; font-family: monospace;'>${state.actionHistory.join("<br>")}</span>"
             }
         }
 
-        section("<b>Last 10 Compressor Cycles</b>") {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Displays the exact duration of your last 10 heating or cooling cycles to help verify that the Minimum Run Time protections are functioning correctly.</div>"
-            if (state.recentCycles) {
-                def cycleStr = state.recentCycles.join("<br>")
-                paragraph "<span style='font-size: 13px; font-family: monospace;'>${cycleStr}</span>"
-            } else {
-                paragraph "<i>No completed cycles logged yet.</i>"
-            }
-            input "resetCycles", "button", title: "Clear Cycle History"
-        }
-
-        section("<b>App Control & Main HVAC System</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> The core connection to your physical HVAC hardware. Allows you to assign your main thermostat and provides a master kill-switch to quickly bypass all app automation.</div>"
+        section("<b>App Control</b>") {
+            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> A master kill-switch to quickly bypass all app automation.</div>"
             input "appEnableSwitch", "capability.switch", title: "Master Enable/Disable Switch (Optional)", required: false, multiple: false
-            input "thermostat", "capability.thermostat", title: "Select Main Thermostat", required: false, multiple: false
-            if (state.manualHold) input "releaseHold", "button", title: "Release Manual Hold"
         }
         
-        section("<b>Safety: Fire & Smoke Isolation</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Instantly shuts down the HVAC and blower if smoke or carbon monoxide is detected to prevent spreading smoke or feeding oxygen to a fire. This failsafe overrides all other logic.</div>"
-            input "smokeDetectors", "capability.smokeDetector", title: "Select Smoke Detectors", required: false, multiple: true
-            input "coDetectors", "capability.carbonMonoxideDetector", title: "Select CO Detectors", required: false, multiple: true
+        section("<b>Energy & ROI Tracking (Global)</b>") {
+            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Automatically tracks power consumption and translates it into daily cost and savings estimates. Savings are calculated when a room is vacant and the fan turns off.</div>"
+            input "energyRate", "decimal", title: 'Electricity Rate ($ per kWh)', required: true, defaultValue: 0.12
+            input "calcSavingsAtMax", "bool", title: "Calculate Savings using Max Watts (Assumes the fan would have been left on High)", defaultValue: true
         }
 
-        section("<b>Health: Sick Mode (Continuous Filtration)</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> When the assigned switch is turned on, the app forces the HVAC fan to run 24/7 to continuously filter the air. Restores to Auto when turned off.</div>"
-            input "sickModeSwitch", "capability.switch", title: "Select Sick Mode Switch", required: false
+        section("<b>Manual Overrides (Global)</b>") {
+            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Pauses automation for a specific room if a user manually changes the fan via a wall switch or dashboard. Resets automatically upon Mode change or after the defined timeout.</div>"
+            input "overrideTimeoutHours", "decimal", title: "Global Manual Override Timeout (Hours)", required: true, defaultValue: 2.0
+        }
+        
+        section("<b>Smart Lighting Support (Global)</b>") {
+            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Ensures your Master Power Relays stay ON (even if the fan blades are OFF) so your ceiling fan light kits continue to work when the room needs artificial light.</div>"
+            input "overcastSwitch", "capability.switch", title: "Virtual Overcast Switch (Keeps relays ON if Occupied)", required: false
         }
 
-        section("<b>1. App-Driven Auto Changeover</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Takes control of deciding whether your house needs Heating or Cooling away from the thermostat. It automatically swaps modes based on your home's <i>Calculated Average Temperature</i> rather than the single wall sensor.</div>"
-            input "enableAutoSwap", "bool", title: "<b>Enable App-Driven Mode Swapping</b>", defaultValue: false, submitOnChange: true
-            if (enableAutoSwap) {
-                input "autoSwapDeadband", "decimal", title: "Changeover Deadband (°F) - Prevents rapid mode swapping", required: false, defaultValue: 1.0
-            }
+        section("<b>3-Speed Fan Thresholds (Global)</b>") {
+            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Defines how far the room temperature must rise above the target setpoint to trigger each multi-speed fan step. (Anything above your Medium threshold will trigger High speed).</div>"
+            input "thresholdLow", "decimal", title: "Delta for Low Speed (+°F)", required: true, defaultValue: 1.5
+            input "thresholdMed", "decimal", title: "Delta for Medium Speed (+°F)", required: true, defaultValue: 3.0
+        }
+        
+        section("<b>5-Speed Fan Thresholds (Global)</b>") {
+            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Specific temperature thresholds for 5-Speed fans.</div>"
+            input "t5S1", "decimal", title: "Speed 1: Low (+°F)", required: true, defaultValue: 0.5
+            input "t5S2", "decimal", title: "Speed 2: Med-Low (+°F)", required: true, defaultValue: 1.0
+            input "t5S3", "decimal", title: "Speed 3: Medium (+°F)", required: true, defaultValue: 1.5
+            input "t5S4", "decimal", title: "Speed 4: Med-High (+°F)", required: true, defaultValue: 2.0
+            paragraph "<i>Anything above Speed 4 triggers Speed 5 (High).</i>"
         }
 
-        section("<b>2. Zones & Dynamic Occupancy (Global Settings)</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Connects motion sensors to temperature sensors. If a room has no motion for the set timeout, it is mathematically dropped from the home's average temperature to stop wasting energy on empty rooms.</div>"
-            input "enableOccupancy", "bool", title: "<b>Enable Dynamic Occupancy Weighting</b>", defaultValue: false, submitOnChange: true
+        section("<b>6-Speed Fan Thresholds (Global)</b>") {
+            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Specific temperature thresholds for 6-Speed fans.</div>"
+            input "t6S1", "decimal", title: "Speed 1: Very-Low (+°F)", required: true, defaultValue: 0.5
+            input "t6S2", "decimal", title: "Speed 2: Low (+°F)", required: true, defaultValue: 1.0
+            input "t6S3", "decimal", title: "Speed 3: Med-Low (+°F)", required: true, defaultValue: 1.5
+            input "t6S4", "decimal", title: "Speed 4: Medium (+°F)", required: true, defaultValue: 2.0
+            input "t6S5", "decimal", title: "Speed 5: Med-High (+°F)", required: true, defaultValue: 2.5
+            paragraph "<i>Anything above Speed 5 triggers Speed 6 (High).</i>"
+        }
+
+        section("<b>RF / Bond Fan Reliability & Relays</b>") {
+            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> <b>1) Stepping:</b> Prevents RF fans from missing commands.<br><b>2) Wiggle:</b> Hourly routine to drop the fan one speed and bump it back.<br><b>3) Spin-Down:</b> Delays power relay shutoff until blades stop. <i>(These settings only apply to Multi-Speed fans)</i></div>"
+            input "rfStepDelay", "number", title: "Seconds between sequential fan speed steps", required: true, defaultValue: 3
+            input "enableWiggle", "bool", title: "Enable Hourly Fan Wiggle (Self-Healing)", defaultValue: true
+            input "relaySpinDown", "number", title: "Seconds to wait before killing power relay (Spin-down delay)", required: true, defaultValue: 15
+        }
+
+        section("<b>Dynamic Occupancy</b>") {
+            input "enableOccupancy", "bool", title: "<b>Enable Dynamic Occupancy</b>", defaultValue: false, submitOnChange: true
             if (enableOccupancy) {
-                input "occupancyTimeout", "number", title: "Minutes of no motion before dropping room", required: false, defaultValue: 60
+                paragraph "<i>Occupancy timeouts are now configured individually inside each room's settings. Default is 30 minutes.</i>"
             }
-            paragraph "<div style='font-size:13px; color:#555;'>Click on a zone below to expand its settings.</div>"
         }
 
-        for (int i = 1; i <= 12; i++) {
-            def currentZoneName = settings["z${i}Name"] ?: "Zone ${i}"
+        section("<b>Operating Modes Configuration</b>") {
+            input "awayModes", "mode", title: "<b>Away Modes</b> (All fans step to OFF)", multiple: true, required: false
+            input "homeModes", "mode", title: "<b>Active Modes</b> (Home, Morning, Arrival - Uses Room Setpoints)", multiple: true, required: false
+            input "nightModes", "mode", title: "<b>Good Night Modes</b> (Turns off fans unless GN override is active)", multiple: true, required: false
+        }
+
+        section("<b>Room Fan Configurations</b>") {
+            paragraph "<div style='font-size:13px; color:#555;'>Click on a room below to expand its settings.</div>"
+        }
+
+        for (int i = 1; i <= 8; i++) {
+            def currentRoomName = settings["z${i}Name"] ?: "Room ${i}"
             
-            section("<b>⚙️ ${currentZoneName}</b>", hideable: true, hidden: true) {
-                input "enableZ${i}", "bool", title: "<b>Enable Zone ${i}</b>", submitOnChange: true
+            section("<b>⚙️ ${currentRoomName}</b>", hideable: true, hidden: true) {
+                input "enableZ${i}", "bool", title: "<b>Enable Room ${i}</b>", submitOnChange: true
+                
                 if (settings["enableZ${i}"]) {
-                    input "z${i}Name", "text", title: "Zone Name", required: false, defaultValue: "Zone ${i}"
-                    input "z${i}Temp", "capability.temperatureMeasurement", title: "Temp Sensor", required: false
-                    input "z${i}Hum", "capability.relativeHumidityMeasurement", title: "Humidity Sensor (Optional)", required: false
-                    input "z${i}Motion", "capability.motionSensor", title: "Motion Sensor (Optional)", required: false
-                    input "z${i}NightSwitch", "capability.switch", title: "Good Night Virtual Switch (Keeps active in Night Mode)", required: false
-                }
-            }
-        }
-
-        section("<b>2b. Dynamic Setpoint Alignment & Deadband</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Automatically shifts the physical thermostat's target to force it to run based on the Average Home Temp.</div>"
-            input "enableAverageSync", "bool", title: "<b>Enable Dynamic Setpoint Alignment</b>", defaultValue: false, submitOnChange: true
-            if (enableAverageSync) {
-                input "alignmentModes", "mode", title: "Modes to ALLOW Dynamic Alignment (Leave blank for 24/7)", multiple: true, required: false
-                input "maxSyncOffset", "decimal", title: "Maximum Allowed Shift (°F) - Safety limit", required: false, defaultValue: 3.0
-                input "yoyoCooldownMins", "number", title: "Anti-Yo-Yo Cooldown (Minutes)", required: false, defaultValue: 15
-                
-                paragraph "<b>Stage 1: Smart Deadband & Hysteresis</b>"
-                paragraph "<div style='font-size:13px; color:#555;'>Prevents micro-cycling. E.g., if setpoint is 70° and allowed drift is 1.0°, the system ignores the average until it hits 71.0°, then cools until it recovers to 70.5°.</div>"
-                input "enableHysteresis", "bool", title: "<b>Enable Stage 1 Hysteresis Deadband</b>", defaultValue: true, submitOnChange: true
-                if (enableHysteresis) {
-                    input "hysteresisDrift", "decimal", title: "Allowed Drift Before Starting (°F)", required: false, defaultValue: 1.0
-                    input "hysteresisRecovery", "decimal", title: "Stop When Within X° of Setpoint", required: false, defaultValue: 0.5
-                }
-            }
-        }
-
-        section("<b>3. The Economizer (Free Cooling Advisor)</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Suspends the AC and alerts you to open windows if outdoor weather is favorable. <b>Failsafe:</b> If windows are not opened within the timeout period, it aborts Free Cooling and resumes normal AC to prevent the house from getting hot.</div>"
-            input "enableFreeCooling", "bool", title: "<b>Enable Free Cooling</b>", defaultValue: true, submitOnChange: true
-            if (enableFreeCooling) {
-                input "freeCoolModes", "mode", title: "Modes to ALLOW Free Cooling", multiple: true, required: false
-                input "outdoorSensor", "capability.temperatureMeasurement", title: "Outdoor Temp/Humidity Sensor", required: false
-                input "freeCoolTempDelta", "decimal", title: "Minimum Temp Difference (°F)", required: false, defaultValue: 3.0
-                input "freeCoolMaxHumidity", "decimal", title: "Maximum Outdoor Humidity Allowed (%)", required: false, defaultValue: 60.0
-                input "freeCoolTimeout", "number", title: "Minutes to wait for windows to open before aborting", required: false, defaultValue: 15
-                input "freeCoolFan", "bool", title: "Run HVAC Fan during Free Cooling", defaultValue: false, required: false
-                
-                paragraph "<b>Wind Direction Optimization</b>"
-                input "useWindDirection", "bool", title: "Optimize with Wind Direction", defaultValue: false, submitOnChange: true
-                if (useWindDirection) {
-                    input "windWeatherDevice", "capability.sensor", title: "Select Weather/Wind Device", required: false
-                    input "optimalWindDirs", "text", title: "Optimal Wind Directions (e.g. N, NW, W)", required: false, defaultValue: "N, S"
-                }
-
-                input "freeCoolNotify", "capability.notification", title: "Send Push Notification", required: false, multiple: true
-                input "freeCoolSwitch", "capability.switch", title: "Trigger Virtual Switch", required: false, multiple: false
-            }
-        }
-
-        section("<b>4. Heat Pump: Aux Heat Suppression</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Tricks thermostats (like the Honeywell T6) into NOT using expensive Aux heat. It does this by 'gliding' the setpoint up 1 degree at a time, keeping the target just out of reach of the thermostat's internal Aux-trigger threshold.</div>"
-            input "enableAuxSuppression", "bool", title: "<b>Enable Aux Heat Suppression</b>", defaultValue: false, submitOnChange: true
-            if (enableAuxSuppression) {
-                input "maxHeatStep", "decimal", title: "Max Setpoint Step (°F) (Keep below your thermostat's Aux threshold, usually 2°)", required: false, defaultValue: 1.5
-            }
-        }
-
-        section("<b>5. Energy Cost & ROI Savings Tracking</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Tracks exact compressor and Aux heat runtimes to estimate your HVAC utility costs. It also calculates the runtime you <i>avoided</i> while using Free Cooling to prove your Return on Investment (ROI).</div>"
-            input "enableCostTracker", "bool", title: "<b>Enable 7-Day Energy Tracking</b>", defaultValue: true, submitOnChange: true
-            if (enableCostTracker) {
-                input "costPerKwh", "decimal", title: "Utility Rate (USD per kWh)", required: false, defaultValue: 0.15
-                input "coolingKw", "decimal", title: "Cooling Power Draw (kW)", required: false, defaultValue: 4.6
-                input "heatingKw", "decimal", title: "Heat Pump Power Draw (kW)", required: false, defaultValue: 4.6
-                input "auxHeatingKw", "decimal", title: "Aux/Emergency Heat Power Draw (kW)", required: false, defaultValue: 15.0
-                input "resetHistory", "button", title: "Clear Tracking History"
-            }
-        }
-
-        section("<b>6. Predictive Pre-Conditioning (Thermal Battery)</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Checks tomorrow's weather forecast. If extreme heat is predicted, it sub-cools your house during the early morning when electricity is cheap to build a 'Thermal Battery' to coast through the hot afternoon.</div>"
-            input "enablePreCondition", "bool", title: "<b>Enable Predictive Pre-Conditioning</b>", defaultValue: false, submitOnChange: true
-            if (enablePreCondition) {
-                input "weatherDevice", "capability.sensor", title: "Select Weather Device", required: false
-                input "heatwaveThreshold", "decimal", title: "Forecast High threshold (°F)", required: false, defaultValue: 90.0
-                input "preCoolOffset", "decimal", title: "Degrees to DROP setpoint during Pre-Cool", required: false, defaultValue: 3.0
-                input "preCoolStartTime", "time", title: "Pre-Cool Start Time", required: false
-                input "preCoolEndTime", "time", title: "Pre-Cool End Time", required: false
-            }
-        }
-
-        section("<b>7. Adaptive Recovery (Smart Start)</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Eliminates guesswork. You input what time you will get home, and the app calculates exactly when to start the HVAC based on how fast your specific unit heats or cools.</div>"
-            input "enableAdaptive", "bool", title: "<b>Enable Adaptive Recovery</b>", defaultValue: false, submitOnChange: true
-            if (enableAdaptive) {
-                input "expectedReturnTime", "time", title: "Expected Return Time", required: false
-                input "coolingGlide", "decimal", title: "Degrees Cooled per Hour", required: false, defaultValue: 2.0
-                input "heatingGlide", "decimal", title: "Degrees Heated per Hour", required: false, defaultValue: 3.0
-            }
-        }
-
-        section("<b>8. Open Window / Door Defeat</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Automatically intercepts and shuts off the HVAC if a monitored door or window is left open past the delay threshold. Restores normal operation once closed.</div>"
-            input "enableWindowDefeat", "bool", title: "<b>Enable Window/Door Defeat</b>", defaultValue: true, submitOnChange: true
-            if (enableWindowDefeat) {
-                input "contactSensors", "capability.contactSensor", title: "Select Perimeter Contact Sensors", required: false, multiple: true
-                input "contactDelay", "number", title: "Minutes to wait before shutting off HVAC", required: false, defaultValue: 3
-             }
-        }
-
-        section("<b>9. Multi-Stage Dehumidification</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Prioritizes indoor air quality. Stage 1 turns on standalone dehumidifier plugs. Stage 2 slightly overcools the house with the main AC to force the compressor to wring excess moisture out of the air.</div>"
-            input "enableDehumidification", "bool", title: "<b>Enable Dehumidification Logic</b>", defaultValue: true, submitOnChange: true
-            if (enableDehumidification) {
-                input "maxHumidity", "decimal", title: "Maximum Acceptable Humidity (%)", required: false, defaultValue: 55.0
-                input "dehumidifierPlugs", "capability.switch", title: "Stage 1: Standalone Dehumidifier Plugs", required: false, multiple: true
-                input "dehumidifierTimeout", "number", title: "Minutes to let plugs run before falling back to AC", required: false, defaultValue: 45
-                input "acDehumidifyOffset", "decimal", title: "Stage 2: Degrees to drop AC setpoint", required: false, defaultValue: 2.0
-            }
-        }
-
-        section("<b>10. Time-of-Use (Peak Shaving)</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Automatically drifts your target temperatures up or down during expensive utility Time-of-Use (TOU) hours to reduce peak demand charges.</div>"
-            input "enablePeakShaving", "bool", title: "<b>Enable Peak Shaving</b>", defaultValue: true, submitOnChange: true
-            if (enablePeakShaving) {
-                input "peakStartTime", "time", title: "Peak Rates Start Time", required: false
-                input "peakEndTime", "time", title: "Peak Rates End Time", required: false
-                input "peakCoolingOffset", "decimal", title: "Degrees to RAISE cooling setpoint during Peak", required: false, defaultValue: 3.0
-                input "peakHeatingOffset", "decimal", title: "Degrees to LOWER heating setpoint during Peak", required: false, defaultValue: 3.0
-            }
-        }
-
-        section("<b>11. Smart Filter & Maintenance Tracking</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Tracks exact blower runtime multiplied by air quality dust conditions to accurately predict filter life, logs physical service dates, and stores your HVAC technician's contact info.</div>"
-            input "enableFilterTracker", "bool", title: "<b>Enable Maintenance Tracking Logic</b>", defaultValue: true, submitOnChange: true
-            if (enableFilterTracker) {
-                input "filterSize", "text", title: "Filter Size", required: false
-                input "maxFilterHours", "number", title: "Baseline Filter Life (Fan Run Hours)", required: false, defaultValue: 300
-                input "indoorIAQ", "capability.airQuality", title: "Indoor AQI Sensor", required: false
-                input "outdoorIAQ", "capability.airQuality", title: "Outdoor AQI Sensor", required: false
-                
-                if (state.filterRunMinutes != null) {
-                    def maxMins = (maxFilterHours ?: 300) * 60
-                    def usedMins = state.filterRunMinutes ?: 0.0
-                    def percentLeft = Math.max(0.0, 100.0 - ((usedMins / maxMins) * 100)).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
-                
-                    paragraph "<b>Filter Life Remaining:</b> ${percentLeft}%"
-                    paragraph "<b>Last Filter Change:</b> ${state.lastFilterDate ?: 'Not Recorded'}"
-                    input "resetFilter", "button", title: "Record Filter Change (Resets Life to 100%)"
-                }
+                    input "z${i}Name", "text", title: "Room Name", required: false, defaultValue: "Room ${i}"
+                    input "z${i}FanType", "enum", title: "Fan Control Type", options: ["speed3":"3-Speed Fan", "speed5":"5-Speed Fan", "speed6":"6-Speed Fan", "fixed":"Non-Controllable (Fixed Speed)", "switch":"Simple On/Off Switch"], required: true, defaultValue: "speed3", submitOnChange: true
                     
-                paragraph "<hr>"
-                paragraph "<b>HVAC System Service Tracking</b>"
-                input "hvacCompanyName", "text", title: "HVAC Company Name", required: false
-                input "hvacCompanyPhone", "text", title: "HVAC Company Phone Number", required: false
-                paragraph "<b>Last HVAC Service:</b> ${state.lastServiceDate ?: 'Not Recorded'}"
-                input "resetService", "button", title: "Record HVAC Service Today"
-            }
-        }
+                    def currentFanType = settings["z${i}FanType"] ?: "speed3"
+                    
+                    if (currentFanType == "switch") {
+                        input "z${i}SimpleFan", "capability.switch", title: "Fan Power Switch", required: true
+                    } else {
+                        input "z${i}Fan", "capability.fanControl", title: "Ceiling Fan Device", required: true
+                        
+                        if (currentFanType == "fixed") {
+                            input "z${i}FixedSpeed", "enum", title: "Fixed Run Speed (When Cooling)", options: ["low":"Low", "medium-low":"Medium-Low", "medium":"Medium", "medium-high":"Medium-High", "high":"High", "on":"On"], required: true, defaultValue: "high"
+                        }
+                        
+                        input "z${i}Power", "capability.switch", title: "Master Power Relay for Fan (Optional)", required: false, submitOnChange: true
+                        
+                        if (settings["z${i}Power"]) {
+                            input "z${i}RelayAlwaysOn", "bool", title: "Keep power relay ON 24/7 (Prevents fan light from defaulting to ON after power loss)", defaultValue: false, submitOnChange: true
+                            
+                            if (!settings["z${i}RelayAlwaysOn"]) {
+                                input "z${i}KeepRelayUnoccupied", "bool", title: "Keep power relay ON when Unoccupied (Only turn off blades)", defaultValue: false
+                                input "z${i}SmartRelay", "bool", title: "Keep power relay ON for Lighting Needs (Evaluates Sunset, Overcast, and Shades)", defaultValue: true, submitOnChange: true
+                                if (settings["z${i}SmartRelay"]) {
+                                    input "z${i}ShadeContact", "capability.contactSensor", title: "Shade Contact Sensor (Closed = Room is Dark)", required: false
+                                }
+                            }
+                        }
+                    }
+                    
+                    input "z${i}WattMin", "number", title: "Minimum Power Draw (Watts on Low)", required: false
+                    input "z${i}WattMax", "number", title: "Maximum Power Draw (Watts on High)", required: false
+                    
+                    input "z${i}Temp", "capability.temperatureMeasurement", title: "Temperature Sensor", required: true
+                    input "z${i}Hum", "capability.relativeHumidityMeasurement", title: "Humidity Sensor (Optional)", required: false
+                    
+                    input "z${i}Motion", "capability.motionSensor", title: "Motion Sensor(s) (Optional)", required: false, multiple: true, submitOnChange: true
+                    
+                    if (settings["enableOccupancy"] && settings["z${i}Motion"]) {
+                        input "z${i}OccupancyTimeout", "number", title: "Minutes of no motion before turning off fan", required: false, defaultValue: 30
+                    }
+                    
+                    input "z${i}ActivitySwitch", "capability.switch", title: "Activity Override Switch (e.g., Roku TV) - Keeps room 'Occupied'", required: false
+                    input "z${i}ControlMethod", "enum", title: "Control Method", options: ["wetBulb":"Wet Bulb (Feels Like)", "dryBulb":"Dry Bulb (Standard Temp)"], required: true, defaultValue: "wetBulb"
+                    input "z${i}Setpoint", "decimal", title: "Target Setpoint (°F)", required: true, defaultValue: 72.0
+                    input "z${i}GnSwitch", "capability.switch", title: "Good Night Override Switch (Optional)", required: false
 
-        section("<b>12. Delta-T Efficiency Monitoring & Run Time Protection</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> <b>1) Delta-T:</b> Monitors system health by measuring the temperature drop across your HVAC coil. <b>2) Run Time Protection:</b> Protects oversized compressors from damaging short-cycles by artificially dropping the setpoint to force a minimum, safe runtime.</div>"
-            input "enableDeltaT", "bool", title: "<b>Enable Delta-T Logic</b>", defaultValue: true, submitOnChange: true
-            if (enableDeltaT) {
-                input "returnSensor", "capability.temperatureMeasurement", title: "Return Air Sensor", required: false
-                input "dischargeSensor", "capability.temperatureMeasurement", title: "Discharge (Supply) Air Sensor", required: false
-                
-                input "deltaTCheckDelay", "number", title: "Minutes before checking Delta-T", required: false, defaultValue: 30
-                input "minCoolingDeltaT", "decimal", title: "Min Cooling Delta-T (°F)", required: false, defaultValue: 12.0
-                input "minHeatingDeltaT", "decimal", title: "Min Heating Delta-T (°F)", required: false, defaultValue: 15.0
-                input "emergencyShutoff", "bool", title: "Emergency Shutoff if Delta-T fails", defaultValue: false
-            }
-            
-            paragraph "<b>Oversized Unit Protection</b>"
-            input "enableMinRuntime", "bool", title: "<b>Enable Min Run Time Protection</b>", defaultValue: true, submitOnChange: true
-         
-            if (enableMinRuntime) {
-                input "minRunTime", "number", title: "Minimum Run Time (minutes)", required: false, defaultValue: 10
-                input "delayModeChangeForMinRun", "bool", title: "Delay Mode Changes until Min Run Time completes", defaultValue: false
-                input "tempDropThreshold", "decimal", title: "Max Temp Drop per Min", required: false, defaultValue: 0.5
-                input "setpointBuffer", "decimal", title: "Temporary Setpoint Buffer (°F)", required: false, defaultValue: 2.0
-                input "shortCycleThreshold", "decimal", title: "Short-Cycle Degree Threshold (°F)", required: false, defaultValue: 1.0
-                input "enableShortCycleNotify", "bool", title: "Notify on Short-Cycle", defaultValue: false, submitOnChange: true
-                if (enableShortCycleNotify) {
-                    input "shortCycleNotifyDevices", "capability.notification", title: "Select Notification Devices", required: false, multiple: true
+                    // --- NEW BUTTON CONTROLLER SECTION ---
+                    paragraph "<hr><b>Button Controller Overrides</b>"
+                    input "z${i}Button", "capability.pushableButton", title: "Optional Button Controller", required: false, submitOnChange: true
+                    if (settings["z${i}Button"]) {
+                        input "z${i}BtnNum", "number", title: "Button Number to watch", required: true, defaultValue: 1
+                        input "z${i}BtnOverrideHours", "decimal", title: "Button Override Duration (Hours)", required: false, defaultValue: 2.0
+                        input "z${i}BtnAllowedModes", "mode", title: "Modes to allow Button Control (Leave blank for all)", multiple: true, required: false
+                        
+                        def speedOpts = ["off", "low", "medium-low", "medium", "medium-high", "high", "on"]
+                        input "z${i}BtnPush", "enum", title: "Action: Pushed", options: speedOpts, required: false
+                        input "z${i}BtnHold", "enum", title: "Action: Held", options: speedOpts, required: false
+                        input "z${i}BtnDouble", "enum", title: "Action: Double Tapped", options: speedOpts, required: false
+                    }
                 }
             }
-        }
-
-        section("<b>13. Routine Setpoint Enforcement</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Acts as a Self-Healing loop. Periodically wakes up and re-transmits the correct setpoints to the thermostat to ensure no wireless commands were dropped by your Z-Wave/Zigbee mesh network.</div>"
-            input "enableEnforcement", "bool", title: "<b>Enable Routine Enforcement</b>", defaultValue: false, submitOnChange: true
-            if (enableEnforcement) {
-                input "enforcementInterval", "enum", title: "Check Interval", options: ["15":"Every 15 Minutes", "30":"Every 30 Minutes", "60":"Every 1 Hour"], required: false, defaultValue: "30"
-            }
-        }
-
-        section("<b>External Money Saving Override</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Allows external applications or virtual switches to force the system into a high-savings mode. All alignment and compressor protections still function normally around these new targets.</div>"
-            input "moneySavingSwitch", "capability.switch", title: "Select Money Saving Switch", required: false
-            input "moneySavingCoolingSetpoint", "decimal", title: "Money Saving Cooling Setpoint", required: false, defaultValue: 80
-            input "moneySavingHeatingSetpoint", "decimal", title: "Money Saving Heating Setpoint", required: false, defaultValue: 60
-        }
-
-        section("<b>Base Operating Modes & Ranges</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> The foundation of the BMS. Sets your default targets based on Hubitat Location Modes. <i>Note: 'Good Night' mode strictly locks these temperatures for maximum comfort, bypassing economy features.</i></div>"
-            paragraph "<i>Leave 'Allowed Modes (Overall App)' BLANK to allow the app to run 24/7. Otherwise, make sure to select every single mode you want the app to function in.</i>"
-            input "allowedModes", "mode", title: "Allowed Modes (Overall App) [Master Override]", multiple: true, required: false
-            
-            paragraph "<b>Home</b>"
-            input "homeCoolingSetpoint", "decimal", title: "Home Cooling Setpoint", required: false, defaultValue: 74
-            input "homeHeatingSetpoint", "decimal", title: "Home Heating Setpoint", required: false, defaultValue: 68
-            
-            paragraph "<b>Away</b>"
-            input "awayModes", "mode", title: "Select 'Away' modes", multiple: true, required: false
-            input "awayCoolingSetpoint", "decimal", title: "Away Cooling Setpoint", required: false, defaultValue: 78
-            input "awayHeatingSetpoint", "decimal", title: "Away Heating Setpoint", required: false, defaultValue: 62
-            
-            paragraph "<b>Good Night (Strict)</b>"
-            input "nightModes", "mode", title: "Select 'Good Night' modes", multiple: true, required: false
-            input "nightCoolingSetpoint", "decimal", title: "Good Night Cooling Setpoint", required: false, defaultValue: 70
-            input "nightHeatingSetpoint", "decimal", title: "Good Night Heating Setpoint", required: false, defaultValue: 66
-        }
-
-        section("<b>14. Alerts & Routine Notifications</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:13px; color:#555;'><b>What it does:</b> Centralized notification hub. The app will quietly monitor system health and only notify you when routine maintenance is required or if critical efficiency drops are detected.</div>"
-            input "notifyDevices", "capability.notification", title: "Select Notification Devices", required: false, multiple: true
-            input "notifyDeltaT", "bool", title: "Notify on Bad Delta-T (Poor Efficiency/Freezing Coil)", defaultValue: true
-            input "notifyFilter", "bool", title: "Notify when Filter Life is < 10%", defaultValue: true
-            input "notifyMaintenance", "bool", title: "Notify for Summer/Winter Maintenance Reminders", defaultValue: true
-        }
-        
-        section("<b>Disclaimer</b>", hideable: true, hidden: true) {
-            paragraph "<div style='font-size:12px; color:#888;'><b>Legal Disclaimer:</b> ShaneAllen is not responsible for any damage or liability with the use of this application. This is a user customer application, use at your own discretion.</div>"
         }
     }
 }
@@ -597,1078 +413,1020 @@ def mainPage() {
 // INTERNAL LOGIC ENGINE
 // ==============================================================================
 
+def getSpeedLevels(fanType) {
+    if (fanType == "speed6") return ["off": 0, "very-low": 1, "low": 2, "medium-low": 3, "medium": 4, "medium-high": 5, "high": 6, "auto": 6]
+    if (fanType == "speed5") return ["off": 0, "low": 1, "medium-low": 2, "medium": 3, "medium-high": 4, "high": 5]
+    return ["off": 0, "low": 1, "medium": 2, "high": 3]
+}
+
+def getLevelSpeeds(fanType) {
+    if (fanType == "speed6") return [0: "off", 1: "very-low", 2: "low", 3: "medium-low", 4: "medium", 5: "medium-high", 6: "high"]
+    if (fanType == "speed5") return [0: "off", 1: "low", 2: "medium-low", 3: "medium", 4: "medium-high", 5: "high"]
+    return [0: "off", 1: "low", 2: "medium", 3: "high"]
+}
+
+def getWattsForSpeed(speedStr, fanType, minW, maxW) {
+    if (speedStr == "off" || speedStr == "unknown") return 0.0
+    if (fanType == "fixed") return maxW
+    if (speedStr == "high" || speedStr == "auto" || speedStr == "on") return maxW
+    if (speedStr == "low" || speedStr == "very-low") return minW
+    
+    def sMap = getSpeedLevels(fanType)
+    def lvl = sMap[speedStr] ?: 0
+    if (lvl == 0) return 0.0
+    
+    def maxLvl = fanType == "speed6" ? 6 : (fanType == "speed5" ? 5 : 3)
+    if (lvl >= maxLvl) return maxW
+    
+    def stepWatts = (maxW - minW) / (maxLvl - 1)
+    return minW + (stepWatts * (lvl - 1))
+}
+
 def installed() { logInfo("Installed"); initialize() }
 def updated() { logInfo("Updated"); unsubscribe(); unschedule(); initialize() }
 
 def initialize() {
     if (!state.actionHistory) state.actionHistory = []
-    if (!state.recentCycles) state.recentCycles = []
-    if (state.filterRunMinutes == null) state.filterRunMinutes = 0.0
     if (!state.zoneLastActive) state.zoneLastActive = [:]
-    if (!state.runHistory) state.runHistory = [:]
+    if (!state.overrideUntil) state.overrideUntil = [:]
+    if (!state.ignoreOverridesUntil) state.ignoreOverridesUntil = [:]
+    if (!state.wiggleResetTime) state.wiggleResetTime = [:]
+    if (!state.wasOccupied) state.wasOccupied = [:]
     
-    if (!state.lastFilterDate) state.lastFilterDate = "Not Recorded"
-    if (!state.lastServiceDate) state.lastServiceDate = "Not Recorded"
+    if (!state.dailyCost) state.dailyCost = [:]
+    if (!state.dailySaved) state.dailySaved = [:]
+    if (!state.historyCost) state.historyCost = [:]
+    if (!state.historySaved) state.historySaved = [:]
     
-    state.isBuffering = false; state.cycleStartTime = null; state.currentAction = "idle"; state.cycleStartMode = null; state.modeDelayLogged = false
-    state.manualHold = false; state.windowOpenHold = false; state.dehumidifyingStage = 0 
-    state.isPeakHours = false; state.isPreConditioning = false; state.isAdaptiveRecovering = false
-    
-    state.freeCoolState = "idle" 
-    state.freeCoolTargetTime = null
-    state.fcStartTime = null
-    state.fireEmergency = false
-    
-    state.expectedCool = null; state.expectedHeat = null
-    state.alignmentLockout = null; state.alignmentLockoutTarget = null
-    state.activeHysteresis = "idle"
-    state.lastCommandTime = null
-    
-    if (thermostat) {
-        subscribe(thermostat, "thermostatOperatingState", hvacStateHandler)
-        subscribe(thermostat, "coolingSetpoint", setpointHandler)
-        subscribe(thermostat, "heatingSetpoint", setpointHandler)
-        subscribe(thermostat, "temperature", sensorHandler) 
-    }
-    
-    subscribe(location, "mode", modeChangeHandler)
     subscribe(location, "systemStart", hubRestartHandler)
+    subscribe(location, "mode", modeChangeHandler)
+    subscribe(location, "sunset", sensorHandler)
+    subscribe(location, "sunrise", sensorHandler)
     
-    if (smokeDetectors) subscribe(smokeDetectors, "smoke", smokeCoHandler)
-    if (coDetectors) subscribe(coDetectors, "carbonMonoxide", smokeCoHandler)
-    if (sickModeSwitch) subscribe(sickModeSwitch, "switch", sickModeHandler)
+    if (appEnableSwitch) subscribe(appEnableSwitch, "switch", sensorHandler)
+    if (overcastSwitch) subscribe(overcastSwitch, "switch", sensorHandler)
     
-    if (enableFreeCooling && outdoorSensor) {
-        subscribe(outdoorSensor, "temperature", outdoorSensorHandler)
-        subscribe(outdoorSensor, "humidity", outdoorSensorHandler)
-    }
-    if (enableFreeCooling && useWindDirection && windWeatherDevice) {
-        subscribe(windWeatherDevice, "windDirection", outdoorSensorHandler)
-    }
-    
-    for (int i = 1; i <= 12; i++) {
+    for (int i = 1; i <= 8; i++) {
+        if (!state["z${i}Target"]) state["z${i}Target"] = "off"
+        
         if (settings["enableZ${i}"]) {
-            if (settings["z${i}Temp"]) subscribe(settings["z${i}Temp"], "temperature", sensorHandler)
-            if (settings["z${i}Hum"]) subscribe(settings["z${i}Hum"], "humidity", humidityHandler)
-            if (settings["z${i}Motion"]) subscribe(settings["z${i}Motion"], "motion", motionHandler)
-        }
-    }
-    
-    if (enableWindowDefeat && contactSensors) subscribe(contactSensors, "contact", contactHandler)
-    if (appEnableSwitch) subscribe(appEnableSwitch, "switch", enableSwitchHandler)
-    if (moneySavingSwitch) subscribe(moneySavingSwitch, "switch", moneySavingHandler)
-    
-    schedulePeakTimes()
-    schedulePreConditioning()
-    scheduleAdaptiveRecoveryCheck()
-    schedule("0 0 10 * * ?", dailyMaintenanceCheck) 
-    
-    if (enableEnforcement) {
-        def interval = enforcementInterval ?: "30"
-        if (interval == "15") runEvery15Minutes(routineSweep)
-        else if (interval == "30") runEvery30Minutes(routineSweep)
-        else if (interval == "60") runEvery1Hour(routineSweep)
-    }
-    
-    logAction("App Initialized. Modular BMS Engine Ready.")
-    
-    // Check initial smoke/co status
-    smokeCoHandler([:])
-    evaluateSystem()
-}
-
-def routineSweep() {
-    if (state.fireEmergency || state.manualHold || state.windowOpenHold || state.isBuffering) return 
-    logAction("Running routine setpoint enforcement sweep.")
-    evaluateSystem()
-}
-
-def hubRestartHandler(evt) {
-    logAction("CRITICAL: Hub reboot detected. Executing BMS Failsafe Recovery.")
-    state.isBuffering = false; state.windowOpenHold = false; state.dehumidifyingStage = 0
-    state.isPreConditioning = false; state.isAdaptiveRecovering = false; state.freeCoolState = "idle"
-    state.cycleStartTime = null; state.currentAction = "idle"; state.cycleStartMode = null; state.modeDelayLogged = false
-    state.alignmentLockout = null; state.alignmentLockoutTarget = null
-    state.activeHysteresis = "idle"
- 
-    if (state.savedPlugStates) restorePlugs() 
-    
-    unschedule()
-  
-    schedulePeakTimes(); schedulePreConditioning(); scheduleAdaptiveRecoveryCheck()
-    schedule("0 0 10 * * ?", dailyMaintenanceCheck)
-    
-    if (enableEnforcement) {
-        def interval = enforcementInterval ?: "30"
-        if (interval == "15") runEvery15Minutes(routineSweep)
-        else if (interval == "30") runEvery30Minutes(routineSweep)
-        else if (interval == "60") runEvery1Hour(routineSweep)
-    }
-    
-    smokeCoHandler([:])
-    evaluateSystem()
-}
-
-def smokeCoHandler(evt) {
-    def isFire = false
-    if (smokeDetectors && smokeDetectors.any { it.currentValue("smoke") == "detected" }) isFire = true
-    if (coDetectors && coDetectors.any { it.currentValue("carbonMonoxide") == "detected" }) isFire = true
-    
-    if (isFire && !state.fireEmergency) {
-        state.fireEmergency = true
-        logAction("CRITICAL EMERGENCY: Smoke/CO detected! Executing HVAC Fire Isolation.")
-        
-        if (thermostat) {
-            thermostat.off()
-            if (thermostat.hasCommand("setThermostatFanMode")) thermostat.setThermostatFanMode("auto")
-        }
-        
-        if (notifyDevices) notifyDevices.deviceNotification("CRITICAL: Smoke/CO detected. HVAC shut down to prevent smoke spread.")
-        evaluateSystem()
-        
-    } else if (!isFire && state.fireEmergency) {
-        state.fireEmergency = false
-        logAction("Emergency Cleared: Smoke/CO no longer detected. Releasing Fire Isolation.")
-        evaluateSystem()
-    }
-}
-
-def sickModeHandler(evt) {
-    if (state.fireEmergency || !thermostat) return 
-    
-    if (evt.value == "on") {
-        logAction("Sick Mode Activated: Forcing HVAC Fan ON for continuous filtration.")
-        if (thermostat.hasCommand("setThermostatFanMode")) thermostat.setThermostatFanMode("on")
-    } else {
-        logAction("Sick Mode Deactivated: Restoring HVAC Fan to Auto.")
-        if (state.freeCoolState == "active" && freeCoolFan) {
-            logAction("Sick Mode Off: Free Cooling is active, keeping fan ON.")
-        } else {
-            if (thermostat.hasCommand("setThermostatFanMode")) thermostat.setThermostatFanMode("auto")
-        }
-    }
-    evaluateSystem()
-}
-
-def moneySavingHandler(evt) {
-    logAction("Money Saving Mode turned ${evt.value.toUpperCase()}.")
-    evaluateSystem()
-}
-
-String getHumanReadableStatus() {
-    def status = ""
-    def sickStr = (sickModeSwitch && sickModeSwitch.currentValue("switch") == "on") ? "<br><span style='color:#17a2b8;'><b>Health:</b> Sick Mode Active (Continuous Fan Filtration)</span>" : ""
-    
-    if (state.fireEmergency) {
-        return "<span style='color:red; font-size:14px;'><b>🚨 CRITICAL: FIRE / CO ISOLATION ACTIVE. HVAC SHUT DOWN. 🚨</b></span>" + sickStr
-    }
-    
-    if (appEnableSwitch && appEnableSwitch.currentValue("switch") == "off") status = "The application is disabled via the Master Switch."
-    else if (allowedModes && !(allowedModes as List).contains(location.mode)) status = "<span style='color:orange;'><b>App Disabled by Mode:</b></span> The current location mode (<b>${location.mode}</b>) is not selected in your 'Allowed Modes' setting."
-    else if (state.windowOpenHold) status = "<span style='color:red;'><b>HVAC is OFF</b></span> because a monitored perimeter window or door is open."
-    else if (state.manualHold) status = "<span style='color:orange;'><b>Automation Paused</b></span> because someone manually adjusted the physical thermostat."
-    else if (moneySavingSwitch && moneySavingSwitch.currentValue("switch") == "on") status = "<span style='color:green;'><b>Money Saving Mode Active:</b></span> Targets shifted to maximize energy savings based on external switch."
-    else if (state.isBuffering) status = "<span style='color:blue;'><b>Compressor Protection Engaged:</b></span> The system is locked ON to satisfy the Minimum Run Time and prevent hardware damage."
-    else if (state.yoyoCooldownEnds && now() < state.yoyoCooldownEnds) status = "<span style='color:orange;'><b>Anti-Yo-Yo Cooldown Active:</b></span> Dynamic Setpoint Alignment is temporarily paused to prevent the system from rapidly turning back on."
-    else {
-        def mode = thermostat?.currentValue("thermostatOperatingState")?.toLowerCase()
-        if (mode?.contains("aux") || mode?.contains("emergency")) status = "<span style='color:red;'><b>WARNING: Auxiliary Heat is Active.</b></span> The system is currently running the high-power resistance heat strips."
-        else {
-            def isNight = nightModes ? (nightModes as List).contains(location.mode) : false
-            if (isNight) status = "Good Night mode is active. Setpoints strictly locked."
-            else if (state.freeCoolState == "pending") status = "<span style='color:orange;'><b>Free Cooling Pending:</b></span> Favorable weather detected! Waiting for you to open the windows before the timeout aborts the cycle."
-            else if (state.freeCoolState == "active") status = "<span style='color:green;'><b>Free Cooling Active:</b></span> AC is suspended because outdoor conditions are favorable and windows are open."
-            else if (state.dehumidifyingStage == 1) status = "Running smart-plug dehumidifiers to reduce high indoor humidity."
-            else if (state.dehumidifyingStage == 2) status = "AC is actively overcooling the house to extract excess humidity."
-            else if (state.isAdaptiveRecovering) status = "Starting the HVAC early to ensure the house reaches the target temperature."
-            else if (state.isPeakHours) status = "Saving money by shifting target temperatures during expensive Peak Utility hours."
-            else if (state.isPreConditioning) status = "Pre-cooling the house to build a thermal battery ahead of extreme heat."
-            else if (mode == "cooling" || mode == "heating") status = "Operating normally. Currently ${mode} to satisfy the average room requirements."
-            else status = "System is IDLE. Averaged zone temperatures are currently within the comfort range."
-        }
-    }
-    
-    return status + sickStr
-}
-
-def getAverageTemp() {
-    def total = 0.0; def count = 0
-    def timeoutMs = (occupancyTimeout ?: 60) * 60000
-    def isNight = nightModes ? (nightModes as List).contains(location.mode) : false
-    def maxAgeMs = 24 * 60 * 60 * 1000 
-    
-    for (int i = 1; i <= 12; i++) {
-        if (settings["enableZ${i}"] && settings["z${i}Temp"]) {
-            def tempDev = settings["z${i}Temp"]; def motionDev = settings["z${i}Motion"]
-            def tempState = tempDev.currentState("temperature")
+            def rawFanType = settings["z${i}FanType"] ?: "speed3"
+            def fanType = (rawFanType == "speed") ? "speed3" : rawFanType
             
-            if (tempState != null && tempState.value != null) {
-                def tVal = tempState.value.toBigDecimal()
-                def lastUpdate = tempState.date?.time ?: now()
-          
-                if (tVal >= 40.0 && tVal <= 100.0 && (now() - lastUpdate) <= maxAgeMs) {
-                    if (isNight) {
-                        def nightSwitch = settings["z${i}NightSwitch"]
-                        if (nightSwitch && nightSwitch.currentValue("switch") == "on") {
-                            total += tVal; count++
-                        }
-                    } else {
-                        if (!enableOccupancy || !motionDev || (state.zoneLastActive && state.zoneLastActive[motionDev.id] && (now() - state.zoneLastActive[motionDev.id]) < timeoutMs)) {
-                            total += tVal; count++
-                        }
-                    }
-                } else {
-                    logAction("WARNING: Ignored sensor ${tempDev.displayName} due to stale or out-of-bounds data (${tVal}°).")
-                }
+            if (settings["z${i}Temp"]) subscribe(settings["z${i}Temp"], "temperature", sensorHandler)
+            if (settings["z${i}Hum"]) subscribe(settings["z${i}Hum"], "humidity", sensorHandler)
+            if (settings["z${i}Motion"]) subscribe(settings["z${i}Motion"], "motion", motionHandler) 
+            if (settings["z${i}GnSwitch"]) subscribe(settings["z${i}GnSwitch"], "switch", sensorHandler)
+            if (settings["z${i}ShadeContact"]) subscribe(settings["z${i}ShadeContact"], "contact", sensorHandler)
+            if (settings["z${i}ActivitySwitch"]) subscribe(settings["z${i}ActivitySwitch"], "switch", sensorHandler)
+            
+            if (settings["z${i}Button"]) {
+                subscribe(settings["z${i}Button"], "pushed", buttonHandler)
+                subscribe(settings["z${i}Button"], "held", buttonHandler)
+                subscribe(settings["z${i}Button"], "doubleTapped", buttonHandler)
+            }
+            
+            if ((fanType.startsWith("speed") || fanType == "fixed") && settings["z${i}Fan"]) {
+                state["z${i}ExpectedSpeed"] = settings["z${i}Fan"].currentValue("speed") ?: "off"
+                state["z${i}PreviousSpeed"] = state["z${i}ExpectedSpeed"]
+                subscribe(settings["z${i}Fan"], "speed", fanSpeedHandler)
+            } else if (fanType == "switch" && settings["z${i}SimpleFan"]) {
+                state["z${i}ExpectedSimple"] = settings["z${i}SimpleFan"].currentValue("switch") ?: "off"
+                state["z${i}PreviousSimple"] = state["z${i}ExpectedSimple"]
+                subscribe(settings["z${i}SimpleFan"], "switch", simpleFanHandler)
+            }
+    
+            if (settings["z${i}Power"]) {
+                state["z${i}ExpectedPower"] = settings["z${i}Power"].currentValue("switch") ?: "off"
+                state["z${i}PreviousPower"] = state["z${i}ExpectedPower"]
+                subscribe(settings["z${i}Power"], "switch", powerRelayHandler)
             }
         }
     }
-    if (count == 0 && thermostat?.currentValue("temperature") != null) return thermostat.currentValue("temperature").toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
-    return count > 0 ? (total / count).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP) : 0.0
+    
+    if (enableWiggle) runEvery1Hour("doHourlyWiggle")
+    
+    schedule("0 0 0 * * ?", dailyEnergyRollover)
+    runEvery5Minutes("calculateEnergyData")
+    
+    logAction("Ceiling Fan Engine Initialized. Overrides Active.")
+    evaluateFans()
 }
 
-def getAverageHumidity() {
-    def total = 0.0; def count = 0
-    for (int i = 1; i <= 12; i++) {
-        if (settings["enableZ${i}"] && settings["z${i}Hum"]) {
-            def humDev = settings["z${i}Hum"]
-            if (humDev.currentValue("humidity") != null) { total += humDev.currentValue("humidity"); count++ }
-        }
-    }
-    return count > 0 ? (total / count).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP) : 0.0
-}
-
-def motionHandler(evt) { if (evt.value == "active") { if (!state.zoneLastActive) state.zoneLastActive = [:]; state.zoneLastActive[evt.device.id] = now(); evaluateSystem() } }
-
-def appButtonHandler(btn) {
-    def todayStr = new Date().format("MM/dd/yyyy", location.timeZone)
-    if (btn == "btnRefresh") {
-        logInfo("Dashboard data manually refreshed by user.")
-    }
-    else if (btn == "resetFilter") { 
-        state.filterRunMinutes = 0.0
-        state.lastFilterDate = todayStr
-        state.filterAlertSent = false
-        logAction("Filter logged as changed. Life reset to 100%.") 
-    } 
-    else if (btn == "resetService") {
-        state.lastServiceDate = todayStr
-        logAction("HVAC Service recorded for today.")
-    }
-    else if (btn == "releaseHold") { 
-        state.manualHold = false
-        logAction("Manual Hold released by user.")
-        evaluateSystem() 
-    } 
-    else if (btn == "resetHistory") { 
-        state.runHistory = [:]
-        logAction("Energy Cost Tracking history cleared.") 
-    }
-    else if (btn == "resetCycles") {
-        state.recentCycles = []
-        logAction("Compressor cycle history cleared.")
-    }
-}
-
-def enableSwitchHandler(evt) { if (evt.value == "off") logAction("App Disabled."); else evaluateSystem() }
-def modeChangeHandler(evt) { state.manualHold = false; state.isAdaptiveRecovering = false; evaluateSystem() }
-
-def setpointHandler(evt) {
-    if (state.fireEmergency || state.windowOpenHold || state.isBuffering) return 
+// === BUTTON HANDLER ===
+def buttonHandler(evt) {
+    def btnDev = evt.device.id
+    def btnNum = evt.value
+    def eventType = evt.name 
     
-    // 15-second blindspot for incoming setpoint echoes right after the BMS sends a command.
-    if (state.lastCommandTime && (now() - state.lastCommandTime) < 15000) {
-        return 
-    }
-    
-    def newVal = evt.value.toBigDecimal()
-    def isManual = false
-    
-    if (evt.name == "coolingSetpoint" && state.expectedCool != null) {
-        if (Math.abs(newVal - state.expectedCool) > 1.0) isManual = true
-    }
-    if (evt.name == "heatingSetpoint" && state.expectedHeat != null) {
-        if (Math.abs(newVal - state.expectedHeat) > 1.0) isManual = true
-    }
-    
-    if (isManual && !state.manualHold) { 
-        state.manualHold = true
-        logAction("MANUAL OVERRIDE: Physical thermostat changed to ${newVal}°. Automation suspended until mode change.") 
-        evaluateSystem() // Update UI right away
-    }
-}
-
-def outdoorSensorHandler(evt) { evaluateSystem() }
-
-def checkFreeCooling(currentCoolTarget, evalMode = location.mode) {
-    if (!enableFreeCooling || !outdoorSensor) return currentCoolTarget
-    
-    if (freeCoolModes && !(freeCoolModes as List).contains(evalMode)) {
-        if (state.freeCoolState != "idle") {
-            state.freeCoolState = "idle"
-            disengageFreeCooling()
-        }
-        return currentCoolTarget
-    }
-    
-    def outTemp = outdoorSensor.currentValue("temperature")
-    def outHum = outdoorSensor.currentValue("humidity") ?: 0.0
-    def currentAvg = getAverageTemp()
-    def delta = freeCoolTempDelta ?: 3.0
-    def maxHum = freeCoolMaxHumidity ?: 60.0
-    def timeoutMins = freeCoolTimeout ?: 15
-    
-    if (outTemp != null) {
-        def isFavorable = (currentAvg >= currentCoolTarget) && (outTemp <= (currentAvg - delta)) && (outHum <= maxHum)
-        
-        if (isFavorable) {
-            if (state.freeCoolState == "idle") {
-                def anyOpen = contactSensors ? contactSensors.any { it.currentValue("contact") == "open" } : false
-                if (anyOpen) {
-                    state.freeCoolState = "active"
-                    engageFreeCooling()
-                } else {
-                    state.freeCoolState = "pending"
-                    state.freeCoolTargetTime = now() + (timeoutMins * 60000)
+    for (int i = 1; i <= 8; i++) {
+        if (settings["enableZ${i}"] && settings["z${i}Button"]?.id == btnDev) {
+            if (settings["z${i}BtnNum"]?.toString() == btnNum?.toString()) {
+                
+                def allowedModes = settings["z${i}BtnAllowedModes"]
+                if (allowedModes && !(allowedModes as List).contains(location.mode)) {
+                    logInfo("Button command ignored for Room ${i} due to mode restriction.")
+                    return
+                }
+                
+                def requestedSpeed = null
+                if (eventType == "pushed") requestedSpeed = settings["z${i}BtnPush"]
+                else if (eventType == "held") requestedSpeed = settings["z${i}BtnHold"]
+                else if (eventType == "doubleTapped") requestedSpeed = settings["z${i}BtnDouble"]
+                
+                if (requestedSpeed) {
+                    def zName = settings["z${i}Name"] ?: "Room ${i}"
+                    def rawFanType = settings["z${i}FanType"] ?: "speed3"
+                    def fanType = (rawFanType == "speed") ? "speed3" : rawFanType
                     
-                    def notifyMsg = "Free Cooling available! Open the windows to save energy. AC suspended for ${timeoutMins} minutes."
+                    def currentTarget = state["z${i}Target"] ?: "off"
+                    def isOverridden = isOverrideActive(i)
                     
-                    // Wind Direction Optimization check
-                    if (useWindDirection && windWeatherDevice && optimalWindDirs) {
-                        def currentWindDir = windWeatherDevice.currentValue("windDirection")?.toString()?.toUpperCase()
-                        if (currentWindDir) {
-                            def optimalList = optimalWindDirs.split(",").collect { it.trim().toUpperCase() }
-                            if (optimalList.contains(currentWindDir)) {
-                                notifyMsg = "Free Cooling available! Favorable wind detected from the ${currentWindDir}. Open windows facing this direction for optimal cross-ventilation. AC suspended."
+                    // TOGGLE LOGIC: Release override if button pressed matches current override state
+                    if (isOverridden && currentTarget == requestedSpeed) {
+                        logAction("Button toggle detected for ${zName}. Releasing manual override.")
+                        def map = state.overrideUntil ?: [:]
+                        map.remove(i.toString())
+                        state.overrideUntil = map
+                        evaluateFans()
+                    } else {
+                        logAction("Button ${btnNum} ${eventType} on ${evt.device.displayName}. Setting ${zName} to ${requestedSpeed.toUpperCase()}.")
+                        
+                        // Pass specific button timeout length
+                        def customHrs = settings["z${i}BtnOverrideHours"]
+                        setManualOverride(i, "Button ${requestedSpeed.toUpperCase()}", customHrs)
+                        
+                        if (fanType == "switch") {
+                            def sDev = settings["z${i}SimpleFan"]
+                            if (sDev) {
+                                pauseOverrideDetection(i, 30) // Setup Blind Spot
+                                if (requestedSpeed == "off") {
+                                    setExpectedState(i, "simpleFan", "off")
+                                    sDev.off()
+                                } else {
+                                    setExpectedState(i, "simpleFan", "on")
+                                    sDev.on()
+                                }
+                                runIn(5, "refreshSwitch", [data: [room: i, type: "simple"], overwrite: false])
+                            }
+                        } else {
+                            def fDev = settings["z${i}Fan"]
+                            def pDev = settings["z${i}Power"]
+                            
+                            if (state["z${i}Target"] != requestedSpeed) {
+                                state["z${i}Target"] = requestedSpeed
+                                updateWiggleReset(i)
+                            }
+                            
+                            // If relay is off, trigger it to ON, wait, then step fan
+                            if (requestedSpeed != "off" && pDev && pDev.currentValue("switch") != "on") {
+                                pauseOverrideDetection(i, 30) // Setup Blind Spot
+                                setExpectedState(i, "power", "on")
+                                pDev.on()
+                                runIn(5, "refreshSwitch", [data: [room: i, type: "power"], overwrite: false])
+                                runInMillis(1500, "stepFanTrigger", [data: [room: i], overwrite: false])
+                            } else {
+                                stepFan(i)
                             }
                         }
                     }
-                    
-                    logAction("Free Cooling Favorable. Waiting ${timeoutMins} mins for windows to open.")
-                    if (freeCoolNotify) freeCoolNotify.deviceNotification(notifyMsg)
-                    runIn(timeoutMins * 60, freeCoolTimeoutHandler)
-                }
-                return 85.0 
-            } else if (state.freeCoolState == "pending" || state.freeCoolState == "active") {
-                return 85.0 
-            }
-        } else {
-            if (state.freeCoolState != "idle") {
-                state.freeCoolState = "idle"
-                state.freeCoolTargetTime = null
-                unschedule(freeCoolTimeoutHandler)
-                disengageFreeCooling()
-            }
-        }
-    }
-    return state.freeCoolState in ["pending", "active"] ? 85.0 : currentCoolTarget
-}
-
-def freeCoolTimeoutHandler() {
-    if (state.freeCoolState == "pending") {
-        logAction("Free Cooling Aborted: Windows were not opened in time. Resuming standard AC.")
-        if (freeCoolNotify) freeCoolNotify.deviceNotification("Windows not opened. Free Cooling aborted and standard AC resumed.")
-        state.freeCoolState = "lockedOut"
-        state.freeCoolTargetTime = null
-        evaluateSystem()
-    }
-}
-
-def engageFreeCooling() {
-    logAction("Free Cooling ACTIVE: AC suspended.")
-    state.fcStartTime = now()
-  
-    if (freeCoolSwitch) freeCoolSwitch.on()
-    
-    def isSickMode = sickModeSwitch && sickModeSwitch.currentValue("switch") == "on"
-    if (freeCoolFan && thermostat && !isSickMode) {
-        logAction("Free Cooling: Turning HVAC Fan ON to circulate outside air.")
-        if (thermostat.hasCommand("setThermostatFanMode")) thermostat.setThermostatFanMode("on")
-    }
-}
-
-def disengageFreeCooling() {
-    logAction("Free Cooling disabled or weather reset. Restoring AC.")
-    if (state.fcStartTime) trackFreeCoolingSavings()
-    if (freeCoolSwitch) freeCoolSwitch.off()
-    
-    def isSickMode = sickModeSwitch && sickModeSwitch.currentValue("switch") == "on"
-    if (freeCoolFan && thermostat && thermostat.currentValue("thermostatFanMode") != "auto" && !isSickMode) {
-        logAction("Free Cooling Ended: Restoring HVAC Fan to Auto.")
-        if (thermostat.hasCommand("setThermostatFanMode")) thermostat.setThermostatFanMode("auto")
-    } else if (isSickMode) {
-        logAction("Free Cooling Ended: Sick Mode is active, keeping Fan ON.")
-    }
-    
-    if (freeCoolNotify) freeCoolNotify.deviceNotification("Free Cooling ended. Please close the windows.")
-}
-
-def trackFreeCoolingSavings() {
-    if (!state.fcStartTime) return
-    def fcMins = (now() - state.fcStartTime) / 60000.0
-    state.fcStartTime = null 
-    
-    def estimatedSavedRunMins = fcMins * 0.30 
-    
-    def today = new Date().format("yyyy-MM-dd", location.timeZone)
-    if (!state.runHistory) state.runHistory = [:]
-    if (!state.runHistory[today]) state.runHistory[today] = [cool: 0.0, heat: 0.0, aux: 0.0, fcSavedMins: 0.0, runs: 0]
-    
-    state.runHistory[today].fcSavedMins = (state.runHistory[today].fcSavedMins ?: 0.0) + estimatedSavedRunMins
-    logAction("ROI: Logged ${String.format('%.1f', estimatedSavedRunMins)} minutes of estimated avoided compressor runtime via Free Cooling.")
-}
-
-def evaluateSystem() {
-    if (!thermostat) return
-    if (state.fireEmergency) {
-        if (thermostat.currentValue("thermostatMode") != "off") thermostat.setThermostatMode("off")
-        return
-    }
-    
-    if (appEnableSwitch && appEnableSwitch.currentValue("switch") == "off") return
-    
-    def evalMode = location.mode
-    def modeHoldMsg = ""
-    
-    if (enableMinRuntime && delayModeChangeForMinRun && state.currentAction in ["cooling", "heating"] && state.cycleStartTime) {
-        def runMins = (now() - state.cycleStartTime) / 60000.0
-        if (runMins < (minRunTime ?: 10)) {
-            if (state.cycleStartMode && state.cycleStartMode != location.mode) {
-                evalMode = state.cycleStartMode
-                modeHoldMsg = " [Mode Change Delayed: Finishing Compressor Protection]"
-                if (!state.modeDelayLogged) {
-                    logAction("Mode changed to ${location.mode}, but Compressor Protection is active. Simulating ${state.cycleStartMode} for the remaining run time.")
-                    state.modeDelayLogged = true
                 }
             }
         }
     }
+}
 
-    if (allowedModes && !(allowedModes as List).contains(evalMode)) return
-    if (state.windowOpenHold || state.manualHold || state.isBuffering) return 
-    
-    def isAway = awayModes ? (awayModes as List).contains(evalMode) : false
-    def isNight = nightModes ? (nightModes as List).contains(evalMode) : false
-    def isAlignmentModeAllowed = !alignmentModes || (alignmentModes as List).contains(evalMode)
-    
-    def targetCool = homeCoolingSetpoint ?: 74.0; def targetHeat = homeHeatingSetpoint ?: 68.0
-    def isMoneySaving = moneySavingSwitch && moneySavingSwitch.currentValue("switch") == "on"
+// === ENERGY ROI TRACKING ===
 
-    if (isMoneySaving) { 
-        targetCool = moneySavingCoolingSetpoint ?: 80.0
-        targetHeat = moneySavingHeatingSetpoint ?: 60.0 
-    } else if (isNight) { 
-        targetCool = nightCoolingSetpoint ?: 70.0
-        targetHeat = nightHeatingSetpoint ?: 66.0 
-    } else if (isAway) { 
-        targetCool = awayCoolingSetpoint ?: 78.0
-        targetHeat = awayHeatingSetpoint ?: 62.0 
-    }
+def calculateEnergyData() {
+    def rate = settings.energyRate != null ? settings.energyRate.toBigDecimal() : 0.12
+    def useMaxForSavings = settings.calcSavingsAtMax != false
+    def hours = 5.0 / 60.0 
     
-    // Check if we can release a previous alignment lockout based on local ambient recovery
-    def currentLocalTemp = thermostat.currentValue("temperature")?.toBigDecimal()
-    if (currentLocalTemp != null) {
-        if (state.alignmentLockout == "cooling" && currentLocalTemp >= (state.alignmentLockoutTarget ?: targetCool)) {
-            state.alignmentLockout = null
-            logAction("Local temperature recovered to ${state.alignmentLockoutTarget}°. Dynamic Setpoint Alignment re-enabled.")
-        } else if (state.alignmentLockout == "heating" && currentLocalTemp <= (state.alignmentLockoutTarget ?: targetHeat)) {
-            state.alignmentLockout = null
-            logAction("Local temperature recovered to ${state.alignmentLockoutTarget}°. Dynamic Setpoint Alignment re-enabled.")
+    for (int i = 1; i <= 8; i++) {
+        if (settings["enableZ${i}"] && settings["z${i}WattMax"]) {
+            def maxW = settings["z${i}WattMax"].toBigDecimal()
+            def minW = (settings["z${i}WattMin"] ?: (maxW / 3.0)).toBigDecimal()
+            def rawFanType = settings["z${i}FanType"] ?: "speed3"
+            def fanType = (rawFanType == "speed") ? "speed3" : rawFanType
+            
+            def fDev = settings["z${i}Fan"]
+            def sDev = settings["z${i}SimpleFan"]
+            def pDev = settings["z${i}Power"]
+            def currentSpeedStr = "off"
+            
+            if ((fanType.startsWith("speed") || fanType == "fixed") && fDev) {
+                currentSpeedStr = fDev.currentValue("speed") ?: "off"
+                // Ensure wattage evaluates to 0 if the master relay is killed
+                if (pDev && pDev.currentValue("switch") == "off") {
+                    currentSpeedStr = "off"
+                }
+            }
+            else if (fanType == "switch" && sDev) currentSpeedStr = sDev.currentValue("switch") == "on" ? "high" : "off"
+            
+            def cWatts = getWattsForSpeed(currentSpeedStr, fanType, minW, maxW)
+            
+            if (cWatts > 0) {
+                def kwh = (cWatts * hours) / 1000.0
+                def cost = kwh * rate
+                def dCostMap = state.dailyCost ?: [:]
+                dCostMap[i.toString()] = (dCostMap[i.toString()] ?: 0.0) + cost
+                state.dailyCost = dCostMap
+            }
+            
+            def zTimeoutMs = (settings["z${i}OccupancyTimeout"] ?: 30) * 60000
+            def isOccupied = getRoomOccupancy(i, zTimeoutMs)
+            def isAway = awayModes ? (awayModes as List).contains(location.mode) : false
+            
+            if ((!isOccupied || isAway) && currentSpeedStr == "off") {
+                def savingsWatts = useMaxForSavings ? maxW : ((minW + maxW) / 2.0)
+                def kwhSaved = (savingsWatts * hours) / 1000.0
+                def savedCost = kwhSaved * rate
+                def dSavedMap = state.dailySaved ?: [:]
+                dSavedMap[i.toString()] = (dSavedMap[i.toString()] ?: 0.0) + savedCost
+                state.dailySaved = dSavedMap
+            }
         }
     }
+}
 
-    if (!isNight && !isMoneySaving) {
-        if (state.isAdaptiveRecovering) { targetCool = homeCoolingSetpoint ?: 74.0; targetHeat = homeHeatingSetpoint ?: 68.0 }
-        if (enablePeakShaving && state.isPeakHours) { targetCool += (peakCoolingOffset ?: 3.0); targetHeat -= (peakHeatingOffset ?: 3.0) }
-        if (enableDehumidification && state.dehumidifyingStage == 2) { targetCool -= (acDehumidifyOffset ?: 2.0) }
-        if (enablePreCondition && state.isPreConditioning) { targetCool = (homeCoolingSetpoint ?: 74.0) - (preCoolOffset ?: 3.0) }
+def dailyEnergyRollover() {
+    logAction("Running daily ROI Rollover...")
+    
+    def hCost = state.historyCost ?: [:]
+    def hSaved = state.historySaved ?: [:]
+    def dCost = state.dailyCost ?: [:]
+    def dSaved = state.dailySaved ?: [:]
+    
+    for (int i = 1; i <= 8; i++) {
+        if (settings["enableZ${i}"] && settings["z${i}WattMax"]) {
+            def iStr = i.toString()
+            def listCost = hCost[iStr] ?: []
+            listCost.add(dCost[iStr] ?: 0.0)
+            if (listCost.size() > 7) listCost = listCost.takeRight(7)
+            hCost[iStr] = listCost
+         
+            def listSaved = hSaved[iStr] ?: []
+            listSaved.add(dSaved[iStr] ?: 0.0)
+            if (listSaved.size() > 7) listSaved = listSaved.takeRight(7)
+            hSaved[iStr] = listSaved
+            
+            dCost[iStr] = 0.0
+            dSaved[iStr] = 0.0
+        }
     }
+    
+    state.historyCost = hCost
+    state.historySaved = hSaved
+    state.dailyCost = dCost
+    state.dailySaved = dSaved
+}
+
+def hubRestartHandler(evt) {
+    logAction("System Startup/Reboot detected. Waiting 60 seconds for mesh network to settle before syncing fans...")
+    runIn(60, "evaluateFans")
+}
+
+def appButtonHandler(btn) {
+    if (btn == "btnRefresh") {
+        logInfo("Dashboard data manually refreshed by user.")
+    } else if (btn == "btnResetOverrides") {
+        state.overrideUntil = [:]
+        state.ignoreOverridesUntil = [:] 
+        logAction("User manually cleared all overrides.")
+        evaluateFans()
+    } else if (btn == "btnClearROI") {
+        state.dailyCost = [:]
+        state.dailySaved = [:]
+        state.historyCost = [:]
+        state.historySaved = [:]
+        logAction("User manually cleared all ROI energy data.")
+    }
+}
+
+def modeChangeHandler(evt) {
+    logAction("Location mode changed to: ${evt.value}. Clearing all manual overrides.")
+    state.overrideUntil = [:]
+    state.ignoreOverridesUntil = [:]
+    
+    def isNight = nightModes ? (nightModes as List).contains(evt.value) : false
     
     if (!isNight) {
-        targetCool = checkFreeCooling(targetCool, evalMode)
-    } else {
-        if (state.freeCoolState != "idle") {
-            state.freeCoolState = "idle"
-            state.freeCoolTargetTime = null
-            unschedule(freeCoolTimeoutHandler)
-            disengageFreeCooling()
-        }
-    }
-    
-    def baseCool = targetCool
-    def baseHeat = targetHeat
-    
-    // --- Auto-Swap & Hysteresis Conflict Resolution ---
-    def baseSwapDB = enableAutoSwap ? (autoSwapDeadband ?: 1.0) : 1.0
-    def safeSwapDB = baseSwapDB
-    
-    if (enableAverageSync && isAlignmentModeAllowed && enableHysteresis) {
-        def drift = hysteresisDrift ?: 1.0
-        // Ensure the Auto-Swap threshold doesn't overlap or compete with the Hysteresis Drift
-        if (safeSwapDB <= drift) {
-            safeSwapDB = drift + 0.5
-        }
-    }
-    
-    def isYoYoCooldown = state.yoyoCooldownEnds && now() < state.yoyoCooldownEnds
-    def yoyoMins = yoyoCooldownMins != null ? yoyoCooldownMins : 15
-    
-    // --- Stage 1: Hysteresis & Deadband Evaluation ---
-    def isHysteresisIdle = false
-    def hysMessage = ""
-    if (enableAverageSync && isAlignmentModeAllowed && enableHysteresis && thermostat.currentValue("temperature") != null) {
-        def currentAvg = getAverageTemp()
-        def drift = hysteresisDrift ?: 1.0
-        def recovery = hysteresisRecovery ?: 0.5
-        
-        if (state.activeHysteresis == null || state.activeHysteresis == "idle") {
-            if (currentAvg >= (baseCool + drift)) {
-                state.activeHysteresis = "cooling"
-                logAction("Stage 1 Hysteresis: Temp drifted to ${currentAvg}° (+${drift}° limit). Initiating Cooling Recovery to ${baseCool + recovery}°.")
-            } else if (currentAvg <= (baseHeat - drift)) {
-                state.activeHysteresis = "heating"
-                logAction("Stage 1 Hysteresis: Temp drifted to ${currentAvg}° (-${drift}° limit). Initiating Heating Recovery to ${baseHeat - recovery}°.")
-            } else {
-                isHysteresisIdle = true
-                hysMessage = " [Stage 1: Floating in Deadband]"
-            }
-        } else if (state.activeHysteresis == "cooling") {
-            if (currentAvg <= (baseCool + recovery)) {
-                state.activeHysteresis = "idle"
-                isHysteresisIdle = true
-                logAction("Stage 1 Hysteresis: Cooled to ${currentAvg}° (Within ${recovery}° of target). Satisfied and entering Idle.")
-                hysMessage = " [Stage 1: Recovery Satisfied]"
-            } else {
-                hysMessage = " [Stage 1: Active Cool Recovery]"
-            }
-        } else if (state.activeHysteresis == "heating") {
-            if (currentAvg >= (baseHeat - recovery)) {
-                state.activeHysteresis = "idle"
-                isHysteresisIdle = true
-                logAction("Stage 1 Hysteresis: Heated to ${currentAvg}° (Within ${recovery}° of target). Satisfied and entering Idle.")
-                hysMessage = " [Stage 1: Recovery Satisfied]"
-            } else {
-                hysMessage = " [Stage 1: Active Heat Recovery]"
+        logAction("Mode transition to ${evt.value}. Enforcing a 10-minute manual override lockout to allow mesh to settle.")
+        for (int i = 1; i <= 8; i++) {
+            if (settings["enableZ${i}"]) {
+                pauseOverrideDetection(i, 600)
             }
         }
-    } else {
-        state.activeHysteresis = "idle"
     }
 
-    // --- Dynamic Setpoint Alignment ---
-    def syncMessage = ""
-    if (enableAverageSync && isAlignmentModeAllowed && thermostat.currentValue("temperature") != null) {
-        
-        if (state.alignmentLockout) {
-            syncMessage = " [Alignment Suspended: Awaiting Temp Recovery]"
-        } else if (isYoYoCooldown) {
-            syncMessage = " [Alignment Paused: ${yoyoMins}-Min Yo-Yo Cooldown]"
-        } else {
-            def tstatTemp = thermostat.currentValue("temperature").toBigDecimal()
-            def currentAvg = getAverageTemp()
-            
-            if (enableHysteresis && isHysteresisIdle) {
-                // Bracket the physical thermostat to forcefully keep it IDLE while the average floats
-                targetCool = (tstatTemp + 1.5).toBigDecimal().setScale(0, BigDecimal.ROUND_HALF_UP)
-                targetHeat = (tstatTemp - 1.5).toBigDecimal().setScale(0, BigDecimal.ROUND_HALF_UP)
-                syncMessage = hysMessage
-            } else {
-                def offset = (currentAvg - tstatTemp)
-                def maxShift = maxSyncOffset ?: 3.0
-                
-                if (offset > maxShift) offset = maxShift
-                if (offset < -maxShift) offset = -maxShift
-                
-                if (offset != 0.0) {
-                    def calcCool = (targetCool - offset).toBigDecimal().setScale(0, BigDecimal.ROUND_HALF_UP)
-                    def calcHeat = (targetHeat - offset).toBigDecimal().setScale(0, BigDecimal.ROUND_HALF_UP)
-                    
-                    // If Hysteresis is disabled, fall back to basic smart snap-back
-                    if (!enableHysteresis) {
-                        def coolSnapped = false
-                        if (calcCool < baseCool && currentAvg <= baseCool) coolSnapped = true
-                        def heatSnapped = false
-                        if (calcHeat > baseHeat && currentAvg >= baseHeat) heatSnapped = true
-                        
-                        if (coolSnapped || heatSnapped) {
-                            calcCool = baseCool
-                            calcHeat = baseHeat
-                            syncMessage = " [Alignment Satisfied: System Idle, Snapped to Base]"
-                        } else {
-                            syncMessage = " [Alignment Active: Shifted by ${String.format('%.1f', -offset)}°]"
-                        }
-                    } else {
-                        syncMessage = hysMessage + " [Shifted by ${String.format('%.1f', -offset)}°]"
-                    }
-                    
-                    targetCool = calcCool
-                    targetHeat = calcHeat
-                    
-                    // --- ANTI-YOYO CLAMP ---
-                    if (targetCool <= (baseHeat + safeSwapDB)) {
-                        targetCool = baseHeat + safeSwapDB + 1.0
-                        targetHeat = targetCool - 3.0 
-                        syncMessage += " [Clamped: Hit Heating Floor]"
-                    }
-                    else if (targetHeat >= (baseCool - safeSwapDB)) {
-                        targetHeat = baseCool - safeSwapDB - 1.0
-                        targetCool = targetHeat + 3.0 
-                        syncMessage += " [Clamped: Hit Cooling Ceiling]"
-                    }
-                }
-            }
-        }
-    } else if (enableAverageSync && !isAlignmentModeAllowed) {
-        state.alignmentLockout = null // Clear any lockouts when transitioning to a disabled mode
-    }
-    
-    // --- Universal Deadband Enforcer ---
-    def hardwareDeadband = 3.0
-    if ((targetCool - targetHeat) < hardwareDeadband) {
-        targetHeat = (targetCool - hardwareDeadband).toBigDecimal().setScale(0, BigDecimal.ROUND_HALF_UP)
-        if (!syncMessage.contains("Clamped") && !syncMessage.contains("Satisfied") && !syncMessage.contains("Suspended")) syncMessage += " [Deadband Enforced]"
-    }
-    // -----------------------------------
-
-    if (enableMinRuntime && state.currentAction in ["cooling", "heating"] && state.cycleStartTime) {
-        def runMins = (now() - state.cycleStartTime) / 60000.0
-        if (runMins < (minRunTime ?: 10)) {
-            
-            def localTemp = thermostat.currentValue("temperature")?.toBigDecimal() ?: targetCool
-            def buffer = setpointBuffer ?: 2.0
-            
-            if (state.currentAction == "cooling") {
-                if (targetCool > thermostat.currentValue("coolingSetpoint").toBigDecimal()) {
-                    targetCool = thermostat.currentValue("coolingSetpoint").toBigDecimal()
-                    syncMessage += " [Compressor Protection: Lockout Prevented Setpoint Rise]"
-                }
-                // Force target below physical temp to prevent the thermostat from deciding to shut down locally
-                if (targetCool >= localTemp) {
-                    targetCool = localTemp - 1.0
-                    def minAllowed = baseCool - buffer
-                    
-                    if (targetCool < minAllowed) {
-                        targetCool = minAllowed
-                        
-                        // If clamped limit is still above local temp, the physical stat will shut off anyway
-                        if (targetCool >= localTemp) {
-                             syncMessage += " [CRITICAL: Cannot protect compressor. Min buffer limit reached.]"
-                        }
-                        
-                        if (enableAverageSync && isAlignmentModeAllowed && !state.alignmentLockout) {
-                            state.alignmentLockout = "cooling"
-                            state.alignmentLockoutTarget = baseCool
-                            syncMessage += " [CRITICAL: Max Buffer Hit. Alignment ABORTED until temp recovers]"
-                        } else {
-                            syncMessage += " [Compressor Protection: Clamped to Max Buffer (-${buffer}°)]"
-                        }
-                    } else {
-                        syncMessage += " [Compressor Protection: Pushed below local temp to maintain run]"
-                    }
-                }
-            }
-    
-            else if (state.currentAction == "heating") {
-                if (targetHeat < thermostat.currentValue("heatingSetpoint").toBigDecimal()) {
-                    targetHeat = thermostat.currentValue("heatingSetpoint").toBigDecimal()
-                    syncMessage += " [Compressor Protection: Lockout Prevented Setpoint Drop]"
-                }
- 
-                // Force target above physical temp to prevent the thermostat from deciding to shut down locally
-                if (targetHeat <= localTemp) {
-                    targetHeat = localTemp + 1.0
-                    def maxAllowed = baseHeat + buffer
- 
-                    if (targetHeat > maxAllowed) {
-                        targetHeat = maxAllowed
-                        
-                        if (targetHeat <= localTemp) {
-                             syncMessage += " [CRITICAL: Cannot protect compressor. Max buffer limit reached.]"
-                        }
-                        
-                        if (enableAverageSync && isAlignmentModeAllowed && !state.alignmentLockout) {
-                            state.alignmentLockout = "heating"
-                            state.alignmentLockoutTarget = baseHeat
-                            syncMessage += " [CRITICAL: Max Buffer Hit. Alignment ABORTED until temp recovers]"
-                        } else {
-                            syncMessage += " [Compressor Protection: Clamped to Max Buffer (+${buffer}°)]"
-                        }
-                    } else {
-                        syncMessage += " [Compressor Protection: Pushed above local temp to maintain run]"
-                    }
-                }
-            }
-
-            if (enableAutoSwap) {
-                def minCoolFloor = baseHeat + safeSwapDB + 1.5 
-                def maxHeatCeiling = baseCool - safeSwapDB - 1.5
-                
-                if (state.currentAction == "cooling" && targetCool < minCoolFloor) {
-                    targetCool = minCoolFloor.toBigDecimal().setScale(0, BigDecimal.ROUND_HALF_UP)
-                    syncMessage += " [Compressor Protection: Protected against Heat Swap]"
-                }
-                else if (state.currentAction == "heating" && targetHeat > maxHeatCeiling) {
-                    targetHeat = maxHeatCeiling.toBigDecimal().setScale(0, BigDecimal.ROUND_HALF_UP)
-                    syncMessage += " [Compressor Protection: Protected against Cool Swap]"
-                }
-            }
-        }
-    }
-    
-    // --- AUX HEAT SUPPRESSION (GLIDING) ---
-    if (enableAuxSuppression && currentLocalTemp != null) {
-        def stepLimit = maxHeatStep ?: 1.5
-        if (targetHeat > (currentLocalTemp + stepLimit)) {
-            targetHeat = (currentLocalTemp + stepLimit).toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
-            syncMessage += " [Aux Suppressed: Heat target glided to ${targetHeat}°]"
-        }
-    }
-    
-    if (thermostat.currentValue("coolingSetpoint") != targetCool || thermostat.currentValue("heatingSetpoint") != targetHeat) {
-        state.expectedCool = targetCool; state.expectedHeat = targetHeat
-        state.lastCommandTime = now() // Track execution time to prevent network echo
-        thermostat.setCoolingSetpoint(targetCool)
-        thermostat.setHeatingSetpoint(targetHeat)
-        logAction("BMS Command -> Pushing Setpoints to Thermostat: COOL ${targetCool}° | HEAT ${targetHeat}°${syncMessage}${modeHoldMsg}")
-    }
-    
-    if (enableAutoSwap && !(state.freeCoolState in ["pending", "active"])) {
-        def currentAvg = getAverageTemp()
-        def tMode = thermostat.currentValue("thermostatMode")?.toLowerCase()
-    
-        if (tMode == "heat" || tMode == "cool" || tMode == "auto") {
-            if (currentAvg >= (targetCool + safeSwapDB) && tMode != "cool") {
-                logAction("BMS Command -> Auto-Swap triggered. Switching thermostat to COOL mode. (Temp: ${currentAvg}°, Target: ${targetCool}°, Safe DB: ${safeSwapDB}°)")
-                thermostat.setThermostatMode("cool")
-            } else if (currentAvg <= (targetHeat - safeSwapDB) && tMode != "heat") {
-                logAction("BMS Command -> Auto-Swap triggered. Switching thermostat to HEAT mode. (Temp: ${currentAvg}°, Target: ${targetHeat}°, Safe DB: ${safeSwapDB}°)")
-                thermostat.setThermostatMode("heat")
-            }
-        }
-    }
+    evaluateFans()
 }
 
-// Active Compressor Watchdog - Polls the system every 60 seconds while running to prevent premature local satisfaction
-def compressorWatchdog() {
-    if (state.currentAction in ["cooling", "heating"] && state.cycleStartTime) {
-        def runMins = (now() - state.cycleStartTime) / 60000.0
-    
-        if (runMins < (minRunTime ?: 10)) {
-            evaluateSystem() 
-            runIn(60, compressorWatchdog)
-        } else {
-            evaluateSystem() // Ensure final evaluation to push pending mode change targets
-        }
+def motionHandler(evt) {
+    if (evt.value == "active") {
+        def map = state.zoneLastActive ?: [:]
+        map[evt.device.id] = now()
+        state.zoneLastActive = map
+        evaluateFans()
     }
-}
-
-def contactHandler(evt) { 
-    def anyOpen = contactSensors ? contactSensors.any { it.currentValue("contact") == "open" } : false
- 
-    if (anyOpen && state.freeCoolState == "pending") {
-        logAction("Windows opened by user. Fully engaging Free Cooling.")
-        unschedule(freeCoolTimeoutHandler)
-        state.freeCoolState = "active"
-        state.freeCoolTargetTime = null
-        engageFreeCooling()
-        evaluateSystem()
-    } else if (!anyOpen && state.freeCoolState == "active") {
-        logAction("Windows closed by user. Ending Free Cooling.")
-        state.freeCoolState = "lockedOut"
-        disengageFreeCooling()
-        evaluateSystem()
-    }
-    
-    if (anyOpen && !state.windowOpenHold) { 
-        runIn((contactDelay ?: 3) * 60, executeWindowDefeat) 
-    } else if (!anyOpen && state.windowOpenHold) { 
-        logAction("Windows closed. Releasing HVAC Safety Defeat.")
-        state.windowOpenHold = false; unschedule(executeWindowDefeat); evaluateSystem() 
-    } else if (!anyOpen) unschedule(executeWindowDefeat) 
-}
-
-def executeWindowDefeat() { state.windowOpenHold = true; if (state.isBuffering) { state.isBuffering = false; unschedule(releaseBuffer) }; logAction("BMS Command -> Safety Defeat Active. Turning HVAC OFF."); thermostat.off() }
-
-def schedulePreConditioning() { if (enablePreCondition && weatherDevice && preCoolStartTime && preCoolEndTime) { schedule(preCoolStartTime, checkWeatherAndPrecool); schedule(preCoolEndTime, endPrecool) } }
-def checkWeatherAndPrecool() { def f = weatherDevice.currentValue("forecastHigh") ?: weatherDevice.currentValue("temperature"); if (f != null && f.toBigDecimal() >= (heatwaveThreshold ?: 90.0)) { state.isPreConditioning = true; evaluateSystem() } }
-def endPrecool() { if (state.isPreConditioning) { state.isPreConditioning = false; evaluateSystem() } }
-
-def scheduleAdaptiveRecoveryCheck() { if (enableAdaptive && expectedReturnTime) schedule("0 * * * * ?", checkAdaptiveRecovery) }
-def checkAdaptiveRecovery() {
-    def isAway = awayModes ? (awayModes as List).contains(location.mode) : false
-    if (!enableAdaptive || !expectedReturnTime || !isAway) { state.isAdaptiveRecovering = false; return }
-    def msUntilReturn = timeToday(expectedReturnTime).time - now()
-    if (msUntilReturn > 0 && msUntilReturn < 43200000) {
-        def currentAvg = getAverageTemp()
-        def isCoolingSeason = (currentAvg > (homeCoolingSetpoint ?: 74.0))
-        def delta = isCoolingSeason ? (currentAvg - (homeCoolingSetpoint ?: 74.0)) : ((homeHeatingSetpoint ?: 68.0) - currentAvg)
-        if (delta <= 0) return 
-        def hoursNeeded = delta / (isCoolingSeason ? (coolingGlide ?: 2.0) : (heatingGlide ?: 3.0))
-        if (msUntilReturn <= (hoursNeeded * 3600000).toLong() && !state.isAdaptiveRecovering) { state.isAdaptiveRecovering = true; evaluateSystem() }
-    }
-}
-
-def hvacStateHandler(evt) {
-    def stateVal = evt.value?.toLowerCase() ?: ""
-    if (stateVal == "cooling" || stateVal == "heating" || stateVal.contains("aux") || stateVal.contains("emergency")) {
-        state.cycleStartTime = now()
-        state.cycleStartMode = location.mode
-        state.modeDelayLogged = false
-        state.startTemp = thermostat.currentValue("temperature")
-        if (stateVal.contains("aux") || stateVal.contains("emergency")) { 
-            state.currentAction = "auxHeating" 
-        } else { 
-            state.currentAction = stateVal 
-        }
-        state.isBuffering = false
-        
-        def isNight = nightModes ? (nightModes as List).contains(location.mode) : false
-        
-        if (enableMinRuntime && !isNight && state.currentAction in ["cooling", "heating"]) {
-            
-            runIn(60, compressorWatchdog)
-            
-            def activeSetpoint = (state.currentAction == "cooling") ? thermostat.currentValue("coolingSetpoint") : thermostat.currentValue("heatingSetpoint")
-            def threshold = shortCycleThreshold ?: 1.0
-            
-            if (activeSetpoint != null && Math.abs(state.startTemp - activeSetpoint) <= threshold) {
-                logAction("BMS Command -> Compressor Protection Engaged! HVAC started within ${threshold}° of setpoint. Forcing minimum run time.")
-                engageBuffer(0)
-            }
-        }
-        
-        if (enableDeltaT && returnSensor && dischargeSensor) runIn((deltaTCheckDelay ?: 30) * 60, checkDeltaT)
-    } else if (stateVal == "idle" || stateVal == "pending cool" || stateVal == "pending heat") {
-        unschedule(checkDeltaT)
-        unschedule(compressorWatchdog)
-        
-        def yoyoMins = yoyoCooldownMins != null ? yoyoCooldownMins : 15
-        if (state.currentAction == "cooling") {
-            state.yoyoCooldownEnds = now() + (yoyoMins * 60000)
-            logAction("Cooling cycle complete. Starting ${yoyoMins}-Minute Anti-Yo-Yo Cooldown.")
-        }
-
-        if (state.isBuffering) releaseBuffer()
-        
-        if (state.cycleStartTime) {
-            def runMinutes = (now() - state.cycleStartTime) / 60000.0
-            if (enableFilterTracker) processFilterWear(runMinutes)
-            if (enableCostTracker && state.currentAction) trackEnergyCost(state.currentAction, runMinutes)
-            
-            if (state.currentAction && state.currentAction != "idle") {
-                trackRecentCycle(state.currentAction, runMinutes)
-                
-                if (enableMinRuntime && state.currentAction in ["cooling", "heating"]) {
-                    def targetMin = minRunTime ?: 10
-                    if (runMinutes < targetMin) {
-                        logAction("WARNING: Short-cycle detected! Compressor ran for ${String.format('%.1f', runMinutes)} mins (Goal: ${targetMin} mins).")
-                        if (enableShortCycleNotify && shortCycleNotifyDevices) {
-                            def alertMsg = "HVAC Alert: Short-cycle detected. ${state.currentAction.capitalize()} ran for only ${String.format('%.1f', runMinutes)} minutes."
-                            shortCycleNotifyDevices.deviceNotification(alertMsg)
-                        }
-                    }
-                }
-            }
-        }
-        state.cycleStartTime = null; state.currentAction = "idle"; state.cycleStartMode = null; state.modeDelayLogged = false
-        
-        evaluateSystem()
-    }
-}
-
-def trackEnergyCost(action, runMinutes) {
-    def today = new Date().format("yyyy-MM-dd", location.timeZone)
-    if (!state.runHistory) state.runHistory = [:]
-    if (!state.runHistory[today]) state.runHistory[today] = [cool: 0.0, heat: 0.0, aux: 0.0, fcSavedMins: 0.0, runs: 0]
-    
-    if (action == "cooling") state.runHistory[today].cool += runMinutes
-    if (action == "heating") state.runHistory[today].heat += runMinutes
-    if (action == "auxHeating") state.runHistory[today].aux += runMinutes
-    
-    if (action in ["cooling", "heating", "auxHeating"]) {
-        state.runHistory[today].runs = (state.runHistory[today].runs ?: 0) + 1
-    }
-    
-    def keys = state.runHistory.keySet().sort().reverse()
-    if (keys.size() > 7) { state.runHistory = state.runHistory.subMap(keys[0..6]) }
-}
-
-def renderCostDashboard() {
-    def liveFCSavingsMins = 0.0
-    if (state.fcStartTime) liveFCSavingsMins = ((now() - state.fcStartTime) / 60000.0) * 0.30
-    
-    def html = "<table class='dash-table' style='margin-top:0px;'><thead><tr><th>Date</th><th>Cooling</th><th>Heating</th><th>Aux Heat</th><th>Est. Cost</th><th>Est. Savings</th></tr></thead><tbody>"
-    def totalCost = 0.0; def totalSavings = 0.0
-    def keys = state.runHistory.keySet().sort().reverse()
-    def today = new Date().format("yyyy-MM-dd", location.timeZone)
-    
-    keys.each { date ->
-        def data = state.runHistory[date]
-        def cMins = data.cool ?: 0.0; def hMins = data.heat ?: 0.0; def aMins = data.aux ?: 0.0
-        def fcSavedMins = (data.fcSavedMins ?: 0.0) + (date == today ? liveFCSavingsMins : 0.0)
-    
-        def cCost = (cMins / 60.0) * (coolingKw ?: 4.6) * (costPerKwh ?: 0.15)
-        def hCost = (hMins / 60.0) * (heatingKw ?: 4.6) * (costPerKwh ?: 0.15)
-        def aCost = (aMins / 60.0) * (auxHeatingKw ?: 15.0) * (costPerKwh ?: 0.15)
-        def fcSavingsCost = (fcSavedMins / 60.0) * (coolingKw ?: 4.6) * (costPerKwh ?: 0.15)
-        
-        def dayCost = cCost + hCost + aCost
-        totalCost += dayCost
-        totalSavings += fcSavingsCost
-        
-        def auxStyle = aMins > 0 ? "color:red; font-weight:bold;" : ""
-        def saveStyle = fcSavingsCost > 0 ? "color:green; font-weight:bold;" : "color:gray;"
-        
-        html += "<tr><td>${date}</td><td>${String.format('%.1f', cMins/60.0)}h</td><td>${String.format('%.1f', hMins/60.0)}h</td><td style='${auxStyle}'>${String.format('%.1f', aMins/60.0)}h</td><td style='color:red;'>&#36;${String.format('%.2f', dayCost)}</td><td style='${saveStyle}'>+&#36;${String.format('%.2f', fcSavingsCost)}</td></tr>"
-    }
-    html += "<tr><td colspan='4' style='text-align:right;'><b>7-Day Totals:</b></td><td style='color:red;'><b>&#36;${String.format('%.2f', totalCost)}</b></td><td style='color:green;'><b>+&#36;${String.format('%.2f', totalSavings)}</b></td></tr>"
-    html += "</tbody></table>"
-    return html
 }
 
 def sensorHandler(evt) {
-    evaluateSystem()
+    runInMillis(2000, "evaluateFans")
+}
+
+// ==============================================================================
+// OVERRIDE & STATE HELPERS
+// ==============================================================================
+
+def updateWiggleReset(roomId) {
+    def map = state.wiggleResetTime ?: [:]
+    map[roomId.toString()] = now()
+    state.wiggleResetTime = map
+}
+
+def pauseOverrideDetection(roomId, seconds = 15) {
+    def map = state.ignoreOverridesUntil ?: [:]
+    map[roomId.toString()] = now() + (seconds * 1000)
+    state.ignoreOverridesUntil = map
+}
+
+def isDetectionPaused(roomId) {
+    def map = state.ignoreOverridesUntil ?: [:]
+    def expireTime = map[roomId.toString()]
+    if (expireTime && now() < expireTime.toLong()) return true
+    return false
+}
+
+def getRoomIdFromDevice(deviceId, devType) {
+    for (int i = 1; i <= 8; i++) {
+        if (settings["enableZ${i}"]) {
+            if (devType == "fan" && settings["z${i}Fan"]?.id == deviceId) return i
+            if (devType == "simpleFan" && settings["z${i}SimpleFan"]?.id == deviceId) return i
+            if (devType == "power" && settings["z${i}Power"]?.id == deviceId) return i
+        }
+    }
+    return null
+}
+
+def setExpectedState(roomId, type, val) {
+    if (type == "fan") {
+        def currentE = state["z${roomId}ExpectedSpeed"]
+        if (currentE && currentE != val) state["z${roomId}PreviousSpeed"] = currentE
+        state["z${roomId}ExpectedSpeed"] = val
+    }
+    if (type == "simpleFan") {
+        def currentE = state["z${roomId}ExpectedSimple"]
+        if (currentE && currentE != val) state["z${roomId}PreviousSimple"] = currentE
+        state["z${roomId}ExpectedSimple"] = val
+    }
     
+    if (type == "power") {
+        def currentE = state["z${roomId}ExpectedPower"]
+        if (currentE && currentE != val) state["z${roomId}PreviousPower"] = currentE
+        state["z${roomId}ExpectedPower"] = val
+    }
+}
+
+def setManualOverride(roomId, actionVal, customHours = null) {
+    def timeoutHrs = customHours != null ? customHours.toBigDecimal() : (settings.overrideTimeoutHours != null ? settings.overrideTimeoutHours.toBigDecimal() : 2.0)
+    def ms = (timeoutHrs * 3600000).toLong()
+    
+    def map = state.overrideUntil ?: [:]
+    map[roomId.toString()] = now() + ms
+    state.overrideUntil = map
+    
+    logAction("Manual override detected for Room ${roomId} (Set to ${actionVal.toUpperCase()}). Automation paused for ${timeoutHrs} hours.")
+    
+    def delaySecs = (ms / 1000).toInteger() + 5
+    runIn(delaySecs, "evaluateFans", [overwrite: false])
+}
+
+def isOverrideActive(roomId) {
+    def map = state.overrideUntil ?: [:]
+    def expireTime = map[roomId.toString()]
+ 
+    if (expireTime) {
+        if (now() < expireTime.toLong()) {
+            return true
+        } else {
+            map.remove(roomId.toString())
+            state.overrideUntil = map
+            logAction("Manual override expired for Room ${roomId}. Resuming automation.")
+            return false
+        }
+    }
+    return false
+}
+
+def fanSpeedHandler(evt) {
+    def roomId = getRoomIdFromDevice(evt.device.id, "fan")
+    if (!roomId) return
+    def expected = state["z${roomId}ExpectedSpeed"]
+    def target = state["z${roomId}Target"]
+    def prev = state["z${roomId}PreviousSpeed"]
+    
+    if (evt.value == target) {
+        state["z${roomId}ExpectedSpeed"] = evt.value
+        return
+    }
+
+    if (evt.value == expected) return
+
+    // TRANSITION LOCKOUT: If the app is actively stepping to a target, ignore all events to prevent false overrides
+    if (expected != target) {
+        logInfo("Room ${roomId} is transitioning. Ignoring ${evt.value} to prevent false override.")
+        return
+    }
+
+    if (isDetectionPaused(roomId)) return
+    
+    if (evt.value == prev && prev != expected) {
+        logInfo("Room ${roomId} reported previous speed (${evt.value}). Ignoring to prevent false override (likely stale polling or missed RF command).")
+        return
+    }
+    
+    if (evt.value != "unknown") {
+        def gnSwitch = settings["z${roomId}GnSwitch"]
+        if (gnSwitch && gnSwitch.currentValue("switch") == "on") {
+            if (state["z${roomId}Target"] != evt.value) updateWiggleReset(roomId)
+            state["z${roomId}ExpectedSpeed"] = evt.value
+            state["z${roomId}Target"] = evt.value
+        } else {
+            setManualOverride(roomId, evt.value)
+            if (state["z${roomId}Target"] != evt.value) updateWiggleReset(roomId)
+            state["z${roomId}ExpectedSpeed"] = evt.value
+            state["z${roomId}Target"] = evt.value 
+        }
+    }
+}
+
+def simpleFanHandler(evt) {
+    def roomId = getRoomIdFromDevice(evt.device.id, "simpleFan")
+    if (!roomId) return
+    def expected = state["z${roomId}ExpectedSimple"]
+    def prev = state["z${roomId}PreviousSimple"]
+    
+    if (evt.value == expected) return
+    if (isDetectionPaused(roomId)) return
+    
+    if (evt.value == prev && prev != expected) return 
+    
+    def gnSwitch = settings["z${roomId}GnSwitch"]
+    if (gnSwitch && gnSwitch.currentValue("switch") == "on") {
+        state["z${roomId}ExpectedSimple"] = evt.value
+    } else {
+        setManualOverride(roomId, "Relay ${evt.value}")
+        state["z${roomId}ExpectedSimple"] = evt.value
+    }
+}
+
+def powerRelayHandler(evt) {
+    def roomId = getRoomIdFromDevice(evt.device.id, "power")
+    if (!roomId) return
+    def expected = state["z${roomId}ExpectedPower"]
+    def prev = state["z${roomId}PreviousPower"]
+    
+    if (evt.value == expected) return
+    if (isDetectionPaused(roomId)) return
+    
+    if (evt.value == prev && prev != expected) return 
+    
+    def gnSwitch = settings["z${roomId}GnSwitch"]
+    if (gnSwitch && gnSwitch.currentValue("switch") == "on") {
+        state["z${roomId}ExpectedPower"] = evt.value
+    } else {
+        setManualOverride(roomId, "Master Relay ${evt.value}")
+        state["z${roomId}ExpectedPower"] = evt.value
+    }
+}
+
+// ==============================================================================
+// CORE LOGIC
+// ==============================================================================
+
+def getRoomOccupancy(roomId, timeoutMs) {
+    def actSwitch = settings["z${roomId}ActivitySwitch"]
+    if (actSwitch && actSwitch.currentValue("switch") == "on") return true
+
+    def mDevs = settings["z${roomId}Motion"]
+    if (!settings["enableOccupancy"] || !mDevs) return true
+    
+    for (mDev in mDevs) {
+        if (mDev.currentValue("motion") == "active") return true
+        
+        def lastActive = state.zoneLastActive ? state.zoneLastActive[mDev.id] : null
+        if (lastActive && (now() - lastActive.toLong()) <= timeoutMs) {
+            return true
+        }
+    }
+    
+    return false
+}
+
+def shouldKeepRelayOn(roomId, isOccupied, isAway, isNight) {
+    def alwaysOn = settings["z${roomId}RelayAlwaysOn"]
+    if (alwaysOn) return true
+
+    if (isAway || isNight) return false
+    
+    def pDev = settings["z${roomId}Power"]
+    if (!pDev) return false
+    
+    def keepUnocc = settings["z${roomId}KeepRelayUnoccupied"]
+    if (!isOccupied && keepUnocc) return true
+    
+    def smartRelay = settings["z${roomId}SmartRelay"]
+    if (smartRelay) {
+        def overcast = overcastSwitch?.currentValue("switch") == "on"
+        def shade = settings["z${roomId}ShadeContact"]
+        def shadeClosed = (shade && shade.currentValue("contact") == "closed")
+        
+        def s = getSunriseAndSunset()
+        def nowTime = new Date().time
+        def isDarkTime = s.sunset ? (nowTime > s.sunset.time || nowTime < s.sunrise.time) : false
+        
+        if (isDarkTime || overcast || shadeClosed) return true
+    }
+    
+    return false
+}
+
+def evaluateFans() {
+    if (appEnableSwitch && appEnableSwitch.currentValue("switch") == "off") return
+
+    def currentMode = location.mode
+    def isAway = awayModes ? (awayModes as List).contains(currentMode) : false
+    def isNight = nightModes ? (nightModes as List).contains(currentMode) : false
+    def isActive = homeModes ? (homeModes as List).contains(currentMode) : (!isAway && !isNight)
+
+    for (int i = 1; i <= 8; i++) {
+        def rawFanType = settings["z${i}FanType"] ?: "speed3"
+        def fanType = (rawFanType == "speed") ? "speed3" : rawFanType
+        def hasDevice = ((fanType.startsWith("speed") || fanType == "fixed") && settings["z${i}Fan"]) || (fanType == "switch" && settings["z${i}SimpleFan"])
+        
+        if (settings["enableZ${i}"] && hasDevice) {
+            def zName = settings["z${i}Name"] ?: "Room ${i}"
+            def gnSwitch = settings["z${i}GnSwitch"]
+            
+            // Absolute Isolation Check
+            if (gnSwitch && gnSwitch.currentValue("switch") == "on") continue
+            
+            def zTimeoutMs = (settings["z${i}OccupancyTimeout"] ?: 30) * 60000
+            def isOccupied = getRoomOccupancy(i, zTimeoutMs)
+            
+            // TRACK OCCUPANCY CHANGES FOR WIGGLE RESET
+            def prevOccMap = state.wasOccupied ?: [:]
+            if (prevOccMap[i.toString()] != isOccupied) {
+                updateWiggleReset(i)
+                prevOccMap[i.toString()] = isOccupied
+                state.wasOccupied = prevOccMap
+            }
+            
+            // IF NOT OVERRIDDEN BY USER, PROCEED WITH AUTOMATION
+            if (!isOverrideActive(i)) {
+                
+                // 1. AWAY MODE OR UNOCCUPIED LOGIC
+                if (isAway || !isOccupied) {
+                    def reason = isAway ? "Away Mode" : "Unoccupied"
+                    turnRoomOff(i, fanType, zName, reason)
+                }
+                // 2. GOOD NIGHT MODE LOGIC
+                else if (isNight) {
+                    turnRoomOff(i, fanType, zName, "Good Night Mode (Not Isolated)")
+                }
+                // 3. ACTIVE MODE LOGIC
+                else if (isActive && isOccupied) {
+                    def tDev = settings["z${i}Temp"]
+                    def hDev = settings["z${i}Hum"]
+                    def setpoint = settings["z${i}Setpoint"]
+                    def cMethod = settings["z${i}ControlMethod"] ?: "wetBulb"
+                    
+                    if (tDev && setpoint != null) {
+                        def tVal = tDev.currentValue("temperature")
+                        def hVal = hDev ? hDev.currentValue("humidity") : null
+                        
+                        if (tVal != null) {
+                            def controlTemp = tVal.toBigDecimal()
+                            def methodLabel = "DB"
+                            
+                            if (cMethod == "wetBulb") {
+                                if (hVal != null) {
+                                    controlTemp = getWetBulbF(tVal.toBigDecimal(), hVal.toBigDecimal())
+                                    methodLabel = "WB"
+                                } else {
+                                    logInfo("Warning: ${zName} is set to Wet Bulb but has no humidity data. Using Dry Bulb fallback.")
+                                }
+                            }
+                            
+                            if (fanType.startsWith("speed") || fanType == "fixed") {
+                                def fDev = settings["z${i}Fan"]
+                                def pDev = settings["z${i}Power"]
+                                def targetSpeed = calculateSpeedLevel(controlTemp, setpoint.toBigDecimal(), fanType, i)
+                                def delta = (controlTemp - setpoint.toBigDecimal()).setScale(1, BigDecimal.ROUND_HALF_UP)
+                            
+                                setFanTarget(i, fDev, pDev, zName, targetSpeed, "${methodLabel} Temp: ${controlTemp}°, Target: ${setpoint}°, Delta: +${delta}°")
+                            } else {
+                               def sDev = settings["z${i}SimpleFan"]
+                               evaluateSimpleFan(i, sDev, zName, controlTemp, setpoint.toBigDecimal(), methodLabel)
+                            }
+                        }
+                    }
+                }
+                
+                // 4. SMART LIGHTING RELAY PROACTIVE ENGAGEMENT & CLEANUP
+                if (fanType.startsWith("speed") || fanType == "fixed") {
+                    def fDev = settings["z${i}Fan"]
+                    def pDev = settings["z${i}Power"]
+                    
+                    if (pDev) {
+                        def targetSpeed = state["z${i}Target"] ?: "off"
+                        def pwrState = pDev.currentValue("switch")
+                        def keepOn = shouldKeepRelayOn(i, isOccupied, isAway, isNight)
+                        
+                        if (targetSpeed == "off") {
+                            if (keepOn && pwrState != "on") {
+                                logAction("Smart Lighting Needed: Proactively powering ON relay for ${zName}.")
+                                pauseOverrideDetection(i, 30) // Setup Blind Spot
+                                setExpectedState(i, "power", "on")
+                                pDev.on()
+                                runIn(5, "refreshSwitch", [data: [room: i, type: "power"], overwrite: false])
+                            } 
+                            else if (!keepOn && pwrState != "off" && fDev.currentValue("speed") == "off") {
+                                logAction("Smart Lighting conditions cleared. Sweeping power relay OFF for ${zName}.")
+                                pauseOverrideDetection(i, 30) // Setup Blind Spot
+                                setExpectedState(i, "power", "off")
+                                pDev.off()
+                                runIn(5, "refreshSwitch", [data: [room: i, type: "power"], overwrite: false])
+                            }
+                        }
+                    }
+                }
+            } 
+        }
+    }
+}
+
+def refreshSwitch(data) {
+    if (!data || !data.room || !data.type) return
+    def rNum = data.room
+    if (data.type == "power") {
+        def pDev = settings["z${rNum}Power"]
+        if (pDev && pDev.hasCommand("refresh")) pDev.refresh()
+    } else if (data.type == "simple") {
+        def sDev = settings["z${rNum}SimpleFan"]
+        if (sDev && sDev.hasCommand("refresh")) sDev.refresh()
+    }
+}
+
+def turnRoomOff(roomId, fanType, roomName, reason) {
+    if (fanType.startsWith("speed") || fanType == "fixed") {
+        def fDev = settings["z${roomId}Fan"]
+        def pDev = settings["z${roomId}Power"]
+        
+        def alwaysOn = settings["z${roomId}RelayAlwaysOn"]
+        def isAway = awayModes ? (awayModes as List).contains(location.mode) : false
+        def isNight = nightModes ? (nightModes as List).contains(location.mode) : false
+        
+        // Skip fan commands if Away/Night and no 24/7 relay requirement, to save network resources
+        if (pDev && !alwaysOn && (isAway || isNight)) {
+            if (state["z${roomId}Target"] != "off") {
+                logAction("Mode is ${isAway ? 'Away' : 'Good Night'}. Killing ${roomName} Master Relay directly (skipping fan speed commands to save hub resources).")
+                state["z${roomId}Target"] = "off"
+                updateWiggleReset(roomId)
+                setExpectedState(roomId, "fan", "off")
+            }
+            
+            if (pDev.currentValue("switch") != "off") {
+                pauseOverrideDetection(roomId, 30) // Setup Blind Spot
+                setExpectedState(roomId, "power", "off")
+                pDev.off()
+                runIn(5, "refreshSwitch", [data: [room: roomId, type: "power"], overwrite: false])
+            }
+        } else {
+            setFanTarget(roomId, fDev, pDev, roomName, "off", reason)
+        }
+    } else {
+        def sDev = settings["z${roomId}SimpleFan"]
+        if (sDev && sDev.currentValue("switch") != "off") {
+            logAction("Stopping ${roomName} simple fan relay. (${reason})")
+            pauseOverrideDetection(roomId, 30) // Setup Blind Spot
+            setExpectedState(roomId, "simpleFan", "off")
+            sDev.off()
+            runIn(5, "refreshSwitch", [data: [room: roomId, type: "simple"], overwrite: false])
+        }
+    }
+}
+
+// === SIMPLE FAN LOGIC ===
+def evaluateSimpleFan(roomId, switchDevice, roomName, currentTemp, targetSetpoint, label) {
+    if (!switchDevice) return
+    def delta = (currentTemp - targetSetpoint).setScale(1, BigDecimal.ROUND_HALF_UP)
+    
+    if (currentTemp >= targetSetpoint) {
+        if (switchDevice.currentValue("switch") != "on") {
+            logAction("Starting ${roomName} relay. (${label} Temp: ${currentTemp}°, Target: ${targetSetpoint}°, Delta: +${delta}°)")
+            pauseOverrideDetection(roomId, 30) // Setup Blind Spot
+            setExpectedState(roomId, "simpleFan", "on")
+            switchDevice.on()
+            runIn(5, "refreshSwitch", [data: [room: roomId, type: "simple"], overwrite: false])
+        }
+    } else if (currentTemp <= (targetSetpoint - 0.5)) {
+        if (switchDevice.currentValue("switch") != "off") {
+            logAction("Stopping ${roomName} relay. (Deadband satisfied: ${currentTemp}° <= ${targetSetpoint - 0.5}°)")
+            pauseOverrideDetection(roomId, 30) // Setup Blind Spot
+            setExpectedState(roomId, "simpleFan", "off")
+            switchDevice.off()
+            runIn(5, "refreshSwitch", [data: [room: roomId, type: "simple"], overwrite: false])
+        }
+    }
+}
+
+// === MULTI-SPEED FAN LOGIC ===
+def calculateSpeedLevel(currentTemp, targetSetpoint, fanType, roomId) {
+    def delta = currentTemp - targetSetpoint
+    if (delta <= 0) return "off"
+    
+    if (fanType == "fixed") {
+        return settings["z${roomId}FixedSpeed"] ?: "high"
+    }
+    
+    if (fanType == "speed3") {
+        def tLow = settings.thresholdLow != null ? settings.thresholdLow.toBigDecimal() : 1.5
+        def tMed = settings.thresholdMed != null ? settings.thresholdMed.toBigDecimal() : 3.0
+        if (delta <= tLow) return "low"
+        if (delta <= tMed) return "medium"
+        return "high"
+    } 
+    else if (fanType == "speed5") {
+        def t1 = settings.t5S1 != null ? settings.t5S1.toBigDecimal() : 0.5
+        def t2 = settings.t5S2 != null ? settings.t5S2.toBigDecimal() : 1.0
+        def t3 = settings.t5S3 != null ? settings.t5S3.toBigDecimal() : 1.5
+        def t4 = settings.t5S4 != null ? settings.t5S4.toBigDecimal() : 2.0
+        if (delta <= t1) return "low"
+        if (delta <= t2) return "medium-low"
+        if (delta <= t3) return "medium"
+        if (delta <= t4) return "medium-high"
+        return "high" 
+    }
+    else if (fanType == "speed6") {
+        def t1 = settings.t6S1 != null ? settings.t6S1.toBigDecimal() : 0.5
+        def t2 = settings.t6S2 != null ? settings.t6S2.toBigDecimal() : 1.0
+        def t3 = settings.t6S3 != null ? settings.t6S3.toBigDecimal() : 1.5
+        def t4 = settings.t6S4 != null ? settings.t6S4.toBigDecimal() : 2.0
+        def t5 = settings.t6S5 != null ? settings.t6S5.toBigDecimal() : 2.5
+        if (delta <= t1) return "low"
+        if (delta <= t2) return "medium-low"
+        if (delta <= t3) return "medium"
+        if (delta <= t4) return "medium-high"
+        if (delta <= t5) return "high"
+        return "auto" 
+    }
+    return "off" 
+}
+
+def setFanTarget(roomId, fDev, pDev, roomName, newTargetSpeed, reason) {
+    def currentTarget = state["z${roomId}Target"] ?: "off"
+    def rawFanType = settings["z${roomId}FanType"] ?: "speed3"
+    def fanType = (rawFanType == "speed") ? "speed3" : rawFanType
+    
+    // FIX: Stop processing if the fan is already exactly where it needs to be.
+    def currentSpeed = fDev ? (fDev.currentValue("speed") ?: "off") : "off"
+    if (currentTarget == newTargetSpeed && currentSpeed == newTargetSpeed) return
+
+    if (currentTarget != newTargetSpeed) {
+        if (fanType == "fixed") {
+            def actionStr = newTargetSpeed == "off" ? "Stopping" : "Starting"
+            logAction("${actionStr} ${roomName} directly to ${newTargetSpeed.toUpperCase()}. (${reason})")
+        } else {
+            def sMap = getSpeedLevels(fanType)
+            def currInt = sMap[currentTarget] ?: 0
+            def newInt = sMap[newTargetSpeed] ?: 0
+            
+            def actionStr = "Setting"
+            if (newTargetSpeed == "off") actionStr = "Stopping"
+            else if (currInt == 0) actionStr = "Starting"
+            else if (newInt > currInt) actionStr = "Increasing"
+            else actionStr = "Decreasing"
+            
+            logAction("${actionStr} ${roomName} to ${newTargetSpeed.toUpperCase()}. (${reason})")
+        }
+        
+        state["z${roomId}Target"] = newTargetSpeed
+        updateWiggleReset(roomId)
+    }
+
+    if (newTargetSpeed != "off" && pDev && pDev.currentValue("switch") != "on") {
+        logAction("Powering ON ${roomName} relay for active cooling.")
+        pauseOverrideDetection(roomId, 30) // Setup Blind Spot
+        setExpectedState(roomId, "power", "on")
+        pDev.on()
+        runIn(5, "refreshSwitch", [data: [room: roomId, type: "power"], overwrite: false])
+        runInMillis(1500, "stepFanTrigger", [data: [room: roomId], overwrite: false])
+        return
+    }
+    
+    stepFan(roomId)
+}
+
+def stepFanTrigger(data) { stepFan(data.room) }
+
+def stepFan(roomId) {
+    def fDev = settings["z${roomId}Fan"]
+    if (!fDev) return
+    
+    def gnSwitch = settings["z${roomId}GnSwitch"]
+    if (gnSwitch && gnSwitch.currentValue("switch") == "on") return
+    
+    def pDev = settings["z${roomId}Power"]
+    def alwaysOn = settings["z${roomId}RelayAlwaysOn"]
+    def isAway = awayModes ? (awayModes as List).contains(location.mode) : false
     def isNight = nightModes ? (nightModes as List).contains(location.mode) : false
     
-    if (!enableMinRuntime || isNight || state.currentAction == "idle" || state.isBuffering || !state.cycleStartTime) return
-    if (state.currentAction == "auxHeating") return
-    
-    def runMins = (now() - state.cycleStartTime) / 60000.0
-    if (runMins < 1.0 || runMins >= (minRunTime ?: 10)) return 
-    def dropRate = ((state.currentAction == "cooling" ? state.startTemp - thermostat.currentValue("temperature") : thermostat.currentValue("temperature") - state.startTemp)) / runMins
-    if (dropRate >= (tempDropThreshold ?: 0.5)) engageBuffer(runMins)
-}
-
-def engageBuffer(runMins) {
-    state.isBuffering = true
-    def bufferAmt = setpointBuffer ?: 2.0
-    def deadband = 3.0 
-    
-    if (state.currentAction == "cooling") { 
-        def newCool = (thermostat.currentValue("coolingSetpoint")?.toBigDecimal() ?: 72.0) - bufferAmt
-        def newHeat = (thermostat.currentValue("heatingSetpoint")?.toBigDecimal() ?: 68.0)
-        
-        if ((newCool - newHeat) < deadband) newHeat = newCool - deadband
-        
-        state.expectedCool = newCool; state.expectedHeat = newHeat
-        state.lastCommandTime = now()
-        thermostat.setCoolingSetpoint(newCool)
-        if (thermostat.currentValue("heatingSetpoint") != newHeat) thermostat.setHeatingSetpoint(newHeat)
-        
-        logAction("BMS Command -> Compressor Protection Engaged! Temperature dropping too fast. Target temporarily shifted to ${newCool}° to ensure minimum runtime.")
-    } else { 
-        def newHeat = (thermostat.currentValue("heatingSetpoint")?.toBigDecimal() ?: 68.0) + bufferAmt
-        def newCool = (thermostat.currentValue("coolingSetpoint")?.toBigDecimal() ?: 72.0)
- 
-        if ((newCool - newHeat) < deadband) newCool = newHeat + deadband
-        
-        state.expectedHeat = newHeat; state.expectedCool = newCool
-        state.lastCommandTime = now()
-        thermostat.setHeatingSetpoint(newHeat)
-        if (thermostat.currentValue("coolingSetpoint") != newCool) thermostat.setCoolingSetpoint(newCool)
-        
-        logAction("BMS Command -> Compressor Protection Engaged! Temperature rising too fast. Target temporarily shifted to ${newHeat}° to ensure minimum runtime.")
+    // Abort RF commands if power is cut during Away/Night to save resources
+    if (pDev && !alwaysOn && (isAway || isNight)) {
+        if (pDev.currentValue("switch") == "off") return
     }
     
-    runIn((((minRunTime ?: 10) - runMins) * 60).toInteger(), releaseBuffer)
-}
-
-def releaseBuffer() { 
-    state.isBuffering = false
+    def targetSpeed = state["z${roomId}Target"] ?: "off"
+    def currentSpeed = fDev.currentValue("speed") ?: "off"
     
-    def yoyoMins = yoyoCooldownMins != null ? yoyoCooldownMins : 15
-    if (state.currentAction == "cooling") {
-        state.yoyoCooldownEnds = now() + (yoyoMins * 60000)
-    }
+    def rawFanType = settings["z${roomId}FanType"] ?: "speed3"
+    def fanType = (rawFanType == "speed") ? "speed3" : rawFanType
     
-    logAction("Compressor Protection Buffer Complete. Restoring normal targets and starting Anti-Yo-Yo Cooldown.") 
-    evaluateSystem() 
-}
+    // Bypass stepping entirely for Fixed fans
+    if (fanType == "fixed") {
+        if (currentSpeed != targetSpeed) {
+            logAction("Commanding ${settings["z${roomId}Name"]} directly to ${targetSpeed.toUpperCase()}.")
+            pauseOverrideDetection(roomId, 60)
+            setExpectedState(roomId, "fan", targetSpeed)
+            fDev.setSpeed(targetSpeed)
+            
+            // Re-trigger to check if it reached target or needs power killed
+            runIn(rfStepDelay ?: 3, "stepFanTrigger", [data: [room: roomId], overwrite: false])
+        } else if (currentSpeed == "off" && targetSpeed == "off") {
+            if (pDev && pDev.currentValue("switch") != "off") {
+                // FIX: Check Smart Lighting requirements before scheduling a kill task
+                def timeoutMs = (settings["z${roomId}OccupancyTimeout"] ?: 30) * 60000
+                def isOccupied = getRoomOccupancy(roomId, timeoutMs)
+                if (shouldKeepRelayOn(roomId, isOccupied, isAway, isNight)) return 
 
-def checkDeltaT() { 
-    if (state.currentAction == "idle" || state.fireEmergency) return
-    def retT = returnSensor.currentValue("temperature")
-    def disT = dischargeSensor.currentValue("temperature")
-    if (retT == null || disT == null) return
-  
-    def dT = (state.currentAction == "cooling") ? (retT - disT) : (disT - retT)
-    if (dT < (state.currentAction == "cooling" ? (minCoolingDeltaT ?: 12.0) : (minHeatingDeltaT ?: 15.0))) { 
-        logAction("HVAC WARNING: Poor efficiency. Delta-T is ${String.format('%.1f', dT)}°F.")
-        
-        if (notifyDeltaT && notifyDevices) {
-            if (!state.lastDeltaTAlert || (now() - state.lastDeltaTAlert) > 86400000) { 
-                notifyDevices.deviceNotification("HVAC Alert: Poor efficiency detected. Delta-T is ${String.format('%.1f', dT)}°F. Unit may be freezing up or low on refrigerant.")
-                state.lastDeltaTAlert = now()
+                def spinDelay = relaySpinDown ?: 15
+                logAction("${settings["z${roomId}Name"]} blades are OFF. Scheduling power relay check in ${spinDelay} seconds.")
+                runIn(spinDelay, "killPowerRelay", [data: [room: roomId], overwrite: true])
             }
         }
-        
-        if (emergencyShutoff) thermostat.off() 
-    } else {
-        logAction("Delta-T Check Passed: ${String.format('%.1f', dT)}°F.")
+        return
     }
     
-    runIn((deltaTCheckDelay ?: 30) * 60, checkDeltaT)
-}
-
-def processFilterWear(actualRunMinutes) { 
-    def ind = indoorIAQ ? (indoorIAQ.currentValue("airQualityIndex") ?: 0) : 0
-    def out = outdoorIAQ ? (outdoorIAQ.currentValue("airQualityIndex") ?: 0) : 0
-    state.filterRunMinutes += (actualRunMinutes * (1.0 + (ind * 0.01) + (out * 0.002))) 
+    def sMap = getSpeedLevels(fanType)
+    def lMap = getLevelSpeeds(fanType)
     
-    if (notifyFilter && notifyDevices) {
-        def maxMins = (maxFilterHours ?: 300) * 60
-        def percentLeft = Math.max(0.0, 100.0 - ((state.filterRunMinutes / maxMins) * 100))
-        if (percentLeft < 10.0 && !state.filterAlertSent) {
-            notifyDevices.deviceNotification("HVAC Maintenance: Your air filter life is below 10%. Please replace it soon to maintain efficiency.")
-            state.filterAlertSent = true
+    def targetInt = sMap[targetSpeed] != null ? sMap[targetSpeed] : 0
+    def currentInt = sMap[currentSpeed] != null ? sMap[currentSpeed] : 0
+    def delay = rfStepDelay ?: 3
+    
+    if (currentInt < targetInt) {
+        def nextSpeed = lMap[currentInt + 1]
+        logAction("Stepping ${settings["z${roomId}Name"]} UP to ${nextSpeed.toUpperCase()}...")
+        pauseOverrideDetection(roomId, 60) // HUGE Blind Spot for sluggish cloud hubs
+        setExpectedState(roomId, "fan", nextSpeed)
+        fDev.setSpeed(nextSpeed)
+        runIn(delay, "stepFanTrigger", [data: [room: roomId], overwrite: false])
+    } 
+    else if (currentInt > targetInt) {
+        def nextSpeed = lMap[currentInt - 1]
+        logAction("Stepping ${settings["z${roomId}Name"]} DOWN to ${nextSpeed.toUpperCase()}...")
+        pauseOverrideDetection(roomId, 60) // HUGE Blind Spot for sluggish cloud hubs
+        setExpectedState(roomId, "fan", nextSpeed)
+        fDev.setSpeed(nextSpeed)
+        runIn(delay, "stepFanTrigger", [data: [room: roomId], overwrite: false])
+    } 
+    else if (currentInt == 0 && targetInt == 0) {
+        if (pDev && pDev.currentValue("switch") != "off") {
+            // FIX: Check Smart Lighting requirements before scheduling a kill task
+            def timeoutMs = (settings["z${roomId}OccupancyTimeout"] ?: 30) * 60000
+            def isOccupied = getRoomOccupancy(roomId, timeoutMs)
+            if (shouldKeepRelayOn(roomId, isOccupied, isAway, isNight)) return 
+
+            def spinDelay = relaySpinDown ?: 15
+            logAction("${settings["z${roomId}Name"]} blades are OFF. Scheduling power relay check in ${spinDelay} seconds.")
+            runIn(spinDelay, "killPowerRelay", [data: [room: roomId], overwrite: true])
         }
     }
 }
 
-def dailyMaintenanceCheck() {
-    if (!notifyMaintenance || !notifyDevices) return
-
-    def today = new Date()
-    def month = today.format("MM", location.timeZone).toInteger()
-    def day = today.format("dd", location.timeZone).toInteger()
-    def year = today.format("yyyy", location.timeZone)
-
-    // May 1st - Summer check
-    if (month == 5 && day == 1 && state.lastMaintenanceAlert != "summer_${year}") {
-        notifyDevices.deviceNotification("HVAC Reminder: Summer is approaching. It's time to schedule your AC maintenance check and clear the condensate drain line.")
-        state.lastMaintenanceAlert = "summer_${year}"
-    }
+def killPowerRelay(data) {
+    def roomId = data.room
+    def pDev = settings["z${roomId}Power"]
+    def currentTarget = state["z${roomId}Target"]
     
-    // October 1st - Winter check
-    if (month == 10 && day == 1 && state.lastMaintenanceAlert != "winter_${year}") {
-        notifyDevices.deviceNotification("HVAC Reminder: Winter is approaching. It's time to schedule your Heating maintenance check and test the ignitor/elements.")
-        state.lastMaintenanceAlert = "winter_${year}"
-    }
-}
-
-def humidityHandler(evt) { if (state.windowOpenHold || state.manualHold || state.fireEmergency || !enableDehumidification) return; def avgHum = getAverageHumidity(); if (avgHum > (maxHumidity ?: 55.0) && state.dehumidifyingStage == 0) { state.dehumidifyingStage = 1; if (dehumidifierPlugs) { state.savedPlugStates = dehumidifierPlugs.collectEntries { [it.id, it.currentValue("switch")] }; dehumidifierPlugs.on() }; runIn((dehumidifierTimeout ?: 45) * 60, checkDehumidifierProgress) } else if (avgHum <= ((maxHumidity ?: 55.0) - 2.0) && state.dehumidifyingStage > 0) { state.dehumidifyingStage = 0; unschedule(checkDehumidifierProgress); restorePlugs(); evaluateSystem() } }
-def checkDehumidifierProgress() { if (getAverageHumidity() > (maxHumidity ?: 55.0)) { state.dehumidifyingStage = 2; restorePlugs(); evaluateSystem() } }
-def restorePlugs() { if (dehumidifierPlugs && state.savedPlugStates) { dehumidifierPlugs.each { plug -> def orig = state.savedPlugStates[plug.id]; if (orig == "off") plug.off(); else if (orig == "on") plug.on() } }; state.savedPlugStates = null }
-def schedulePeakTimes() { if (enablePeakShaving && peakStartTime && peakEndTime) { schedule(peakStartTime, startPeak); schedule(peakEndTime, endPeak); def now = new Date(); if (now >= timeToday(peakStartTime) && now <= timeToday(peakEndTime)) state.isPeakHours = true } }
-def startPeak() { state.isPeakHours = true; evaluateSystem() }
-def endPeak() { state.isPeakHours = false; evaluateSystem() }
-
-def trackRecentCycle(action, runMinutes) {
-    if (!state.recentCycles) state.recentCycles = []
-    def timestamp = new Date().format("MM/dd hh:mm a", location.timeZone)
-    def formattedTime = String.format("%.1f", runMinutes)
+    def gnSwitch = settings["z${roomId}GnSwitch"]
+    if (gnSwitch && gnSwitch.currentValue("switch") == "on") return
     
-    def actionName = action.capitalize()
-    if (action == "auxHeating") actionName = "Aux Heat"
-    
-    def cycleLog = "[${timestamp}] ${actionName} ran for <b>${formattedTime} minutes</b>"
-    
-    state.recentCycles.add(0, cycleLog)
-    if (state.recentCycles.size() > 10) {
-        state.recentCycles = state.recentCycles[0..9]
+    if (currentTarget == "off" && pDev && pDev.currentValue("switch") != "off") {
+        def isAway = awayModes ? (awayModes as List).contains(location.mode) : false
+        def isNight = nightModes ? (nightModes as List).contains(location.mode) : false
+        
+        def timeoutMs = (settings["z${roomId}OccupancyTimeout"] ?: 30) * 60000
+        def isOccupied = getRoomOccupancy(roomId, timeoutMs)
+        
+        if (shouldKeepRelayOn(roomId, isOccupied, isAway, isNight)) {
+            logAction("Lighting Override Active: Blades stopped, but keeping Master Power Relay ON for Room ${roomId}.")
+            return
+        }
+        
+        logAction("Spin-down delay complete. No lighting overrides active. Killing power relay for Room ${roomId}.")
+        pauseOverrideDetection(roomId, 30) // Setup Blind Spot
+        setExpectedState(roomId, "power", "off")
+        pDev.off()
+        runIn(5, "refreshSwitch", [data: [room: roomId, type: "power"], overwrite: false])
     }
 }
 
-def logAction(msg) { if(txtEnable) log.info "${app.label}: ${msg}"; def h = state.actionHistory ?: []; h.add(0, "[${new Date().format("MM/dd hh:mm a", location.timeZone)}] ${msg}"); if(h.size()>30)h=h[0..29]; state.actionHistory=h }
+def doHourlyWiggle() {
+    logAction("Executing Hourly RF Fan Wiggle to verify speeds...")
+    
+    for (int i = 1; i <= 8; i++) {
+        def rawFanType = settings["z${i}FanType"] ?: "speed3"
+        def fanType = (rawFanType == "speed") ? "speed3" : rawFanType
+        
+        // Skip Wiggle for Fixed Speed fans
+        if (settings["enableZ${i}"] && fanType.startsWith("speed") && settings["z${i}Fan"]) {
+            def gnSwitch = settings["z${i}GnSwitch"]
+            if (gnSwitch && gnSwitch.currentValue("switch") == "on") continue 
+            
+            def pDev = settings["z${i}Power"]
+            if (pDev && pDev.currentValue("switch") == "off") continue // Skip if power is cut
+            
+            // --- NEW STABILITY CHECK ---
+            def zTimeoutMs = (settings["z${i}OccupancyTimeout"] ?: 30) * 60000
+            def isOccupied = getRoomOccupancy(i, zTimeoutMs)
+            def resetTime = state.wiggleResetTime ? state.wiggleResetTime[i.toString()] : null
+
+            if (isOccupied && resetTime) {
+                def elapsedHrs = (now() - resetTime.toLong()) / 3600000.0
+                if (elapsedHrs >= 2.0) {
+                    logInfo("Skipping wiggle for ${settings["z${i}Name"]}. Occupancy and target speed have been stable for ${elapsedHrs.setScale(1, BigDecimal.ROUND_HALF_UP)} hours.")
+                    continue
+                }
+            }
+            // ---------------------------
+            
+            def sMap = getSpeedLevels(fanType)
+            def lMap = getLevelSpeeds(fanType)
+            
+            def fDev = settings["z${i}Fan"]
+            def current = fDev.currentValue("speed") ?: "off"
+            def currentInt = sMap[current] != null ? sMap[current] : 0
+            def targetSpeed = state["z${i}Target"] ?: "off"
+            
+            if (currentInt > 0) {
+                def dropSpeed = lMap[currentInt - 1]
+                logAction("Wiggle: Dropping ${settings["z${i}Name"]} to ${dropSpeed.toUpperCase()} temporarily.")
+                pauseOverrideDetection(i, 60) 
+                setExpectedState(i, "fan", dropSpeed)
+                fDev.setSpeed(dropSpeed)
+            } 
+            else if (currentInt == 0 && targetSpeed == "off") {
+                logAction("Wiggle: Bumping ${settings["z${i}Name"]} to LOW to force Bond Bridge reset.")
+                pauseOverrideDetection(i, 60) 
+                setExpectedState(i, "fan", "low")
+                fDev.setSpeed("low")
+            }
+        }
+    }
+    
+    runIn(10, "restoreWiggleSpeeds")
+}
+
+def restoreWiggleSpeeds() {
+    logInfo("Wiggle delay complete. Restoring fan speeds...")
+    evaluateFans()
+    
+    // Explicitly restore speeds for overridden zones since evaluateFans ignores them
+    for (int i = 1; i <= 8; i++) {
+        if (settings["enableZ${i}"] && isOverrideActive(i)) {
+            stepFan(i) 
+        }
+    }
+}
+
+def getWetBulbF(tempF, rh) {
+    if (tempF == null || rh == null) return null
+    def tC = (tempF - 32.0) * 5.0 / 9.0
+    def twC = tC * Math.atan(0.151977 * Math.pow(rh + 8.313659, 0.5)) + Math.atan(tC + rh) - Math.atan(rh - 1.676331) + 0.00391838 * Math.pow(rh, 1.5) * Math.atan(0.023101 * rh) - 4.686035
+    def twF = (twC * 9.0 / 5.0) + 32.0
+    return twF.toBigDecimal().setScale(1, BigDecimal.ROUND_HALF_UP)
+}
+
+def logAction(msg) { 
+    if(txtEnable) log.info "${app.label}: ${msg}"
+    def h = state.actionHistory ?: []
+    h.add(0, "[${new Date().format("MM/dd hh:mm a", location.timeZone)}] ${msg}")
+    if(h.size() > 30) h = h[0..29]
+    state.actionHistory = h 
+}
+
 def logInfo(msg) { if(txtEnable) log.info "${app.label}: ${msg}" }
