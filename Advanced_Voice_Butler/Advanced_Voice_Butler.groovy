@@ -44,9 +44,11 @@ def mainPage() {
             def isDndSwitch = dndSwitch?.currentValue("switch") == "on"
             
             def dndState = (isDndSwitch || isDndMode) ? "<span style='color: #c0392b; font-weight: bold;'>ACTIVE (Do Not Disturb)</span>" : "<span style='color: #27ae60; font-weight: bold;'>STANDBY (Accepting Visitors)</span>"
+            def inetStatus = (!settings.enableInternetCheck || state.internetActive != false) ? "<span style='color: #27ae60; font-weight: bold;'>ONLINE</span>" : "<span style='color: #c0392b; font-weight: bold;'>OFFLINE (TTS Suppressed)</span>"
             
             def statusText = "<div style='margin-bottom: 10px; padding: 10px; background: #e9e9e9; border-radius: 4px; font-size: 13px; border: 1px solid #ccc;'>"
-            statusText += "<b>Perimeter Status:</b> ${dndState}</div>"
+            statusText += "<b>Perimeter Status:</b> ${dndState}<br>"
+            statusText += "<b>Internet Connection:</b> ${inetStatus}</div>"
             
             statusText += "<h4 style='margin-bottom: 5px; color: #333; font-family: sans-serif;'>Butler Incident Log</h4>"
             statusText += "<table style='width:100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; background-color: #fcfcfc; border: 1px solid #ccc; margin-bottom: 15px;'>"
@@ -139,12 +141,14 @@ def mainPage() {
                     def dName = settings["depUserName_${i}"]
                     if (dName) {
                         def sw = settings["depSwitch_${i}"]
+                        def sickSw = settings["depSickSwitch_${i}"]
                         def swState = sw ? sw.currentValue("switch") : "N/A"
+                        def sickSwState = sickSw?.currentValue("switch") == "on" ? " <span style='color: #c0392b;'>(SICK BYPASS ON)</span>" : ""
                         def swFmt = swState == "on" ? "<span style='color: #27ae60; font-weight: bold;'>ON</span>" : "<span style='color: #7f8c8d;'>OFF</span>"
                         def hasDeparted = state.hasDepartedToday ? state.hasDepartedToday[dName] : false
                         def depStatus = hasDeparted ? "<span style='color: #27ae60; font-weight: bold;'>Departed</span>" : "<span style='color: #7f8c8d;'>Pending/Inactive</span>"
                         
-                        statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${dName}</b></td><td style='padding: 8px;'>${sw?.displayName ?: 'None'} (${swFmt})</td><td style='padding: 8px;'>${depStatus}</td></tr>"
+                        statusText += "<tr style='border-bottom: 1px solid #ddd;'><td style='padding: 8px;'><b>${dName}</b></td><td style='padding: 8px;'>${sw?.displayName ?: 'None'} (${swFmt})${sickSwState}</td><td style='padding: 8px;'>${depStatus}</td></tr>"
                     }
                 }
                 statusText += "</table>"
@@ -200,6 +204,82 @@ def mainPage() {
             }
         }
         
+        section("Daytime Doorbell Acknowledgment", hideable: true, hidden: true) {
+            paragraph "<i>Keep visitors from leaving too soon and add a layer of daytime security. If the doorbell is pressed while Do Not Disturb is OFF, the system will instantly acknowledge them with one of the messages below.</i>"
+            
+            input "enableDaytimeDoorbell", "bool", title: "Enable Daytime Doorbell Acknowledgment?", defaultValue: false, submitOnChange: true
+            
+            if (enableDaytimeDoorbell) {
+                input "daytimeDoorbellVolume", "number", title: "Announcement Volume (0-100)", required: false, description: "Leave blank to use the default outdoor speaker volume."
+                input "daytimeDoorbellDebounce", "number", title: "Cooldown (Minutes)", defaultValue: 2, required: true, description: "Prevents the speaker from repeating if they spam the doorbell."
+                
+                paragraph "<b>Daytime Acknowledgment Messages (Randomized)</b>"
+                def dayDefs = [
+                    "Please wait a moment, I am notifying the homeowner.",
+                    "Someone will be right with you, please hold on.",
+                    "Thank you for ringing, please wait while I fetch someone.",
+                    "The residents have been notified, please wait.",
+                    "Just a moment please, someone is on the way.",
+                    "Please hold, someone will be at the door shortly.",
+                    "Thank you, please wait while I connect you with the homeowner.",
+                    "Someone will answer the door in just a moment.",
+                    "Please wait here, the homeowner is coming.",
+                    "I am alerting the family, please wait a moment.",
+                    "Hang tight, someone will be right out.",
+                    "Please wait, I'm calling the homeowner to the door.",
+                    "Give us just a second, someone is coming.",
+                    "Thank you for visiting, someone will be with you shortly.",
+                    "Please wait on the porch, I have alerted the house.",
+                    "We're on our way to the door, please hold.",
+                    "Just a moment, unlocking the door shortly.",
+                    "Please give us a moment to get to the door.",
+                    "Someone has been notified of your presence, please wait.",
+                    "Hold on just a second, the homeowner will be right there."
+                ]
+                for (int d = 1; d <= 20; d++) {
+                    input "daytimeMessage_${d}", "text", title: "Daytime Message ${d}", required: (d == 1), defaultValue: dayDefs[d-1]
+                }
+                
+                input "btnTestDaytime", "button", title: "▶️ Test Daytime Audio", description: "Test the daytime volume and a randomized message on the outdoor speaker."
+            }
+        }
+
+        section("After Hours Doorbell Intercept", hideable: true, hidden: true) {
+            paragraph "<i>Automatically intercept doorbell presses after a certain time (like 8:00 PM), even if standard DND is not turned on.</i>"
+            input "enableAfterHours", "bool", title: "Enable After Hours Intercept?", defaultValue: false, submitOnChange: true
+
+            if (enableAfterHours) {
+                input "afterHoursTimeStart", "time", title: "After Hours Start Time (e.g., 8:00 PM)", required: true
+                input "afterHoursTimeEnd", "time", title: "After Hours End Time (e.g., 8:00 AM)", required: true
+                input "afterHoursVolume", "number", title: "Announcement Volume (0-100)", required: false, description: "Leave blank to use the default outdoor speaker volume."
+                input "afterHoursDebounce", "number", title: "Cooldown (Minutes)", defaultValue: 5, required: true, description: "Wait this long before playing the message again if they repeatedly press the doorbell."
+
+                paragraph "<b>After Hours Messages (Randomized)</b>"
+                def ahDefs = [
+                    "It is currently after hours, the homeowners are unavailable.",
+                    "The residents are done receiving visitors for the evening.",
+                    "It is too late for visitors. Please return tomorrow.",
+                    "The household is resting for the night. Please leave a message.",
+                    "We are no longer accepting visitors at this hour.",
+                    "It's past visiting hours. The cameras are recording.",
+                    "The homeowners are unavailable for the rest of the evening.",
+                    "Please leave a package or a message. We are done for the day.",
+                    "Visiting hours have concluded. Please try again tomorrow.",
+                    "We do not answer the door at this hour.",
+                    "The house is settling down for the night. Please depart.",
+                    "It's too late in the evening for visitors. Goodbye.",
+                    "Please respect our evening hours and return another time.",
+                    "No one will be answering the door this late.",
+                    "Evening protocols are active. The homeowners are unavailable."
+                ]
+                for (int d = 1; d <= 15; d++) {
+                    input "afterHoursMessage_${d}", "text", title: "After Hours Message ${d}", required: (d == 1), defaultValue: ahDefs[d-1]
+                }
+                
+                input "btnTestAfterHours", "button", title: "▶️ Test After Hours Audio", description: "Test the after hours volume and a randomized message on the outdoor speaker."
+            }
+        }
+        
         section("Contextual Departures", hideable: true, hidden: true) {
             paragraph "<i>Provide a frictionless departure sequence. The system checks the user's Context Switch (e.g., 'Work Day' or 'School Day'), the current house mode, and the time window. If they leave, it plays a farewell and temporarily mutes DND/Intruder alarms so they can walk to the car in peace.</i>"
             
@@ -213,9 +293,11 @@ def mainPage() {
                     input "depUserName_${i}", "text", title: "User Name (replaces %name%)", required: true
                     input "depType_${i}", "enum", title: "Profile Type (Changes default messages below)", options: ["Work", "School", "General"], defaultValue: "Work", submitOnChange: true
                     input "depSwitch_${i}", "capability.switch", title: "Context Switch (e.g. Work Day)", required: true, description: "The departure message will ONLY play if this switch is ON."
+                    input "depSickSwitch_${i}", "capability.switch", title: "Sick Day Override Switch", required: false, description: "If this switch is ON, departure messages for this user will be bypassed."
                     input "depModes_${i}", "mode", title: "Allowed House Modes", multiple: true, required: false, description: "Only allow this departure if the house is in one of these modes (e.g. Night, Morning)."
                     input "depTimeStart_${i}", "time", title: "Departure Window Start Time", required: true, description: "e.g., 6:00 AM"
                     input "depTimeEnd_${i}", "time", title: "Departure Window End Time", required: true, description: "e.g., 6:15 AM"
+                    input "depDelay_${i}", "number", title: "Greeting Delay (Seconds)", defaultValue: 5, required: true, description: "Wait this long after the door opens before saying goodbye."
                     input "depVolume_${i}", "number", title: "Departure Volume (0-100)", required: false, description: "Optional: Sets a specific volume just for this departure. Leave blank to use default outdoor volume."
                     
                     def workMsgs = [
@@ -443,6 +525,8 @@ def mainPage() {
         section("Advanced Features & Arrival Resets", hideable: true, hidden: true) {
             paragraph "<i>Arrival and Departure statuses automatically reset at Midnight. Use the options below to configure who resets and when.</i>"
             
+            input "enableInternetCheck", "bool", title: "Enable Internet Connection Safety?", defaultValue: true, description: "Prevents TTS and external calls from filling your logs with errors during internet outages by pinging an external server periodically."
+
             input "stayAtHomeUsers", "enum", title: "Stay At Home Users (Lock Codes)", options: lockUsers, multiple: true, required: false, description: "Select users who are home 24/7. Their arrival status will NOT reset at midnight, meaning they won't trigger a greeting the next day unless the house explicitly goes into a reset mode (like 'Away')."
             input "stayAtHomeCustom", "text", title: "Stay At Home Users (Custom Names)", required: false, description: "Comma-separated list of names (like an Admin Alias) to keep checked-in at midnight if they aren't selectable above."
             
@@ -596,11 +680,21 @@ def ensureStateMaps() {
     if (state.lastIntruderAlert == null) state.lastIntruderAlert = 0
     if (state.departureGracePeriodEnd == null) state.departureGracePeriodEnd = 0
     if (state.lastDepartureTime == null) state.lastDepartureTime = [:]
+    
+    if (state.internetActive == null) state.internetActive = true
 }
 
 def initialize() {
     ensureStateMaps()
     schedule("0 0 0 * * ?", "midnightReset") 
+    
+    // Internet Connectivity Monitoring
+    if (settings.enableInternetCheck) {
+        runEvery5Minutes("checkInternetConnection")
+        checkInternetConnection() // Initial run
+    } else {
+        state.internetActive = true
+    }
     
     // Perimeter & DND
     if (frontDoorbell) {
@@ -643,7 +737,8 @@ def initialize() {
         }
     }
     
-    for (int i = 1; i <= (numRooms as Integer); i++) {
+    def numRoomsSet = settings.numRooms ? settings.numRooms as Integer : 0
+    for (int i = 1; i <= numRoomsSet; i++) {
         def gnSwitch = settings["roomGoodNightSwitch_${i}"]
         if (gnSwitch) {
             subscribe(gnSwitch, "switch.on", goodNightOnHandler)
@@ -657,9 +752,54 @@ def initialize() {
     }
 }
 
+// --- INTERNET CONNECTIVITY CHECK ---
+def checkInternetConnection() {
+    if (!settings.enableInternetCheck) return
+    
+    try {
+        def params = [
+            uri: "http://1.1.1.1", // Reliable external IP to ping (Cloudflare DNS)
+            timeout: 5
+        ]
+        asynchttpGet("internetCheckCallback", params)
+    } catch (e) {
+        log.error "Voice Butler: Failed to initiate internet check: ${e}"
+        setInternetState(false)
+    }
+}
+
+def internetCheckCallback(response, data) {
+    if (response && !response.hasError() && response.status == 200) {
+        setInternetState(true)
+    } else {
+        setInternetState(false)
+    }
+}
+
+def setInternetState(Boolean isOnline) {
+    if (state.internetActive != isOnline) {
+        state.internetActive = isOnline
+        def statusStr = isOnline ? "ONLINE" : "OFFLINE"
+        log.info "SYSTEM: Internet connection status changed to ${statusStr}."
+        
+        if (!isOnline) {
+            addToHistory("SYSTEM ALERT: Internet connection lost. External TTS suppressed to prevent log errors.")
+        } else {
+            addToHistory("SYSTEM: Internet connection restored. TTS operations resuming.")
+        }
+    }
+}
+
 // --- AUDIO RESTORE & QUIET HOURS ENGINE ---
-def speakWithRestore(speakerInput, msg, originalVol) {
+def speakWithRestore(speakerInput, msg, originalVol, fastTrack = false) {
     if (!speakerInput) return
+    
+    // INTERNET SAFETY CHECK: Abort before attempting TTS if offline
+    if (settings.enableInternetCheck && state.internetActive == false) {
+        log.debug "TTS Suppressed: Internet connection is currently offline. Skipped Message: '${msg}'"
+        return
+    }
+    
     def speakers = speakerInput instanceof List ? speakerInput : [speakerInput]
     
     def finalVol = originalVol
@@ -687,11 +827,17 @@ def speakWithRestore(speakerInput, msg, originalVol) {
             
             if (targetVol != null) {
                 spk.setVolume(targetVol)
-                pauseExecution(1000) 
+                // Minimizes the pause if fastTrack is requested (doorbell press)
+                if (!fastTrack) {
+                    pauseExecution(1000) 
+                } else {
+                    pauseExecution(200)
+                }
             }
             
             spk.speak(finalMsg)
-            pauseExecution(500) 
+            
+            if (!fastTrack) pauseExecution(500) 
             
             try {
                 if (spk.hasCommand("play")) {
@@ -723,7 +869,8 @@ def getAllSpeakers() {
     if (outdoorSpeaker) list << outdoorSpeaker
     if (globalIndoorSpeaker) list.addAll(globalIndoorSpeaker)
     if (butlerLrSpeaker) list << butlerLrSpeaker
-    for (int i = 1; i <= 5; i++) {
+    def numRoomsSet = settings.numRooms ? settings.numRooms as Integer : 0
+    for (int i = 1; i <= numRoomsSet; i++) {
         if (settings["roomSpeaker_${i}"]) list << settings["roomSpeaker_${i}"]
     }
     return list.flatten().findAll { it != null }
@@ -751,6 +898,7 @@ def departureHandler(evt) {
     for (int i = 1; i <= numDep; i++) {
         def uName = settings["depUserName_${i}"]
         def ctxSwitch = settings["depSwitch_${i}"]
+        def sickSwitch = settings["depSickSwitch_${i}"]
         def tStart = settings["depTimeStart_${i}"]
         def tEnd = settings["depTimeEnd_${i}"]
         def dModes = [settings["depModes_${i}"]].flatten().findAll{it}
@@ -760,6 +908,11 @@ def departureHandler(evt) {
         if (uName && ctxSwitch && tStart && tEnd) {
             if (state.hasDepartedToday[uName]) {
                 log.debug "DEPARTURE TRACE: ${uName} has already departed today. Skipping."
+                continue
+            }
+            
+            if (sickSwitch && sickSwitch.currentValue("switch") == "on") {
+                log.debug "DEPARTURE TRACE: Sick switch (${sickSwitch.displayName}) is ON for ${uName}. Bypassing departure."
                 continue
             }
             
@@ -812,20 +965,31 @@ def departureHandler(evt) {
             def rawMsg = messages[new Random().nextInt(messages.size())]
             def finalMsg = rawMsg.replace("%name%", uName)
             
+            def delay = settings["depDelay_${idx}"] != null ? settings["depDelay_${idx}"].toInteger() : 5
+            
             if (outdoorSpeaker) {
                 def profileVol = settings["depVolume_${idx}"]
                 def targetVolume = profileVol != null ? profileVol : (settings["arrivalVolume"] != null ? settings["arrivalVolume"] : settings["outdoorVolume"])
                 
-                speakWithRestore(outdoorSpeaker, finalMsg, targetVolume)
-                addToHistory("DEPARTURE: Contextual departure window matched for [${uName}]. Played: '${finalMsg}'")
+                log.info "SYSTEM: Departure matched for ${uName}. Scheduling farewell in ${delay} seconds."
+                runIn(delay, "playDepartureGreeting", [data: [user: uName, message: finalMsg, volume: targetVolume], overwrite: false])
             } else {
                 addToHistory("DEPARTURE ERROR: Departure matched for [${uName}], but no Outdoor Front Door Speaker is assigned.")
             }
-            
-            pauseExecution(3000)
         }
     } else {
         log.debug "DEPARTURE TRACE: Door opened, but no departure profiles met all requirements."
+    }
+}
+
+def playDepartureGreeting(data) {
+    def uName = data.user
+    def finalMsg = data.message
+    def targetVolume = data.volume
+    
+    if (outdoorSpeaker) {
+        speakWithRestore(outdoorSpeaker, finalMsg, targetVolume)
+        addToHistory("DEPARTURE: Contextual departure window matched for [${uName}]. Played: '${finalMsg}'")
     }
 }
 
@@ -955,23 +1119,33 @@ def playButlerReport(data) {
     }
 }
 
-// --- FRONT DOOR DND LOGIC ---
+// --- FRONT DOOR DND, AFTER HOURS, & DAYTIME LOGIC ---
 def visitorHandler(evt) {
     ensureStateMaps()
     
     def now = new Date().time
     if (state.departureGracePeriodEnd && now < state.departureGracePeriodEnd) {
-        log.debug "DND Intercept bypassed due to active departure grace period."
+        log.debug "DND/Intercept bypassed due to active departure grace period."
         return
     }
     
     def dndModesList = [settings.dndModes].flatten().findAll{it}
     def isDndActive = (dndSwitch?.currentValue("switch") == "on") || dndModesList.contains(location.mode)
+    def isMotion = evt.name == "motion"
+    def lastGreet = state.lastOutdoorGreeting ?: 0
+    def isDoorbell = !isMotion
+    
+    // Evaluate After Hours Window
+    def isAfterHours = false
+    if (enableAfterHours && afterHoursTimeStart && afterHoursTimeEnd) {
+        try {
+            isAfterHours = timeOfDayIsBetween(toDateTime(afterHoursTimeStart), toDateTime(afterHoursTimeEnd), new Date(), location.timeZone)
+        } catch(e) {
+            log.error "After Hours time parsing error: ${e}"
+        }
+    }
     
     if (isDndActive) {
-        def lastGreet = state.lastOutdoorGreeting ?: 0
-        def isMotion = evt.name == "motion"
-        
         def debounceMs = 30000 
         if (isMotion) {
             def debounceMins = settings.dndMotionDebounce != null ? settings.dndMotionDebounce.toInteger() : 10
@@ -988,7 +1162,8 @@ def visitorHandler(evt) {
                 if (!messages) messages = ["We cannot come to the door right now. The camera is recording, please leave your message."]
                 def randomMsg = messages[new Random().nextInt(messages.size())]
                 
-                speakWithRestore(outdoorSpeaker, randomMsg, outdoorVolume)
+                // FastTrack TTS if it's a physical doorbell press
+                speakWithRestore(outdoorSpeaker, randomMsg, outdoorVolume, isDoorbell)
                 state.lastOutdoorGreeting = now 
                 
                 def triggerType = isMotion ? "Motion" : "Doorbell"
@@ -998,6 +1173,60 @@ def visitorHandler(evt) {
             }
         } else {
             log.debug "DND Intercept blocked by debounce cooldown (${isMotion ? 'motion' : 'doorbell'})."
+        }
+    } else if (isAfterHours && isDoorbell) {
+        // After Hours Intercept
+        def debounceMins = settings.afterHoursDebounce != null ? settings.afterHoursDebounce.toInteger() : 5
+        def debounceMs = debounceMins * 60000
+        
+        if ((now - lastGreet) > debounceMs) {
+            if (outdoorSpeaker) {
+                def messages = []
+                for (int d = 1; d <= 15; d++) {
+                    def msg = settings["afterHoursMessage_${d}"]
+                    if (msg) messages << msg
+                }
+                if (!messages) messages = ["It is currently after hours, the homeowners are unavailable."]
+                def randomMsg = messages[new Random().nextInt(messages.size())]
+                def targetVol = settings.afterHoursVolume != null ? settings.afterHoursVolume : settings.outdoorVolume
+                
+                // FastTrack TTS for doorbell
+                speakWithRestore(outdoorSpeaker, randomMsg, targetVol, true)
+                state.lastOutdoorGreeting = now
+                
+                addToHistory("AFTER HOURS: Doorbell rung during after hours window. Played: '${randomMsg}'")
+            } else {
+                addToHistory("AFTER HOURS ERROR: Doorbell rung, but no outdoor speaker is assigned.")
+            }
+        } else {
+            log.debug "After Hours intercept blocked by 5-minute debounce cooldown."
+        }
+    } else if (!isDndActive && !isAfterHours && isDoorbell && enableDaytimeDoorbell) {
+        // Daytime Doorbell Acknowledgment
+        def debounceMins = settings.daytimeDoorbellDebounce != null ? settings.daytimeDoorbellDebounce.toInteger() : 2
+        def debounceMs = debounceMins * 60000
+        
+        if ((now - lastGreet) > debounceMs) {
+            if (outdoorSpeaker) {
+                def messages = []
+                for (int d = 1; d <= 20; d++) {
+                    def msg = settings["daytimeMessage_${d}"]
+                    if (msg) messages << msg
+                }
+                if (!messages) messages = ["Please wait a moment, I am notifying the homeowner."]
+                def randomMsg = messages[new Random().nextInt(messages.size())]
+                def targetVol = settings.daytimeDoorbellVolume != null ? settings.daytimeDoorbellVolume : settings.outdoorVolume
+                
+                // FastTrack TTS for doorbell
+                speakWithRestore(outdoorSpeaker, randomMsg, targetVol, true)
+                state.lastOutdoorGreeting = now
+                
+                addToHistory("DAYTIME GREETING: Doorbell rung during daytime. Played: '${randomMsg}'")
+            } else {
+                addToHistory("DAYTIME ERROR: Doorbell rung, but no outdoor speaker is assigned.")
+            }
+        } else {
+            log.debug "Daytime greeting blocked by debounce cooldown."
         }
     }
 }
@@ -1503,9 +1732,45 @@ def testDndGreeting() {
         def randomMsg = messages[new Random().nextInt(messages.size())]
         
         log.info "TESTING DND GREETING: '${randomMsg}' at ${outdoorVolume}% volume."
-        speakWithRestore(outdoorSpeaker, randomMsg, outdoorVolume)
+        speakWithRestore(outdoorSpeaker, randomMsg, outdoorVolume, true)
     } else {
         log.warn "Cannot test DND greeting - no outdoor speaker assigned."
+    }
+}
+
+def testAfterHoursGreeting() {
+    if (outdoorSpeaker) {
+        def messages = []
+        for (int d = 1; d <= 15; d++) {
+            def msg = settings["afterHoursMessage_${d}"]
+            if (msg) messages << msg
+        }
+        if (!messages) messages = ["It is currently after hours, the homeowners are unavailable."]
+        def randomMsg = messages[new Random().nextInt(messages.size())]
+        def targetVol = settings.afterHoursVolume != null ? settings.afterHoursVolume : settings.outdoorVolume
+        
+        log.info "TESTING AFTER HOURS GREETING: '${randomMsg}' at ${targetVol}% volume."
+        speakWithRestore(outdoorSpeaker, randomMsg, targetVol, true)
+    } else {
+        log.warn "Cannot test After Hours greeting - no outdoor speaker assigned."
+    }
+}
+
+def testDaytimeGreeting() {
+    if (outdoorSpeaker) {
+        def messages = []
+        for (int d = 1; d <= 20; d++) {
+            def msg = settings["daytimeMessage_${d}"]
+            if (msg) messages << msg
+        }
+        if (!messages) messages = ["Please wait a moment, I am notifying the homeowner."]
+        def randomMsg = messages[new Random().nextInt(messages.size())]
+        def targetVol = settings.daytimeDoorbellVolume != null ? settings.daytimeDoorbellVolume : settings.outdoorVolume
+        
+        log.info "TESTING DAYTIME GREETING: '${randomMsg}' at ${targetVol}% volume."
+        speakWithRestore(outdoorSpeaker, randomMsg, targetVol, true)
+    } else {
+        log.warn "Cannot test Daytime greeting - no outdoor speaker assigned."
     }
 }
 
@@ -1605,6 +1870,10 @@ def appButtonHandler(btn) {
         testRoomGreeting(rNum, "Good Morning")
     } else if (btn == "btnTestDND") {
         testDndGreeting()
+    } else if (btn == "btnTestAfterHours") {
+        testAfterHoursGreeting()
+    } else if (btn == "btnTestDaytime") {
+        testDaytimeGreeting()
     } else if (btn == "btnTestArrival") {
         testArrivalGreeting()
     } else if (btn == "btnTestIntruder") {
