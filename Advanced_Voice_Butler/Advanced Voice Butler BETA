@@ -649,8 +649,17 @@ def roomPage(params) {
         }
         
         section("Logic & Automations Triggers", hideable: true, hidden: false) {
-            input "roomGoodNightSwitch_${rNum}", "capability.switch", title: "Room Good Night Switch", required: false, description: "Select the switch that indicates the room is going to sleep (ON = Good Night, OFF = Good Morning)."
-            input "roomMotion_${rNum}", "capability.motionSensor", title: "Motion Sensor (Verified Mornings)", required: false, description: "Highly Recommended: If selected, the app waits to see motion AFTER the Good Night switch turns off before saying Good Morning."
+            input "roomGoodNightSwitch_${rNum}", "capability.switch", title: "Room Good Night Switch", required: false, description: "Select the switch that indicates the room is going to sleep."
+            
+            input "roomWakeupMode_${rNum}", "enum", title: "Good Morning Trigger Mode", options: [
+                "1. Immediate (When Good Night Switch turns OFF)",
+                "2. Verified (Wait for switch OFF, then wait for Motion)",
+                "3. Motion Driven (Trigger when Motion activates while switch is ON)"
+            ], defaultValue: "1. Immediate (When Good Night Switch turns OFF)", submitOnChange: true
+            
+            if (settings["roomWakeupMode_${rNum}"] != "1. Immediate (When Good Night Switch turns OFF)") {
+                input "roomMotion_${rNum}", "capability.motionSensor", title: "Wake-Up Motion Sensors", multiple: true, required: false, description: "Select one or more motion sensors. If ANY of them detect motion, the room wakes up."
+            }
             
             input "delayGreetingGN_${rNum}", "number", title: "Good Night Greeting Delay (Seconds)", defaultValue: 5, required: false, description: "Pause before speaking (e.g., 5 seconds) so Good Night music and room can settle."
             input "delayGreetingGM_${rNum}", "number", title: "Good Morning Greeting Delay (Seconds)", defaultValue: 30, required: false, description: "Pause briefly before speaking so morning automations and lights can execute."
@@ -753,6 +762,7 @@ def ensureStateMaps() {
     if (state.hasArrivedToday == null) state.hasArrivedToday = [:]
     if (state.hasDepartedToday == null) state.hasDepartedToday = [:]
     if (state.waitingForMotion == null) state.waitingForMotion = [:]
+    if (state.roomAlreadyAwake == null) state.roomAlreadyAwake = [:]
     if (state.resetReasons == null) state.resetReasons = [:]
     if (state.globalResetReason == null) state.globalResetReason = "Awaiting First Entry"
     
@@ -842,9 +852,10 @@ def initialize() {
             subscribe(gnSwitch, "switch.off", goodNightOffHandler)
         }
         
-        def motionSensor = settings["roomMotion_${i}"]
-        if (motionSensor) {
-            subscribe(motionSensor, "motion.active", roomMotionHandler)
+        def mode = settings["roomWakeupMode_${i}"] ?: "1. Immediate (When Good Night Switch turns OFF)"
+        if (mode != "1. Immediate (When Good Night Switch turns OFF)") {
+            def motionSensors = settings["roomMotion_${i}"]
+            if (motionSensors) subscribe(motionSensors, "motion.active", roomMotionHandler)
         }
     }
 }
@@ -1019,7 +1030,8 @@ def executeTTS(item) {
     def safeMsg = msg.replace("&", "and")
     def finalMsg = safeMsg
     if (settings.enableWakeupPad) {
-        finalMsg = "<speak><break time='1.5s'/>" + safeMsg + "</speak>"
+        // Reverted to text-based delay for Sonos/Chromecast compatibility
+        finalMsg = ". . . . " + safeMsg 
     }
     
     speakers.each { spk ->
@@ -1686,13 +1698,46 @@ def scheduledAwayCheck() {
 }
 
 // --- ROOM STATE LOGIC & WEATHER ROUTING (Priority 4 & 5) ---
+def roomMotionHandler(evt) {
+    ensureStateMaps()
+    def deviceId = evt.device.id
+    def numRoomsSet = settings.numRooms ? settings.numRooms as Integer : 0
+    
+    for (int i = 1; i <= numRoomsSet; i++) {
+        def mode = settings["roomWakeupMode_${i}"] ?: "1. Immediate (When Good Night Switch turns OFF)"
+        if (mode == "1. Immediate (When Good Night Switch turns OFF)") continue
+        
+        def sensors = []
+        if (settings["roomMotion_${i}"]) sensors += [settings["roomMotion_${i}"]].flatten().collect{it?.id}
+        
+        if (sensors.contains(deviceId)) {
+            if (mode == "2. Verified (Wait for switch OFF, then wait for Motion)") {
+                if (state.waitingForMotion["${i}"]) {
+                    state.waitingForMotion["${i}"] = false
+                    triggerGoodMorningSequence(i)
+                }
+            } else if (mode == "3. Motion Driven (Trigger when Motion activates while switch is ON)") {
+                def gnSwitch = settings["roomGoodNightSwitch_${i}"]
+                if (gnSwitch && gnSwitch.currentValue("switch") == "on") {
+                    if (!state.roomAlreadyAwake["${i}"]) {
+                        state.roomAlreadyAwake["${i}"] = true
+                        addToHistory("SYSTEM: Wake-Up Motion (${evt.device.displayName}) triggered Good Morning while switch was ON.")
+                        triggerGoodMorningSequence(i)
+                    }
+                }
+            }
+        }
+    }
+}
+
 def goodNightOnHandler(evt) {
     ensureStateMaps()
     def deviceId = evt.device.id
     
-    for (int i = 1; i <= (numRooms as Integer); i++) {
+    for (int i = 1; i <= (settings.numRooms as Integer ?: 1); i++) {
         if (settings["roomGoodNightSwitch_${i}"]?.id == deviceId) {
             state.waitingForMotion["${i}"] = false 
+            state.roomAlreadyAwake["${i}"] = false // Reset daily sensor lock
             def rName = settings["roomName_${i}"] ?: "Room ${i}"
             
             def cal = Calendar.getInstance(location.timeZone)
@@ -1774,31 +1819,24 @@ def goodNightOffHandler(evt) {
     ensureStateMaps()
     def deviceId = evt.device.id
     
-    for (int i = 1; i <= (numRooms as Integer); i++) {
+    for (int i = 1; i <= (settings.numRooms as Integer ?: 1); i++) {
         if (settings["roomGoodNightSwitch_${i}"]?.id == deviceId) {
             def rName = settings["roomName_${i}"] ?: "Room ${i}"
+            def mode = settings["roomWakeupMode_${i}"] ?: "1. Immediate (When Good Night Switch turns OFF)"
             
-            if (settings["roomMotion_${i}"]) {
+            if (mode == "1. Immediate (When Good Night Switch turns OFF)") {
+                triggerGoodMorningSequence(i)
+            } else if (mode == "2. Verified (Wait for switch OFF, then wait for Motion)") {
                 state.waitingForMotion["${i}"] = true
-                addToHistory("SYSTEM: Good Night switch OFF in ${rName}. Armed and waiting for motion.")
-                return
-            } else {
-                triggerGoodMorningSequence(i)
-                return
+                addToHistory("SYSTEM: Good Night switch OFF in ${rName}. Armed and waiting for motion activity.")
+            } else if (mode == "3. Motion Driven (Trigger when Motion activates while switch is ON)") {
+                // Fallback: If switch is turned off manually before motion is triggered
+                if (!state.roomAlreadyAwake["${i}"]) {
+                    state.roomAlreadyAwake["${i}"] = true
+                    triggerGoodMorningSequence(i)
+                }
             }
-        }
-    }
-}
-
-def roomMotionHandler(evt) {
-    ensureStateMaps()
-    if (evt.value == "active") {
-        def deviceId = evt.device.id
-        for (int i = 1; i <= (numRooms as Integer); i++) {
-            if (settings["roomMotion_${i}"]?.id == deviceId && state.waitingForMotion["${i}"]) {
-                state.waitingForMotion["${i}"] = false
-                triggerGoodMorningSequence(i)
-            }
+            return
         }
     }
 }
@@ -2158,7 +2196,7 @@ def getTodayHoliday() {
     if (m == 5 && dow == Calendar.MONDAY && (d + 7 > 31)) return "Memorial Day"
     if (m == 6 && dow == Calendar.SUNDAY && wom == 3) return "Father's Day"
     if (m == 9 && dow == Calendar.MONDAY && wom == 1) return "Labor Day"
-    if (m0 == 10 && dow == Calendar.MONDAY && wom == 2) return "Columbus Day"
+    if (m == 10 && dow == Calendar.MONDAY && wom == 2) return "Columbus Day"
     if (m == 11 && dow == Calendar.TUESDAY && d >= 2 && d <= 8) return "Election Day"
     if (m == 11 && dow == Calendar.THURSDAY && wom == 4) return "Thanksgiving"
     if (m == 11 && dow == Calendar.FRIDAY && d >= 23 && d <= 29) return "Black Friday"
