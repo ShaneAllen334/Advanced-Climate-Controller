@@ -35,25 +35,6 @@ def mainPage() {
             } catch (e) {}
         }
 
-        section("1. Global Audio & Speaker Hardware", hideable: true, hidden: false) {
-            paragraph "<i>Configure your primary speakers here. These act as the defaults for the entire system unless a specific room or sequence overrides them.</i>"
-            
-            input "globalIndoorSpeaker", "capability.speechSynthesis", title: "Global Indoor Speaker(s)", multiple: true, required: false, description: "Select the main speaker(s) in central areas (like a Living Room or Kitchen)."
-            input "globalVolume", "number", title: "Global Speaker Volume (0-100)", required: false, description: "The baseline volume for general house announcements."
-            input "btnTestGlobal", "button", title: "▶️ Test Global Indoor Speaker"
-            
-            paragraph "---"
-            
-            input "outdoorSpeaker", "capability.speechSynthesis", title: "Outdoor/Porch Speaker", required: false, description: "Select the speaker located outside. Used for DND deterrents, Welcome Home greetings, and Departures."
-            input "outdoorVolume", "number", title: "Default Outdoor Volume (0-100)", required: false, description: "The app will override the speaker to this volume level before speaking outside."
-            input "btnTestOutdoor", "button", title: "▶️ Test Outdoor Speaker"
-            
-            paragraph "---"
-            
-            input "enableWakeupPad", "bool", title: "Enable Speaker Wake-Up Padding?", defaultValue: false, description: "Adds a brief invisible pause before messages to prevent the first word from cutting off on Wi-Fi speakers."
-            input "enableInternetCheck", "bool", title: "Enable Internet Connection Safety?", defaultValue: true, description: "Prevents TTS and external calls from filling your logs with errors during internet outages."
-        }
-
         section("Live System Dashboard", hideable: true, hidden: false) {
             paragraph "<i>Welcome to the Voice Butler command center. Below is a real-time read-only view of your perimeter status, active voice zones, and today's arrival/departure log.</i>"
             input "btnRefresh", "button", title: "🔄 Refresh Data Dashboard"
@@ -62,12 +43,15 @@ def mainPage() {
             def dndModesList = [settings.dndModes].flatten().findAll{it}
             def isDndMode = dndModesList.contains(location.mode)
             def isDndSwitch = dndSwitch?.currentValue("switch") == "on"
+            def isMasterOff = masterSwitch?.currentValue("switch") == "off"
             
+            def systemState = isMasterOff ? "<span style='color: #c0392b; font-weight: bold;'>MUTED (Master Switch OFF)</span>" : "<span style='color: #27ae60; font-weight: bold;'>ACTIVE (Audio Enabled)</span>"
             def dndState = (isDndSwitch || isDndMode) ? "<span style='color: #c0392b; font-weight: bold;'>ACTIVE (Do Not Disturb)</span>" : "<span style='color: #27ae60; font-weight: bold;'>STANDBY (Accepting Visitors)</span>"
             def inetStatus = (!settings.enableInternetCheck || state.internetActive != false) ? "<span style='color: #27ae60; font-weight: bold;'>ONLINE</span>" : "<span style='color: #c0392b; font-weight: bold;'>OFFLINE (TTS Suppressed)</span>"
             def queueStatus = state.ttsQueue?.size() > 0 ? "<span style='color: #d35400; font-weight: bold;'>${state.ttsQueue.size()} Messages Queued</span>" : "<span style='color: #27ae60;'>Idle</span>"
             
             def statusText = "<div style='margin-bottom: 10px; padding: 10px; background: #e9e9e9; border-radius: 4px; font-size: 13px; border: 1px solid #ccc;'>"
+            statusText += "<b>System State:</b> ${systemState}<br>"
             statusText += "<b>Perimeter Status:</b> ${dndState}<br>"
             statusText += "<b>Internet Connection:</b> ${inetStatus}<br>"
             statusText += "<b>TTS Queue Engine:</b> ${queueStatus}</div>"
@@ -191,6 +175,29 @@ def mainPage() {
             } else {
                 paragraph "<i>No history logged yet.</i>"
             }
+        }
+        
+        section("1. Global System Control & Audio Hardware", hideable: true, hidden: false) {
+            paragraph "<i>Configure your master controls and primary speakers here. These act as the defaults for the entire system unless a specific room or sequence overrides them.</i>"
+            
+            input "masterSwitch", "capability.switch", title: "Master Enable/Pause Switch", required: false, description: "If selected, turning this switch OFF will globally mute all Voice Butler announcements."
+            
+            paragraph "<hr>"
+            
+            input "globalIndoorSpeaker", "capability.speechSynthesis", title: "Global Indoor Speaker(s)", multiple: true, required: false, description: "Select the main speaker(s) in central areas (like a Living Room or Kitchen)."
+            input "globalVolume", "number", title: "Global Speaker Volume (0-100)", required: false, description: "The baseline volume for general house announcements."
+            input "btnTestGlobal", "button", title: "▶️ Test Global Indoor Speaker"
+            
+            paragraph "<hr>"
+            
+            input "outdoorSpeaker", "capability.speechSynthesis", title: "Outdoor/Porch Speaker", required: false, description: "Select the speaker located outside. Used for DND deterrents, Welcome Home greetings, and Departures."
+            input "outdoorVolume", "number", title: "Default Outdoor Volume (0-100)", required: false, description: "The app will override the speaker to this volume level before speaking outside."
+            input "btnTestOutdoor", "button", title: "▶️ Test Outdoor Speaker"
+            
+            paragraph "<hr>"
+            
+            input "enableWakeupPad", "bool", title: "Enable Speaker Wake-Up Padding?", defaultValue: false, description: "Adds a brief invisible pause before messages to prevent the first word from cutting off on Wi-Fi speakers."
+            input "enableInternetCheck", "bool", title: "Enable Internet Connection Safety?", defaultValue: true, description: "Prevents TTS and external calls from filling your logs with errors during internet outages."
         }
 
         section("Arrival Greetings & Smart Locks", hideable: true, hidden: false) {
@@ -606,15 +613,17 @@ def mainPage() {
         section("Advanced Features & Arrival Resets", hideable: true, hidden: false) {
             paragraph "<i>Arrival and Departure statuses automatically reset at Midnight. Use the options below to configure who resets and when.</i>"
             
+            input "enableDebug", "bool", title: "Enable Debug Logging?", defaultValue: false, description: "Turn on to see detailed TTS queueing metrics in the Hubitat system logs."
+            
             input "stayAtHomeUsers", "enum", title: "Stay At Home Users (Lock Codes)", options: lockUsers, multiple: true, required: false, description: "Select users who are home 24/7. Their arrival status will NOT reset at midnight, meaning they won't trigger a greeting the next day unless the house explicitly goes into a reset mode (like 'Away')."
             input "stayAtHomeCustom", "text", title: "Stay At Home Users (Custom Names)", required: false, description: "Comma-separated list of names (like an Admin Alias) to keep checked-in at midnight if they aren't selectable above."
             
             input "resetModes", "mode", title: "Reset ALL Arrivals on Mode Change", multiple: true, required: false, description: "Select house modes (like 'Away'). When the house enters this mode, EVERYONE is instantly marked as away, overriding Stay At Home status."
             
-            paragraph "<b>Scheduled User Away Checks (Work/School)</b>\n<i>Link specific users to a virtual switch (like 'Work' or 'School'). If this switch turns ON, they are marked Away. You can also set a scheduled time (like 2:00 AM) for the app to sweep these switches and reset users if their switch was left ON overnight.</i>"
+            paragraph "<b>Sensor & Switch Away Checks</b>\n<i>Link specific users to a virtual switch (like 'Work') or a presence sensor (like their phone). If the switch turns ON, or the presence sensor leaves (Not Present), they are marked Away so their lock code will trigger a greeting next time.</i>"
             input "awayCheckTime", "time", title: "Scheduled Sweep Time", required: false, description: "Time to check if the switches below are ON (e.g., 2:00 AM)."
             
-            input "numAwayMappings", "number", title: "Number of User Switch Mappings (0-5)", required: false, defaultValue: 0, range: "0..5", submitOnChange: true, description: "How many users do you want to link to specific Away/Reset switches?"
+            input "numAwayMappings", "number", title: "Number of User Switch Mappings (0-5)", required: false, defaultValue: 0, range: "0..5", submitOnChange: true, description: "How many users do you want to link to specific Away/Reset triggers?"
             
             if (numAwayMappings > 0) {
                 for (int i = 1; i <= (numAwayMappings as Integer); i++) {
@@ -623,7 +632,8 @@ def mainPage() {
                     } else {
                         input "awayMappingUser_${i}", "text", title: "Mapping ${i} User", required: false
                     }
-                    input "awayMappingSwitch_${i}", "capability.switch", title: "Mapping ${i} Switch", required: false
+                    input "awayMappingSwitch_${i}", "capability.switch", title: "Mapping ${i} Switch (Optional)", required: false
+                    input "awayMappingPresence_${i}", "capability.presenceSensor", title: "Mapping ${i} Presence Sensor (Optional)", required: false, description: "Only tracks departure (Not Present) to reset arrival status."
                 }
             }
             
@@ -842,6 +852,10 @@ def initialize() {
         if (sw) {
             subscribe(sw, "switch.on", awaySwitchOnHandler)
         }
+        def pSens = settings["awayMappingPresence_${i}"]
+        if (pSens) {
+            subscribe(pSens, "presence", awayPresenceHandler)
+        }
     }
     
     def numRoomsSet = settings.numRooms ? settings.numRooms as Integer : 0
@@ -937,8 +951,13 @@ def getWeatherReport(wDevice) {
 def enqueueTTS(speakerInput, msg, originalVol, priority, fastTrack = false) {
     if (!speakerInput) return
     
+    if (settings.masterSwitch && settings.masterSwitch.currentValue("switch") == "off") {
+        if (settings.enableDebug) log.debug "TTS Suppressed: Master Switch is OFF. Skipped Message: '${msg}'"
+        return
+    }
+    
     if (settings.enableInternetCheck && state.internetActive == false) {
-        log.debug "TTS Suppressed: Internet connection is currently offline. Skipped Message: '${msg}'"
+        if (settings.enableDebug) log.debug "TTS Suppressed: Internet connection is currently offline. Skipped Message: '${msg}'"
         return
     }
     
@@ -958,7 +977,7 @@ def enqueueTTS(speakerInput, msg, originalVol, priority, fastTrack = false) {
     state.ttsQueue.add(item)
     state.ttsQueue = state.ttsQueue.sort { it.priority }
 
-    log.debug "SYSTEM: Queued Priority ${priority} Message: '${msg}'"
+    if (settings.enableDebug) log.debug "SYSTEM: Queued Priority ${priority} Message: '${msg}'"
 
     processQueue()
 }
@@ -1020,7 +1039,7 @@ def executeTTS(item) {
         try {
             if (timeOfDayIsBetween(toDateTime(quietHoursStart), toDateTime(quietHoursEnd), new Date(), location.timeZone)) {
                 finalVol = quietVolume as Integer
-                log.debug "SYSTEM: Quiet Hours active. Throttling outbound volume to ${finalVol}%"
+                if (settings.enableDebug) log.debug "SYSTEM: Quiet Hours active. Throttling outbound volume to ${finalVol}%"
             }
         } catch(e) { 
             log.error "Quiet Hours logic check failed: ${e}" 
@@ -1029,9 +1048,10 @@ def executeTTS(item) {
     
     def safeMsg = msg.replace("&", "and")
     def finalMsg = safeMsg
-    if (settings.enableWakeupPad) {
-        // Reverted to text-based delay for Sonos/Chromecast compatibility
-        finalMsg = ". . . . " + safeMsg 
+    
+    // Force fast-tracked events (Arrivals) to bypass the padding completely for maximum speed
+    if (settings.enableWakeupPad && !fastTrack) {
+        finalMsg = ", , , , " + safeMsg 
     }
     
     speakers.each { spk ->
@@ -1050,7 +1070,8 @@ def executeTTS(item) {
             if (targetVol != null) {
                 try {
                     spk.setVolume(targetVol as Integer)
-                    if (!fastTrack) pauseExecution(1000) else pauseExecution(200)
+                    // Instant speed for Arrivals when fastTrack is true
+                    if (!fastTrack) pauseExecution(1000) else pauseExecution(50) 
                 } catch(ve) {
                     log.error "Failed to set volume on ${spk.displayName}: ${ve}"
                 }
@@ -1105,7 +1126,7 @@ def departureHandler(evt) {
     ensureStateMaps()
     
     def nowTime = new Date().time
-    log.debug "DEPARTURE TRACE: Front door opened. Checking departure profiles..."
+    if (settings.enableDebug) log.debug "DEPARTURE TRACE: Front door opened. Checking departure profiles..."
     
     def numDep = settings.numDepartureUsers ? settings.numDepartureUsers as Integer : 0
     if (numDep == 0) return
@@ -1371,7 +1392,7 @@ def visitorHandler(evt) {
         def intIds = [settings.intruderMotion].flatten().findAll{it}.collect{it?.id}
         if (settings.smartCameraDevice) intIds << settings.smartCameraDevice.id
         if (intIds.contains(evt.device.id)) {
-            log.debug "SYSTEM: Yielding DND motion event to Intruder Deterrent."
+            if (settings.enableDebug) log.debug "SYSTEM: Yielding DND motion event to Intruder Deterrent."
             return
         }
     }
@@ -1609,7 +1630,8 @@ def arrivalHandler(evt) {
         def targetVolume = settings["arrivalVolume"] != null ? settings["arrivalVolume"] : settings["outdoorVolume"]
         
         if (outdoorSpeaker) {
-            enqueueTTS(outdoorSpeaker, greetingToPlay, targetVolume, 3)
+            // Fast track flag (true) added to bypass standard delays
+            enqueueTTS(outdoorSpeaker, greetingToPlay, targetVolume, 3, true)
             def arrLogType = isExtended ? "Extended Vacation Arrival" : "First arrival"
             addToHistory("ARRIVAL: ${arrLogType} detected for [${trackingKey}]. Queued: '${greetingToPlay}'")
         }
@@ -1674,6 +1696,27 @@ def awaySwitchOnHandler(evt) {
                 state.hasArrivedToday.remove(uName)
                 state.resetReasons[uName] = "Away Switch Turned ON"
                 addToHistory("SYSTEM: Away Switch (${evt.device.displayName}) turned ON for [${uName}]. Arrival status cleared and departure time logged.")
+            }
+        }
+    }
+}
+
+def awayPresenceHandler(evt) {
+    if (evt.value != "not present") return
+    
+    ensureStateMaps()
+    def deviceId = evt.device.id
+    def numMappings = settings.numAwayMappings ? settings.numAwayMappings as Integer : 0
+    
+    for (int i = 1; i <= numMappings; i++) {
+        if (settings["awayMappingPresence_${i}"]?.id == deviceId) {
+            def uName = settings["awayMappingUser_${i}"]
+            if (uName && state.hasArrivedToday[uName]) {
+                state.lastDepartureTime[uName] = new Date().time
+                state.hasArrivedToday.remove(uName)
+                state.resetReasons[uName] = "Presence Sensor Departed"
+                if (settings.enableDebug) log.debug "SYSTEM: Presence Sensor (${evt.device.displayName}) departed for [${uName}]. Arrival status cleared."
+                addToHistory("SYSTEM: Presence Sensor (${evt.device.displayName}) departed for [${uName}]. Arrival status cleared.")
             }
         }
     }
@@ -1751,6 +1794,33 @@ def goodNightOnHandler(evt) {
             def delaySec = settings["delayGreetingGN_${i}"] != null ? settings["delayGreetingGN_${i}"].toInteger() : 5
             def occName = settings["roomOccupantName_${i}"] ?: "Guest"
             
+            // --- Missed Arrival Catch-Up Logic ---
+            def occupants = occName.split(/(?i)\s+and\s+|\s*&\s*|\s*,\s*/).collect{ it.trim() }
+            def missedCount = 0
+            def totalOcc = occupants.size()
+            
+            occupants.each { occ ->
+                def dKey = state.hasDepartedToday?.keySet()?.find { it.equalsIgnoreCase(occ) }
+                def aKey = state.hasArrivedToday?.keySet()?.find { it.equalsIgnoreCase(occ) }
+                
+                if (dKey && state.hasDepartedToday[dKey] && !state.hasArrivedToday[aKey ?: occ]) {
+                    missedCount++
+                    state.hasArrivedToday[dKey] = true
+                    state.resetReasons[dKey] = "Missed entry. Checked in via Good Night Switch."
+                    addToHistory("SYSTEM: Occupant [${dKey}] was missed at the front door. Checked in silently via Good Night.")
+                }
+            }
+            
+            def apologyPrefix = ""
+            if (missedCount > 0) {
+                if (totalOcc > 1 && missedCount < totalOcc) {
+                    apologyPrefix = "Pardon me, I did not realize one of you had returned earlier. Welcome home. "
+                } else {
+                    apologyPrefix = "Pardon me, I did not catch your arrival earlier. Welcome home. "
+                }
+            }
+            // ---------------------------------------
+            
             def rawMsg = ""
             if (settings["useCustomRoomMessages_${i}"]) {
                 def messages = []
@@ -1776,7 +1846,7 @@ def goodNightOnHandler(evt) {
                 rawMsg = defaults[new Random().nextInt(defaults.size())]
             }
             
-            def finalMsg = rawMsg.replace("%name%", occName).replace("%room%", rName)
+            def finalMsg = apologyPrefix + rawMsg.replace("%name%", occName).replace("%room%", rName)
             def bdayMsg = getBirthdayMessage(occName, "Night")
             if (bdayMsg) finalMsg = "${finalMsg} ${bdayMsg}"
             
