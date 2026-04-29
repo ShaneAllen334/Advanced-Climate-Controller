@@ -155,7 +155,12 @@ def mainPage() {
             }
             input "estimatedMaxOpens", "number", title: "Bag Capacity (Opens to Full)", defaultValue: 8, required: true
             
-            input "enableFallenBin", "bool", title: "Enable Severe Weather Failsafe (Fallen Bin Alerts)", defaultValue: true
+            input "enableFallenBin", "bool", title: "Enable Severe Weather Failsafe (Fallen Bin Alerts)", defaultValue: true, submitOnChange: true
+            if (enableFallenBin) {
+                input "rainSensor", "capability.waterSensor", title: "Optional: Rain Sensor (Weather Verification)", required: false
+                input "weatherStation", "capability.sensor", title: "Optional: Weather Station (Wind Verification)", required: false
+                input "windThreshold", "number", title: "Severe Wind Threshold (Speed)", defaultValue: 15, required: false
+            }
         }
 
         section("<b>HOA Compliance (Return Nag)</b>") {
@@ -568,31 +573,71 @@ def binMoveInactiveHandler(evt) {
     int lidThresh = profile.lidTilt
     
     int maxTilt = state.maxRelativeDevDuringMotion ?: 0
-    boolean isFlipped = state.wasFlippedDuringMotion ?: false
+    
+    // Determine start and end states to identify if the lid was corrected during the walk
+    boolean isCurrentlyFlipped = false
+    boolean startedFlipped = false
+    def xyz = binMultiSensor.currentValue("threeAxis")
+    
+    if (state.activeAxis && state.baselineValue != null) {
+        int baselineDom = state.baselineValue as Integer
+        if (xyz) {
+            int currentDom = xyz[state.activeAxis] as Integer
+            isCurrentlyFlipped = (baselineDom > 0 && currentDom < -500) || (baselineDom < 0 && currentDom > 500)
+        }
+        if (state.lastKnownXYZ) {
+            int startDom = state.lastKnownXYZ[state.activeAxis] as Integer
+            startedFlipped = (baselineDom > 0 && startDom < -500) || (baselineDom < 0 && startDom > 500)
+        }
+    }
+    
+    boolean lidWasClosedDuringMotion = (startedFlipped && !isCurrentlyFlipped)
     
     state.motionStartTime = null 
     
-    logAction("Motion Event Ended: Duration: ${durationSec}s | Max Relative Tilt: ${maxTilt} | Flipped: ${isFlipped}")
+    logAction("Motion Event Ended: Duration: ${durationSec}s | Max Relative Tilt: ${maxTilt} | Flipped: ${isCurrentlyFlipped}")
     
-    if (isFlipped && (state.binStatus == "curb_full" || state.binStatus == "curb_missed")) return
-    
-    if (maxTilt >= lidThresh) {
-        if (isTrackingAllowed()) {
+    // If it ended up flipped (lid fully open), it's either a dump or rummaging, NEVER a completed transit.
+    if (isCurrentlyFlipped) {
+        // We still track it as a toss if the motion was fast enough
+        if (maxTilt >= lidThresh && isTrackingAllowed()) {
             int opens = (state.lidOpens ?: 0) + 1
             state.lidOpens = opens
-            logAction("Action Processed: Trash Toss (Lid Flipped 90°). Capacity updated to (${opens}).")
-        } else {
-            logAction("Action Processed: Trash Toss detected, but ignored (Raccoon Filter).")
+            logAction("Action Processed: Trash Toss (Lid Flipped & Left Open). Capacity updated to (${opens}).")
         }
         return
     }
-
+    
+    // TRANSIT LOGIC
+    boolean isValidTransit = false
     if (durationSec >= reqTransitTime && maxTilt >= reqTransitTilt) {
+        if (maxTilt < lidThresh) {
+            isValidTransit = true // Smooth roll, lid stayed shut
+        } else if (lidWasClosedDuringMotion) {
+            isValidTransit = true // OVERRIDE: They closed a stuck lid and walked it back
+        } else if (state.binStatus == "curb_emptied" && durationSec >= 20) {
+            isValidTransit = true // OVERRIDE: Long walk home supersedes a mid-walk rummage
+        }
+    }
+
+    if (isValidTransit) {
         if (isTrackingAllowed()) {
             logAction("Action Processed: Sustained Transit to/from Curb.")
             processValidTransit()
         } else {
             logAction("Action Processed: Transit detected, but ignored (Raccoon Filter).")
+        }
+        return
+    }
+
+    // Process Lid Open SECOND. A fast, brief motion with high tilt is someone flipping the lid open.
+    if (maxTilt >= lidThresh) {
+        if (isTrackingAllowed()) {
+            int opens = (state.lidOpens ?: 0) + 1
+            state.lidOpens = opens
+            logAction("Action Processed: Trash Toss (Lid Flipped). Capacity updated to (${opens}).")
+        } else {
+            logAction("Action Processed: Trash Toss detected, but ignored (Raccoon Filter).")
         }
         return
     }
@@ -608,8 +653,24 @@ def fallenBinCheck() {
     
     // If the dominant axis is reading near 0, gravity is pulling sideways (It fell over 90 degrees)
     if (Math.abs(curDom) < 400 && !state.isCurrentlyDumped) {
-        logAction("SEVERE WEATHER ALERT: Bin has fallen over!")
-        sendAlert("SEVERE WEATHER ALERT: Your outdoor trash bin has been knocked over.")
+        
+        // FIX: If it's empty at the curb, suppress all fallen alerts. Trucks leave them askew constantly.
+        if (state.binStatus == "curb_emptied") {
+            logAction("BIN ALERT: Bin is sideways, but alert suppressed (Bin is Empty at Curb).")
+            return
+        }
+
+        boolean isRaining = rainSensor && rainSensor.currentValue("water") == "wet"
+        def wSpeed = weatherStation ? weatherStation.currentValue("windSpeed") : 0
+        boolean isWindy = wSpeed && wSpeed.toBigDecimal() >= (settings.windThreshold ?: 15)
+
+        if (isRaining || isWindy) {
+            logAction("SEVERE WEATHER ALERT: Bin has fallen over! (Wind/Rain verified)")
+            sendAlert("SEVERE WEATHER ALERT: Your outdoor trash bin was knocked over by the weather.")
+        } else {
+            logAction("BIN ALERT: Bin orientation abnormal. (Weather is calm. Check for animals, an open lid, or mishap)")
+            sendAlert("BIN ALERT: Your outdoor trash bin is sideways or open. The weather is calm, so check for animals or mishaps.")
+        }
     }
 }
 
@@ -636,6 +697,7 @@ def processTruckDump() {
     
     recordTelemetryTime("historyEmptied")
     state.binStatus = "curb_emptied"
+    state.lastDumpTime = now() 
     
     if (enableHoaNag && hoaNagTime) runIn((hoaNagTime as Integer) * 3600, "hoaNagHandler")
     
@@ -662,6 +724,17 @@ def processValidTransit() {
         logAction("AUTOMATION: Bin shifted at curb. Ignored to prevent false return state.")
     }
     else if (state.binStatus == "curb_emptied" || state.binStatus == "curb_missed") {
+        
+        // DEBOUNCE LOGIC: Prevent instant return immediately after being emptied
+        if (state.binStatus == "curb_emptied" && state.lastDumpTime) {
+            long msSinceDump = now() - state.lastDumpTime
+            if (msSinceDump < 120000) { // 120 seconds (2 minutes)
+                long secLeft = 120 - (msSinceDump / 1000)
+                logAction("AUTOMATION: Transit ignored. Debounce cooldown active (${secLeft}s remaining).")
+                return
+            }
+        }
+        
         logAction("AUTOMATION: Bin returned to house.")
         recordTelemetryTime("historyReturned")
         state.binStatus = "house" 
