@@ -43,9 +43,19 @@ def mainPage() {
             def dndModesList = [settings.dndModes].flatten().findAll{it}
             def isDndMode = dndModesList.contains(location.mode)
             def isDndSwitch = dndSwitch?.currentValue("switch") == "on"
-            def isMasterOff = masterSwitch?.currentValue("switch") == "off"
             
-            def systemState = isMasterOff ? "<span style='color: #c0392b; font-weight: bold;'>MUTED (Master Switch OFF)</span>" : "<span style='color: #27ae60; font-weight: bold;'>ACTIVE (Audio Enabled)</span>"
+            def isMasterOff = masterSwitch?.currentValue("switch") == "off"
+            def isGuestMode = guestModeSwitch?.currentValue("switch") == "on"
+            
+            def systemState = ""
+            if (isMasterOff) {
+                systemState = "<span style='color: #c0392b; font-weight: bold;'>MUTED (Master Switch OFF)</span>"
+            } else if (isGuestMode) {
+                systemState = "<span style='color: #f39c12; font-weight: bold;'>SILENT (Guest Mode ON)</span>"
+            } else {
+                systemState = "<span style='color: #27ae60; font-weight: bold;'>ACTIVE (Audio Enabled)</span>"
+            }
+
             def dndState = (isDndSwitch || isDndMode) ? "<span style='color: #c0392b; font-weight: bold;'>ACTIVE (Do Not Disturb)</span>" : "<span style='color: #27ae60; font-weight: bold;'>STANDBY (Accepting Visitors)</span>"
             def inetStatus = (!settings.enableInternetCheck || state.internetActive != false) ? "<span style='color: #27ae60; font-weight: bold;'>ONLINE</span>" : "<span style='color: #c0392b; font-weight: bold;'>OFFLINE (TTS Suppressed)</span>"
             def queueStatus = state.ttsQueue?.size() > 0 ? "<span style='color: #d35400; font-weight: bold;'>${state.ttsQueue.size()} Messages Queued</span>" : "<span style='color: #27ae60;'>Idle</span>"
@@ -181,6 +191,7 @@ def mainPage() {
             paragraph "<i>Configure your master controls and primary speakers here. These act as the defaults for the entire system unless a specific room or sequence overrides them.</i>"
             
             input "masterSwitch", "capability.switch", title: "Master Enable/Pause Switch", required: false, description: "If selected, turning this switch OFF will globally mute all Voice Butler announcements."
+            input "guestModeSwitch", "capability.switch", title: "Guest Mode Mute Switch", required: false, description: "If selected, turning this switch ON will globally mute all Voice Butler announcements. Background tracking will continue silently."
             
             paragraph "<hr>"
             
@@ -206,7 +217,20 @@ def mainPage() {
             input "frontDoorLock", "capability.lock", title: "Front Door Smart Lock", required: false, submitOnChange: true, description: "Select the smart lock the app should monitor for entry events."
             input "arrivalVolume", "number", title: "Welcome Home Announcement Volume (0-100)", required: false, description: "Dedicated volume setpoint just for Arrival greetings. If left blank, it defaults to the 'Outdoor Volume' setting."
             
+            input "enableHouseRoster", "bool", title: "Enable House Roster Briefing?", defaultValue: false, submitOnChange: true, description: "The Butler will announce who else is currently home when someone arrives."
+            if (enableHouseRoster) {
+                input "rosterAllowedUsers", "enum", title: "Limit Roster to Specific Users", options: lockUsers, multiple: true, required: false, description: "Only these users will hear the roster briefing. Leave blank to allow everyone to hear it."
+                input "rosterAllowedCustom", "text", title: "Limit Roster (Custom Names)", required: false, description: "Comma-separated list (e.g., Admin Code)."
+            }
+            
             input "quickReturnGrace", "number", title: "Forgotten Item Grace Period (Minutes)", defaultValue: 5, required: false, description: "If a user unlocks the door within this many minutes of THEIR specific departure, the system will silently welcome them back without a full greeting."
+            
+            input "enableMailCheck", "bool", title: "Enable Mail Delivery Announcements?", defaultValue: false, submitOnChange: true, description: "If enabled, the Butler will ask arriving users to retrieve the mail if the switch below is ON."
+            if (enableMailCheck) {
+                input "mailSwitch", "capability.switch", title: "Virtual Mail Switch", required: true, description: "Select the switch that turns ON when the mailbox is opened."
+                input "mailAllowedUsers", "enum", title: "Limit Mail Alert to Specific Users", options: lockUsers, multiple: true, required: false, description: "Only these users will hear the mail alert. Leave blank to allow everyone to hear it."
+                input "mailAllowedCustom", "text", title: "Limit Mail Alert (Custom Names)", required: false, description: "Comma-separated list (e.g., Admin Code)."
+            }
             
             input "enableExtendedAbsence", "bool", title: "Enable Extended Absence (Vacation) Greetings?", defaultValue: false, submitOnChange: true, description: "Play a special welcome back message if the user has been gone for several days."
             if (enableExtendedAbsence) {
@@ -329,6 +353,7 @@ def mainPage() {
                     input "depVolume_${i}", "number", title: "Departure Volume (0-100)", required: false, description: "Optional: Sets a specific volume just for this departure. Leave blank to use default outdoor volume."
                     
                     input "btnTestDeparture_${i}", "button", title: "▶️ Test Departure Profile ${i} Audio", description: "Click to hear how this profile's farewell message sounds on the outdoor speaker."
+                    input "btnResetDepMsgs_${i}", "button", title: "🔄 Reset to Default ${settings["depType_${i}"] ?: 'Work'} Messages", description: "Click to forcefully overwrite the 10 messages below with the default set for the selected Profile Type."
                     
                     def workMsgs = [
                         "Have a good day at work, %name%.",
@@ -387,6 +412,33 @@ def mainPage() {
             for (int i = 1; i <= (numRooms as Integer); i++) {
                 section("${settings["roomName_${i}"] ?: "Room Zone ${i}"}", hideable: true, hidden: false) { 
                     href(name: "roomHref${i}", page: "roomPage", params: [roomNum: i], title: "Configure ${settings["roomName_${i}"] ?: "Room ${i}"}", description: "Tap to set up occupant names, triggers, and messages for this room.") 
+                }
+            }
+        }
+
+        section("Indoor Doorbell Routing (Follow-Me)", hideable: true, hidden: false) {
+            paragraph "<i>Instead of blasting the doorbell announcement everywhere, the Butler will only speak in rooms where active motion is detected.</i>"
+            input "enableIndoorRouting", "bool", title: "Enable Targeted Indoor Routing?", defaultValue: false, submitOnChange: true
+
+            if (enableIndoorRouting) {
+                input "indoorDoorbellMsg", "text", title: "Announcement Message", defaultValue: "Pardon the interruption, but there is a visitor at the front door."
+                input "indoorRouteFallback", "bool", title: "Fallback to Global Speaker?", defaultValue: true, description: "If no motion is detected in any room, announce over the Global Indoor Speaker."
+                
+                input "indoorRouteMuteDND", "bool", title: "Mute During Do Not Disturb?", defaultValue: true, description: "If the DND Switch is ON, do not announce indoors."
+                input "indoorRouteRestrictedModes", "mode", title: "Restricted Modes (Do Not Announce)", multiple: true, required: false, description: "Select house modes (like 'Night') where indoor doorbell routing should be completely muted."
+
+                input "btnTestIndoorRouting", "button", title: "▶️ Test Indoor Routing (Based on Current Motion)", description: "Click to simulate a doorbell press and see which speakers it currently routes to based on active motion in your house."
+
+                input "numRoutingRooms", "number", title: "Number of Routing Zones (1-7)", defaultValue: 0, range: "0..7", submitOnChange: true
+
+                if (numRoutingRooms > 0) {
+                    for (int i = 1; i <= (numRoutingRooms as Integer); i++) {
+                        paragraph "<b>Routing Zone ${i}</b>"
+                        input "routeRoomName_${i}", "text", title: "Zone Name", required: false, defaultValue: "Zone ${i}"
+                        input "routeMotion_${i}", "capability.motionSensor", title: "Motion Sensors (If Active, send audio here)", multiple: true, required: false
+                        input "routeSpeaker_${i}", "capability.speechSynthesis", title: "Target Speaker", required: false
+                        input "routeVolume_${i}", "number", title: "Announcement Volume (0-100)", required: false
+                    }
                 }
             }
         }
@@ -458,6 +510,26 @@ def mainPage() {
                 }
                 
                 input "btnTestDaytime", "button", title: "▶️ Test Daytime Audio", description: "Test the daytime volume and a randomized message on the outdoor speaker."
+            }
+            
+            paragraph "---"
+            
+            input "enableDaytimeFollowUp", "bool", title: "Enable Unanswered Door Follow-Up?", defaultValue: false, submitOnChange: true, description: "If you don't answer the door in time, the Butler will apologize to the visitor."
+            if (enableDaytimeFollowUp) {
+                input "daytimeDoorContact", "capability.contactSensor", title: "Front Door Contact Sensor", required: true, description: "If this door does not open within the timeout, the follow-up message will play."
+                input "daytimeFollowUpDelay", "number", title: "Wait Time (Minutes)", defaultValue: 3, required: false, description: "How long should the visitor wait before the Butler comes back with the apology?"
+                
+                paragraph "<b>Unanswered Follow-Up Messages (Randomized)</b>"
+                def noAnswerDefs = [
+                    "I am sorry, but the homeowners are currently unavailable to come to the door.",
+                    "Apologies, but it seems no one is able to answer the door right now. Please leave a message.",
+                    "The homeowners are unable to come to the door at this moment. Have a good day.",
+                    "I apologize, but they cannot come to the front door right now.",
+                    "It appears the residents are tied up. Please try again later."
+                ]
+                for (int d = 1; d <= 5; d++) {
+                    input "daytimeNoAnswer_${d}", "text", title: "No Answer Message ${d}", required: false, defaultValue: noAnswerDefs[d-1]
+                }
             }
         }
 
@@ -731,7 +803,10 @@ def roomPage(params) {
             }
         }
         
-        section("Weather Integration", hideable: true, hidden: false) {
+        section("Weather, Security & Briefing Integrations", hideable: true, hidden: false) {
+            input "roomPerimeterCheck_${rNum}", "bool", title: "Run Perimeter Security Check on Good Night?", defaultValue: false, submitOnChange: true, description: "If enabled, the Butler will report the status of your locks and coop doors before reading the weather."
+            input "roomCurfewWarning_${rNum}", "bool", title: "Enable Missing Person Warning?", defaultValue: false, submitOnChange: true, description: "If enabled, the Butler will warn you if someone departed today but has not yet returned."
+            
             paragraph "<i>Link your weather station or generic weather device to seamlessly append the day's forecast directly after the room's greeting finishes. It will read your 'Meteorologist Script' if available, or automatically build a sentence using generic Temperature and Weather Condition attributes.</i>"
             input "roomWeatherDevice_${rNum}", "capability.temperatureMeasurement", title: "Weather / Temperature Device", required: false, description: "Select the device providing your daily forecast or temperature readings.", submitOnChange: true
             
@@ -781,6 +856,7 @@ def ensureStateMaps() {
     if (state.pendingMorningReport == null) state.pendingMorningReport = false
     if (state.pendingArrivalReport == null) state.pendingArrivalReport = false
     if (state.lastMode == null) state.lastMode = location.mode
+    if (state.lastMailDeliveryTime == null) state.lastMailDeliveryTime = 0
     
     if (state.lastBypassDoorOpen == null) state.lastBypassDoorOpen = 0
     if (state.lastIntruderAlert == null) state.lastIntruderAlert = 0
@@ -820,6 +896,10 @@ def initialize() {
         subscribe(frontDoorMotion, "motion.active", countMotionHandler)
     }
     
+    if (settings.enableDaytimeFollowUp && settings.daytimeDoorContact) {
+        subscribe(settings.daytimeDoorContact, "contact.open", daytimeDoorHandler)
+    }
+    
     // Intruder Deterrent
     if (enableIntruder) {
         if (intruderMotion) subscribe(intruderMotion, "motion.active", intruderMotionHandler)
@@ -831,6 +911,11 @@ def initialize() {
     
     // Arrival Logic
     if (frontDoorLock) subscribe(frontDoorLock, "lock.unlocked", arrivalHandler)
+    
+    // Mail Checking Logic
+    if (settings.enableMailCheck && settings.mailSwitch) {
+        subscribe(settings.mailSwitch, "switch.on", mailSwitchHandler)
+    }
     
     // Departure Logic
     if (frontDoorContact) subscribe(frontDoorContact, "contact", departureHandler)
@@ -872,6 +957,14 @@ def initialize() {
             if (motionSensors) subscribe(motionSensors, "motion.active", roomMotionHandler)
         }
     }
+}
+
+// --- MAIL DELIVERY HANDLER ---
+def mailSwitchHandler(evt) {
+    ensureStateMaps()
+    state.lastMailDeliveryTime = new Date().time
+    addToHistory("SYSTEM: Mail delivery logged via switch.")
+    if (settings.enableDebug) log.debug "SYSTEM: Mail switch turned ON. Delivery time logged."
 }
 
 // --- INTERNET CONNECTIVITY CHECK ---
@@ -953,6 +1046,11 @@ def enqueueTTS(speakerInput, msg, originalVol, priority, fastTrack = false) {
     
     if (settings.masterSwitch && settings.masterSwitch.currentValue("switch") == "off") {
         if (settings.enableDebug) log.debug "TTS Suppressed: Master Switch is OFF. Skipped Message: '${msg}'"
+        return
+    }
+    
+    if (settings.guestModeSwitch && settings.guestModeSwitch.currentValue("switch") == "on") {
+        if (settings.enableDebug) log.debug "TTS Suppressed: Guest Mode is ON. Background tracking continues silently. Skipped Message: '${msg}'"
         return
     }
     
@@ -1116,7 +1214,59 @@ def getAllSpeakers() {
     for (int i = 1; i <= numRoomsSet; i++) {
         if (settings["roomSpeaker_${i}"]) list << settings["roomSpeaker_${i}"]
     }
+    def numRouteSet = settings.numRoutingRooms ? settings.numRoutingRooms as Integer : 0
+    for (int i = 1; i <= numRouteSet; i++) {
+        if (settings["routeSpeaker_${i}"]) list << settings["routeSpeaker_${i}"]
+    }
     return list.flatten().findAll { it != null }
+}
+
+def resetDepartureMessages(int i) {
+    def workMsgs = [
+        "Have a good day at work, %name%.",
+        "Drive safely to work, %name%.",
+        "Have a productive day at the office, %name%.",
+        "Time to make the donuts, %name%.",
+        "Have a great day at work, %name%.",
+        "Safe commute, %name%.",
+        "See you after work, %name%.",
+        "The perimeter will be secured while you work.",
+        "Have a great day, %name%.",
+        "Farewell %name%, the house is secure."
+    ]
+    def schoolMsgs = [
+        "Have a great day at school, %name%.",
+        "Learn a lot today, %name%.",
+        "Have fun at school, %name%.",
+        "Have a good day in class, %name%.",
+        "Be good at school, %name%.",
+        "Have an awesome school day, %name%.",
+        "See you after school, %name%.",
+        "Time for school, %name%.",
+        "Have a great day learning, %name%.",
+        "Have fun at school!"
+    ]
+    def genMsgs = [
+        "Have a great day %name%.",
+        "Safe travels %name%.",
+        "Have a good one %name%.",
+        "Take care out there %name%.",
+        "Goodbye %name%, I will monitor the perimeter.",
+        "Have a productive day %name%.",
+        "See you later %name%.",
+        "Have a good trip %name%.",
+        "Take it easy %name%.",
+        "Farewell %name%. The house is secure."
+    ]
+    
+    def type = settings["depType_${i}"] ?: "Work"
+    def selMsgs = type == "School" ? schoolMsgs : (type == "Work" ? workMsgs : genMsgs)
+    
+    for (int m = 1; m <= 10; m++) {
+        app.updateSetting("depMessage_${i}_${m}", [type: "text", value: selMsgs[m-1]])
+    }
+    log.info "SYSTEM: Reset departure messages for Profile ${i} to ${type} defaults."
+    addToHistory("SYSTEM: Reset departure messages for Profile ${i} to ${type} defaults.")
 }
 
 // --- DEPARTURE LOGIC (Priority 3) ---
@@ -1372,6 +1522,33 @@ def playButlerReport(data) {
 }
 
 // --- FRONT DOOR DND, AFTER HOURS, & DAYTIME LOGIC (Priority 2) ---
+
+def daytimeDoorHandler(evt) {
+    ensureStateMaps()
+    if (settings.enableDebug) log.debug "DAYTIME: Door opened. Canceling any pending unanswered visitor follow-up."
+    unschedule("playDaytimeFollowUp")
+}
+
+def playDaytimeFollowUp() {
+    ensureStateMaps()
+    if (outdoorSpeaker) {
+        def messages = []
+        for (int d = 1; d <= 5; d++) {
+            def msg = settings["daytimeNoAnswer_${d}"]
+            if (msg) messages << msg
+        }
+        if (!messages) messages = ["I am sorry, but the homeowners are currently unavailable to come to the door."]
+        
+        def randomMsg = messages[new Random().nextInt(messages.size())]
+        randomMsg = applyDynamicVars(randomMsg)
+        
+        def targetVol = settings.daytimeDoorbellVolume != null ? settings.daytimeDoorbellVolume : settings.outdoorVolume
+        
+        enqueueTTS(outdoorSpeaker, randomMsg, targetVol, 2, true)
+        addToHistory("DAYTIME GREETING: Doorbell unanswered after timeout. Queued: '${randomMsg}'")
+    }
+}
+
 def visitorHandler(evt) {
     ensureStateMaps()
     
@@ -1408,6 +1585,45 @@ def visitorHandler(evt) {
     if (enableAfterHours && afterHoursTimeStart && afterHoursTimeEnd) {
         try { isAfterHours = timeOfDayIsBetween(toDateTime(afterHoursTimeStart), toDateTime(afterHoursTimeEnd), new Date(), location.timeZone) } catch(e) {}
     }
+
+    // --- NEW: INDOOR ROUTING (Targeted Intercom) ---
+    if (isDoorbell && settings.enableIndoorRouting) {
+        def shouldRoute = true
+        if (settings.indoorRouteMuteDND && isDndActive) shouldRoute = false
+        
+        def restrictedModes = [settings.indoorRouteRestrictedModes].flatten().findAll{it}
+        if (restrictedModes.contains(location.mode)) shouldRoute = false
+
+        if (shouldRoute) {
+            def anyRouted = false
+            def routeMsg = settings.indoorDoorbellMsg ?: "Pardon the interruption, but there is a visitor at the front door."
+            routeMsg = applyDynamicVars(routeMsg)
+
+            def numRoutes = settings.numRoutingRooms ? settings.numRoutingRooms as Integer : 0
+            for (int i = 1; i <= numRoutes; i++) {
+                def mSensors = [settings["routeMotion_${i}"]].flatten().findAll{it}
+                def spk = settings["routeSpeaker_${i}"]
+                if (mSensors && spk) {
+                    def isActive = mSensors.any { it.currentValue("motion") == "active" }
+                    if (isActive) {
+                        def vol = settings["routeVolume_${i}"]
+                        enqueueTTS(spk, routeMsg, vol, 2)
+                        anyRouted = true
+                        def rName = settings["routeRoomName_${i}"] ?: "Zone ${i}"
+                        addToHistory("INDOOR ROUTING: Motion active in ${rName}. Doorbell announced there.")
+                    }
+                }
+            }
+
+            if (!anyRouted && settings.indoorRouteFallback && globalIndoorSpeaker) {
+                enqueueTTS(globalIndoorSpeaker, routeMsg, globalVolume, 2)
+                addToHistory("INDOOR ROUTING: No active motion found. Doorbell announced on Global fallback.")
+            }
+        } else {
+            if (settings.enableDebug) log.debug "INDOOR ROUTING: Suppressed due to DND or Restricted Mode."
+        }
+    }
+    // -----------------------------------------------
     
     if (isDndActive) {
         def debounceMs = 30000 
@@ -1476,6 +1692,13 @@ def visitorHandler(evt) {
                 state.lastOutdoorGreeting = now
                 
                 addToHistory("DAYTIME GREETING: Doorbell rung during daytime. Queued: '${randomMsg}'")
+                
+                // Unanswered Follow-Up Logic
+                if (settings.enableDaytimeFollowUp && settings.daytimeDoorContact) {
+                    def delayMins = settings.daytimeFollowUpDelay != null ? settings.daytimeFollowUpDelay.toInteger() : 3
+                    runIn(delayMins * 60, "playDaytimeFollowUp", [overwrite: true])
+                    if (settings.enableDebug) log.debug "DAYTIME: Scheduled follow-up for ${delayMins} minutes."
+                }
             }
         }
     }
@@ -1625,7 +1848,46 @@ def arrivalHandler(evt) {
         def bdayMsg = getBirthdayMessage(actualUserName, "Arrival")
         if (bdayMsg) greetingToPlay = "${greetingToPlay} ${bdayMsg}"
         
+        // --- HOUSE ROSTER LOGIC ---
+        if (settings.enableHouseRoster) {
+            def allowedRoster = [settings.rosterAllowedUsers].flatten().findAll{it}.collect{it.toLowerCase()}
+            if (settings.rosterAllowedCustom) allowedRoster += settings.rosterAllowedCustom.split(',').collect{it.trim().toLowerCase()}
+            
+            if (allowedRoster.isEmpty() || allowedRoster.contains(actualUserName.toLowerCase()) || allowedRoster.contains(trackingKey.toLowerCase())) {
+                def othersHome = state.hasArrivedToday.findAll { k, v -> v == true && k.toLowerCase() != trackingKey.toLowerCase() && k != "global" }.keySet().toList()
+                def rosterMsg = ""
+                if (othersHome.size() == 0) {
+                    rosterMsg = " You are the first to arrive. The house is empty."
+                } else if (othersHome.size() == 1) {
+                    rosterMsg = " ${othersHome[0]} is already home."
+                } else if (othersHome.size() == 2) {
+                    rosterMsg = " ${othersHome[0]} and ${othersHome[1]} are already home."
+                } else {
+                    def last = othersHome.pop()
+                    rosterMsg = " ${othersHome.join(', ')}, and ${last} are already home."
+                }
+                greetingToPlay = greetingToPlay + rosterMsg
+            }
+        }
+        // --------------------------
+        
         greetingToPlay = applyDynamicVars(greetingToPlay)
+        
+        // --- MAIL DELIVERY APPEND LOGIC ---
+        if (settings.enableMailCheck && settings.mailSwitch && settings.mailSwitch.currentValue("switch") == "on") {
+            def allowedMail = [settings.mailAllowedUsers].flatten().findAll{it}.collect{it.toLowerCase()}
+            if (settings.mailAllowedCustom) allowedMail += settings.mailAllowedCustom.split(',').collect{it.trim().toLowerCase()}
+            
+            if (allowedMail.isEmpty() || allowedMail.contains(actualUserName.toLowerCase()) || allowedMail.contains(trackingKey.toLowerCase())) {
+                def mailTimeStr = "earlier today"
+                if (state.lastMailDeliveryTime && state.lastMailDeliveryTime > 0) {
+                    mailTimeStr = new Date(state.lastMailDeliveryTime).format("h:mm a", location.timeZone)
+                }
+                def mailAppend = " Pardon the reminder, but the mail was delivered at ${mailTimeStr} and still needs to be retrieved."
+                greetingToPlay = greetingToPlay + mailAppend
+            }
+        }
+        // ----------------------------------
         
         def targetVolume = settings["arrivalVolume"] != null ? settings["arrivalVolume"] : settings["outdoorVolume"]
         
@@ -1794,20 +2056,19 @@ def goodNightOnHandler(evt) {
             def delaySec = settings["delayGreetingGN_${i}"] != null ? settings["delayGreetingGN_${i}"].toInteger() : 5
             def occName = settings["roomOccupantName_${i}"] ?: "Guest"
             
-            // --- Missed Arrival Catch-Up Logic ---
+            // --- Broadened Missed Arrival Logic ---
             def occupants = occName.split(/(?i)\s+and\s+|\s*&\s*|\s*,\s*/).collect{ it.trim() }
             def missedCount = 0
             def totalOcc = occupants.size()
             
             occupants.each { occ ->
-                def dKey = state.hasDepartedToday?.keySet()?.find { it.equalsIgnoreCase(occ) }
-                def aKey = state.hasArrivedToday?.keySet()?.find { it.equalsIgnoreCase(occ) }
-                
-                if (dKey && state.hasDepartedToday[dKey] && !state.hasArrivedToday[aKey ?: occ]) {
+                // Check if they are currently marked as anything other than Arrived
+                def checkKey = state.hasArrivedToday?.keySet()?.find { it.equalsIgnoreCase(occ) } ?: occ
+                if (!state.hasArrivedToday[checkKey]) {
                     missedCount++
-                    state.hasArrivedToday[dKey] = true
-                    state.resetReasons[dKey] = "Missed entry. Checked in via Good Night Switch."
-                    addToHistory("SYSTEM: Occupant [${dKey}] was missed at the front door. Checked in silently via Good Night.")
+                    state.hasArrivedToday[checkKey] = true
+                    state.resetReasons[checkKey] = "Missed entry. Checked in via Good Night Switch."
+                    addToHistory("SYSTEM: Occupant [${checkKey}] was marked away. Checked in silently via Good Night.")
                 }
             }
             
@@ -1817,6 +2078,31 @@ def goodNightOnHandler(evt) {
                     apologyPrefix = "Pardon me, I did not realize one of you had returned earlier. Welcome home. "
                 } else {
                     apologyPrefix = "Pardon me, I did not catch your arrival earlier. Welcome home. "
+                }
+            }
+            // ---------------------------------------
+            
+            // --- Curfew / Missing Person Warning ---
+            def curfewPrefix = ""
+            if (settings["roomCurfewWarning_${i}"]) {
+                def missingPersons = []
+                state.hasDepartedToday.each { depUser, hasDeparted ->
+                    if (hasDeparted) {
+                        def checkKey = state.hasArrivedToday?.keySet()?.find { it.equalsIgnoreCase(depUser) } ?: depUser
+                        if (!state.hasArrivedToday[checkKey]) {
+                            missingPersons << depUser
+                        }
+                    }
+                }
+                if (missingPersons.size() > 0) {
+                    if (missingPersons.size() == 1) {
+                        curfewPrefix = "Please note that ${missingPersons[0]} has not yet returned. "
+                    } else if (missingPersons.size() == 2) {
+                        curfewPrefix = "Please note that ${missingPersons[0]} and ${missingPersons[1]} have not yet returned. "
+                    } else {
+                        def lastMissing = missingPersons.pop()
+                        curfewPrefix = "Please note that ${missingPersons.join(', ')}, and ${lastMissing} have not yet returned. "
+                    }
                 }
             }
             // ---------------------------------------
@@ -1846,7 +2132,7 @@ def goodNightOnHandler(evt) {
                 rawMsg = defaults[new Random().nextInt(defaults.size())]
             }
             
-            def finalMsg = apologyPrefix + rawMsg.replace("%name%", occName).replace("%room%", rName)
+            def finalMsg = apologyPrefix + curfewPrefix + rawMsg.replace("%name%", occName).replace("%room%", rName)
             def bdayMsg = getBirthdayMessage(occName, "Night")
             if (bdayMsg) finalMsg = "${finalMsg} ${bdayMsg}"
             
@@ -1872,6 +2158,31 @@ def scheduleGoodNightSequence(data) {
     }
     
     if (targetSpeaker) {
+        // --- Perimeter Check Logic ---
+        if (settings["roomPerimeterCheck_${rNum}"]) {
+            def unsecured = []
+            settings.perimeterLocks?.each { if (it.currentValue("lock") == "unlocked") unsecured << "the ${it.displayName} is unlocked" }
+            settings.perimeterContacts?.each { if (it.currentValue("contact") == "open") unsecured << "the ${it.displayName} is open" }
+            settings.coopDoors?.each { if (it.currentValue("contact") == "open") unsecured << "the ${it.displayName} is open" }
+            
+            def perimeterReport = ""
+            if (unsecured.size() > 0) {
+                if (unsecured.size() == 1) {
+                    perimeterReport = " Before you go to sleep, I must warn you that ${unsecured[0]}."
+                } else if (unsecured.size() == 2) {
+                    perimeterReport = " Before you go to sleep, I must warn you that ${unsecured[0]} and ${unsecured[1]}."
+                } else {
+                    def last = unsecured.pop()
+                    perimeterReport = " Before you go to sleep, I must warn you that ${unsecured.join(', ')}, and ${last}."
+                }
+            } else if (settings.perimeterLocks || settings.perimeterContacts || settings.coopDoors) {
+                perimeterReport = " The perimeter is secure, and all coops are closed."
+            }
+            
+            if (perimeterReport) finalMsg = finalMsg + perimeterReport
+        }
+        // -----------------------------
+        
         def wDevice = settings["roomWeatherDevice_${rNum}"]
         if (wDevice && settings["roomWeatherGN_${rNum}"]) {
             def wText = getWeatherReport(wDevice)
@@ -2094,6 +2405,31 @@ def testRoomGreeting(int i, String type) {
     }
 
     if (targetSpeaker) {
+        // --- Perimeter Check Logic ---
+        if (settings["roomPerimeterCheck_${i}"]) {
+            def unsecured = []
+            settings.perimeterLocks?.each { if (it.currentValue("lock") == "unlocked") unsecured << "the ${it.displayName} is unlocked" }
+            settings.perimeterContacts?.each { if (it.currentValue("contact") == "open") unsecured << "the ${it.displayName} is open" }
+            settings.coopDoors?.each { if (it.currentValue("contact") == "open") unsecured << "the ${it.displayName} is open" }
+            
+            def perimeterReport = ""
+            if (unsecured.size() > 0) {
+                if (unsecured.size() == 1) {
+                    perimeterReport = " Before you go to sleep, I must warn you that ${unsecured[0]}."
+                } else if (unsecured.size() == 2) {
+                    perimeterReport = " Before you go to sleep, I must warn you that ${unsecured[0]} and ${unsecured[1]}."
+                } else {
+                    def last = unsecured.pop()
+                    perimeterReport = " Before you go to sleep, I must warn you that ${unsecured.join(', ')}, and ${last}."
+                }
+            } else if (settings.perimeterLocks || settings.perimeterContacts || settings.coopDoors) {
+                perimeterReport = " The perimeter is secure, and all coops are closed."
+            }
+            
+            if (perimeterReport) finalMsg = finalMsg + perimeterReport
+        }
+        // -----------------------------
+        
         def wDevice = settings["roomWeatherDevice_${i}"]
         def appendWeather = type == "Good Night" ? settings["roomWeatherGN_${i}"] : settings["roomWeatherGM_${i}"]
         
@@ -2203,7 +2539,7 @@ def testArrivalGreeting() {
         def volLog = targetVolume != null ? "${targetVolume}%" : "Hardware Default"
         
         log.info "TESTING ARRIVAL GREETING: '${greetingToPlay}' at ${volLog} volume."
-        enqueueTTS(outdoorSpeaker, greetingToPlay, targetVolume, 1)
+        enqueueTTS(outdoorSpeaker, greetingToPlay, targetVolume, 1, true)
     } else {
         log.warn "Cannot test Arrival greeting - no outdoor speaker assigned."
     }
@@ -2368,6 +2704,33 @@ def appButtonHandler(btn) {
         def volLog = outdoorVolume != null ? "${outdoorVolume}%" : "Hardware Default"
         log.info "TESTING OUTDOOR SPEAKER: '${msg}' at ${volLog} volume."
         enqueueTTS(outdoorSpeaker, msg, outdoorVolume, 1)
+    } else if (btn == "btnTestIndoorRouting") {
+        def routeMsg = settings.indoorDoorbellMsg ?: "Pardon the interruption, but there is a visitor at the front door."
+        routeMsg = applyDynamicVars(routeMsg)
+        def anyRouted = false
+        def numRoutes = settings.numRoutingRooms ? settings.numRoutingRooms as Integer : 0
+        for (int i = 1; i <= numRoutes; i++) {
+            def mSensors = [settings["routeMotion_${i}"]].flatten().findAll{it}
+            def spk = settings["routeSpeaker_${i}"]
+            if (mSensors && spk) {
+                def isActive = mSensors.any { it.currentValue("motion") == "active" }
+                if (isActive) {
+                    def vol = settings["routeVolume_${i}"]
+                    enqueueTTS(spk, routeMsg, vol, 1) 
+                    anyRouted = true
+                    def rName = settings["routeRoomName_${i}"] ?: "Zone ${i}"
+                    log.info "TESTING INDOOR ROUTING: Motion active in ${rName}. Announcing there."
+                }
+            }
+        }
+        if (!anyRouted) {
+            if (settings.indoorRouteFallback && globalIndoorSpeaker) {
+                enqueueTTS(globalIndoorSpeaker, routeMsg, globalVolume, 1)
+                log.info "TESTING INDOOR ROUTING: No active motion found. Announcing on Global fallback."
+            } else {
+                log.warn "TESTING INDOOR ROUTING: No active motion found and fallback is disabled (or no global speaker assigned). Silence."
+            }
+        }
     } else if (btn.startsWith("btnTestRoomSpk_")) {
         def rNum = btn.split("_")[1].toInteger()
         def targetSpeaker = settings["roomSpeaker_${rNum}"] ?: globalIndoorSpeaker
@@ -2380,6 +2743,9 @@ def appButtonHandler(btn) {
     } else if (btn.startsWith("btnTestDeparture_")) {
         def idx = btn.split("_")[1].toInteger()
         testDepartureGreeting(idx)
+    } else if (btn.startsWith("btnResetDepMsgs_")) {
+        def idx = btn.split("_")[1].toInteger()
+        resetDepartureMessages(idx)
     } else if (btn.startsWith("btnTestGN_")) {
         def rNum = btn.split("_")[1].toInteger()
         testRoomGreeting(rNum, "Good Night")
