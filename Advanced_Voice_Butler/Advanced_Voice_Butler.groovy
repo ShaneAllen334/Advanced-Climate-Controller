@@ -655,13 +655,32 @@ def mainPage() {
             input "quietVolume", "number", title: "Quiet Hours Maximum Volume (0-100)", required: false, description: "All voice announcements will be forcibly throttled down to this volume during Quiet Hours."
         }
 
-        section("Birthdays & Holidays", hideable: true, hidden: false) {
+        section("Birthdays, Anniversaries & Holidays", hideable: true, hidden: false) {
             paragraph "<i>Configure special daily announcements.</i>"
             
             input "enableHolidays", "bool", title: "Enable Morning Holiday Announcements?", defaultValue: false, submitOnChange: true, description: "If enabled, Good Morning greetings will automatically append a reminder for major US holidays."
             if (enableHolidays) {
                 input "holidayMessage", "text", title: "Holiday Message Format", defaultValue: "By the way, don't forget today is %holiday%!", description: "Use %holiday% to inject the holiday name."
             }
+            
+            paragraph "<hr>"
+            
+            input "enableAnniversary", "bool", title: "Enable House Anniversary Greetings?", defaultValue: false, submitOnChange: true, description: "If enabled, the Butler will add a special anniversary message to arrivals, departures, and specifically selected rooms."
+            if (enableAnniversary) {
+                def months = ["01":"January", "02":"February", "03":"March", "04":"April", "05":"May", "06":"June", "07":"July", "08":"August", "09":"September", "10":"October", "11":"November", "12":"December"]
+                input "annivMonth", "enum", title: "Anniversary Month", options: months, required: true
+                input "annivDay", "number", title: "Anniversary Day (1-31)", range: "1..31", required: true
+                input "annivAllowedUsers", "enum", title: "Limit Anniversary to Specific Users (Arrival/Departure)", options: lockUsers, multiple: true, required: false, description: "Only these users will hear the anniversary message when arriving or departing. Leave blank to allow everyone."
+                input "annivAllowedCustom", "text", title: "Limit Anniversary (Custom Names)", required: false, description: "Comma-separated list (e.g., Admin Code)."
+
+                paragraph "<b>Custom Anniversary Messages</b>"
+                input "annivMsgArrival", "text", title: "Arrival Append", defaultValue: "Happy Anniversary! Welcome home."
+                input "annivMsgDeparture", "text", title: "Departure Append", defaultValue: "Have a wonderful anniversary today!"
+                input "annivMsgMorning", "text", title: "Good Morning Append", defaultValue: "Happy Anniversary! I hope you both have a fantastic day."
+                input "annivMsgNight", "text", title: "Good Night Append", defaultValue: "Happy Anniversary. Sleep well, I will keep the perimeter secure."
+            }
+            
+            paragraph "<hr>"
             
             paragraph "<b>User Birthdays</b>\n<i>When it's a user's special day, the system will append a birthday message to their Good Morning, Good Night, Arrival, and Departure greetings. Note: The name entered here must perfectly match their lock code name, departure profile name, or room occupant name.</i>"
             input "numBirthdays", "number", title: "Number of Birthdays to Track (0-10)", defaultValue: 0, submitOnChange: true
@@ -806,6 +825,7 @@ def roomPage(params) {
         section("Weather, Security & Briefing Integrations", hideable: true, hidden: false) {
             input "roomPerimeterCheck_${rNum}", "bool", title: "Run Perimeter Security Check on Good Night?", defaultValue: false, submitOnChange: true, description: "If enabled, the Butler will report the status of your locks and coop doors before reading the weather."
             input "roomCurfewWarning_${rNum}", "bool", title: "Enable Missing Person Warning?", defaultValue: false, submitOnChange: true, description: "If enabled, the Butler will warn you if someone departed today but has not yet returned."
+            input "roomEnableAnniversary_${rNum}", "bool", title: "Play Anniversary Greeting in this Room?", defaultValue: false, description: "If enabled, the global anniversary message will append to Good Morning and Good Night in this zone."
             
             paragraph "<i>Link your weather station or generic weather device to seamlessly append the day's forecast directly after the room's greeting finishes. It will read your 'Meteorologist Script' if available, or automatically build a sentence using generic Temperature and Weather Condition attributes.</i>"
             input "roomWeatherDevice_${rNum}", "capability.temperatureMeasurement", title: "Weather / Temperature Device", required: false, description: "Select the device providing your daily forecast or temperature readings.", submitOnChange: true
@@ -973,8 +993,8 @@ def checkInternetConnection() {
     
     try {
         def params = [
-            uri: "http://1.1.1.1", // Reliable external IP to ping (Cloudflare DNS)
-            timeout: 5
+            uri: "http://captive.apple.com", // Bulletproof endpoint that never redirects
+            timeout: 10 // Increased timeout to prevent false positives from hub load
         ]
         asynchttpGet("internetCheckCallback", params)
     } catch (e) {
@@ -984,7 +1004,8 @@ def checkInternetConnection() {
 }
 
 def internetCheckCallback(response, data) {
-    if (response && !response.hasError() && response.status == 200) {
+    // Accept 200 (OK) or 301/302 (Redirects) just in case
+    if (response && !response.hasError() && (response.status == 200 || response.status == 301 || response.status == 302)) {
         setInternetState(true)
     } else {
         setInternetState(false)
@@ -1332,6 +1353,11 @@ def departureHandler(evt) {
                 finalMsg = "${finalMsg} ${bdayMsg}"
             }
             
+            def annivMsg = getAnniversaryMessage("Departure", uName)
+            if (annivMsg) {
+                finalMsg = "${finalMsg} ${annivMsg}"
+            }
+            
             finalMsg = applyDynamicVars(finalMsg)
             
             def delay = settings["depDelay_${idx}"] != null ? settings["depDelay_${idx}"].toInteger() : 5
@@ -1396,6 +1422,17 @@ def intruderMotionHandler(evt) {
     ensureStateMaps()
     if (!canTriggerIntruder()) return
     
+    if (settings.smartCameraDevice && settings.smartAttribute) {
+        if (settings.enableDebug) log.debug "INTRUDER: Motion detected, but Smart Camera is active. Waiting 6 seconds for object classification..."
+        runIn(6, "executeGenericIntruder", [data: [deviceName: evt.device.displayName], overwrite: true])
+    } else {
+        executeGenericIntruder([deviceName: evt.device.displayName])
+    }
+}
+
+def executeGenericIntruder(data) {
+    if (!canTriggerIntruder()) return
+    
     state.lastIntruderAlert = new Date().time
     state.lastOutdoorGreeting = new Date().time
     
@@ -1412,7 +1449,7 @@ def intruderMotionHandler(evt) {
         def targetVol = settings.intruderVolume != null ? settings.intruderVolume : settings.outdoorVolume
         
         enqueueTTS(outdoorSpeaker, randomMsg, targetVol, 1)
-        addToHistory("INTRUDER DETERRENT: Generic motion detected on ${evt.device.displayName}. Queued: '${randomMsg}'")
+        addToHistory("INTRUDER DETERRENT: Generic motion detected on ${data?.deviceName ?: 'Camera'}. Queued: '${randomMsg}'")
     }
 }
 
@@ -1427,6 +1464,9 @@ def unifiProtectHandler(evt) {
     }
     
     if (!canTriggerIntruder()) return
+    
+    // Cancel the pending generic message because the AI caught a specific object
+    unschedule("executeGenericIntruder")
     
     state.lastIntruderAlert = new Date().time
     state.lastOutdoorGreeting = new Date().time
@@ -1848,6 +1888,9 @@ def arrivalHandler(evt) {
         def bdayMsg = getBirthdayMessage(actualUserName, "Arrival")
         if (bdayMsg) greetingToPlay = "${greetingToPlay} ${bdayMsg}"
         
+        def annivMsg = getAnniversaryMessage("Arrival", actualUserName)
+        if (annivMsg) greetingToPlay = "${greetingToPlay} ${annivMsg}"
+        
         // --- HOUSE ROSTER LOGIC ---
         if (settings.enableHouseRoster) {
             def allowedRoster = [settings.rosterAllowedUsers].flatten().findAll{it}.collect{it.toLowerCase()}
@@ -2136,6 +2179,11 @@ def goodNightOnHandler(evt) {
             def bdayMsg = getBirthdayMessage(occName, "Night")
             if (bdayMsg) finalMsg = "${finalMsg} ${bdayMsg}"
             
+            if (settings["roomEnableAnniversary_${i}"]) {
+                def annivMsg = getAnniversaryMessage("Night")
+                if (annivMsg) finalMsg = "${finalMsg} ${annivMsg}"
+            }
+            
             finalMsg = applyDynamicVars(finalMsg)
             
             runIn(delaySec, "scheduleGoodNightSequence", [data: [roomNum: i, message: finalMsg, roomName: rName], overwrite: false])
@@ -2257,6 +2305,11 @@ def triggerGoodMorningSequence(int i) {
     def bdayMsg = getBirthdayMessage(occName, "Morning")
     if (bdayMsg) finalMsg = "${finalMsg} ${bdayMsg}"
 
+    if (settings["roomEnableAnniversary_${i}"]) {
+        def annivMsg = getAnniversaryMessage("Morning")
+        if (annivMsg) finalMsg = "${finalMsg} ${annivMsg}"
+    }
+
     if (settings.enableHolidays) {
         def holiday = getTodayHoliday()
         if (holiday) {
@@ -2292,6 +2345,68 @@ def scheduleGoodMorningSequence(data) {
             }
         }
         
+        // --- NEW: Kid-Focused Wardrobe Advisor ---
+        if (settings["roomWardrobe_${rNum}"] && wDevice) {
+            try {
+                def tempStr = wDevice.currentValue("temperature")
+                if (tempStr != null) {
+                    def t = tempStr.toString().replaceAll("[^0-9.-]", "").toFloat().toInteger()
+                    if (t < 40) finalMsg += " It is freezing out there at ${t} degrees! Make sure to bundle up with your heavy winter coat, hat, and gloves today."
+                    else if (t < 55) finalMsg += " It is quite chilly today at ${t} degrees. A warm jacket and long pants are a great idea."
+                    else if (t < 70) finalMsg += " The weather is nice and cool at ${t} degrees. A light jacket or a cozy sweater will be perfect for school."
+                    else if (t < 85) finalMsg += " It is a beautiful and warm ${t} degrees outside! Shorts and a t-shirt are the way to go."
+                    else finalMsg += " It is going to be a scorcher today at ${t} degrees! Dress lightly and do not forget to drink plenty of water."
+                }
+            } catch(e) { log.error "Wardrobe Advisor Error: ${e}" }
+        }
+
+        // --- NEW: Top Headlines News Fetcher ---
+        if (settings["roomNewsEnable_${rNum}"]) {
+            def feedUrl = settings["roomNewsFeed_${rNum}"] ?: "https://feeds.npr.org/1001/rss.xml"
+            try {
+                httpGet([uri: feedUrl, timeout: 5]) { resp ->
+                    if (resp.status == 200 && resp.data) {
+                        def rssText = resp.data.text
+                        def rss = new XmlSlurper().parseText(rssText)
+                        def items = rss.channel.item
+                        if (items.size() >= 2) {
+                            def title1 = items[0].title.text().trim().replace("&", "and").replace("\"", "")
+                            def title2 = items[1].title.text().trim().replace("&", "and").replace("\"", "")
+                            finalMsg += " Here is your morning news briefing. ${title1}. In other news, ${title2}."
+                        }
+                    }
+                }
+            } catch (e) {
+                log.warn "Voice Butler: Failed to fetch news for Room ${rNum} - ${e}"
+            }
+        }
+
+        // --- NEW: Daily Agenda Gentle Nudge ---
+        if (settings["roomAgendaEnable_${rNum}"]) {
+            def dow = new Date().format("EEEE", location.timeZone)
+            def agendaText = settings["roomAgenda${dow}_${rNum}"]
+            if (agendaText) {
+                finalMsg += " As a gentle reminder, today is ${dow}. ${agendaText}"
+            }
+        }
+
+        // --- NEW: Junior Concierge (Jokes/Facts) ---
+        if (settings["roomKidsMode_${rNum}"]) {
+            def funList = [
+                "Did you know that a shrimp's heart is located in its head?",
+                "Here is a joke for you: Why did the scarecrow win an award? Because he was outstanding in his field!",
+                "Did you know that honey never spoils? Archaeologists have found pots of honey that are over three thousand years old!",
+                "Here is a joke: What do you call a fake noodle? An impasta!",
+                "Did you know that octopuses have three hearts and blue blood?",
+                "Here is a joke for you: Why can't you give Elsa a balloon? Because she will let it go!",
+                "Did you know that cows have best friends and get stressed when they are separated?",
+                "Here is a joke: What falls, but never breaks? Nightfall!",
+                "Did you know that a day on Venus is longer than a year on Venus?",
+                "Here is a joke for you: Why did the math book look sad? Because it had too many problems."
+            ]
+            finalMsg += " " + funList[new Random().nextInt(funList.size())]
+        }
+        
         enqueueTTS(targetSpeaker, finalMsg, targetVol, 4)
         addToHistory("ROOM GREETING: Good Morning sequence triggered in ${rName}. Queued: '${finalMsg}'")
     }
@@ -2313,6 +2428,11 @@ def testDepartureGreeting(int idx) {
         def bdayMsg = getBirthdayMessage(uName, "Departure")
         if (bdayMsg) {
             finalMsg = "${finalMsg} ${bdayMsg}"
+        }
+        
+        def annivMsg = getAnniversaryMessage("Departure", uName)
+        if (annivMsg) {
+            finalMsg = "${finalMsg} ${annivMsg}"
         }
         
         finalMsg = applyDynamicVars(finalMsg)
@@ -2387,6 +2507,11 @@ def testRoomGreeting(int i, String type) {
     def bdayMsg = getBirthdayMessage(occName, type == "Good Night" ? "Night" : "Morning")
     if (bdayMsg) finalMsg = "${finalMsg} ${bdayMsg}"
 
+    if (settings["roomEnableAnniversary_${i}"]) {
+        def annivMsg = getAnniversaryMessage(type == "Good Night" ? "Night" : "Morning")
+        if (annivMsg) finalMsg = "${finalMsg} ${annivMsg}"
+    }
+
     if (settings.enableHolidays && type != "Good Night") {
         def holiday = getTodayHoliday() ?: "a Holiday" 
         def hMsg = settings.holidayMessage ?: "By the way, don't forget today is %holiday%!"
@@ -2437,6 +2562,70 @@ def testRoomGreeting(int i, String type) {
             def wText = getWeatherReport(wDevice)
             if (wText) {
                 finalMsg = finalMsg + " " + wText
+            }
+        }
+        
+        if (type == "Good Morning") {
+            // --- NEW: Kid-Focused Wardrobe Advisor ---
+            if (settings["roomWardrobe_${i}"] && wDevice) {
+                try {
+                    def tempStr = wDevice.currentValue("temperature")
+                    if (tempStr != null) {
+                        def t = tempStr.toString().replaceAll("[^0-9.-]", "").toFloat().toInteger()
+                        if (t < 40) finalMsg += " It is freezing out there at ${t} degrees! Make sure to bundle up with your heavy winter coat, hat, and gloves today."
+                        else if (t < 55) finalMsg += " It is quite chilly today at ${t} degrees. A warm jacket and long pants are a great idea."
+                        else if (t < 70) finalMsg += " The weather is nice and cool at ${t} degrees. A light jacket or a cozy sweater will be perfect for school."
+                        else if (t < 85) finalMsg += " It is a beautiful and warm ${t} degrees outside! Shorts and a t-shirt are the way to go."
+                        else finalMsg += " It is going to be a scorcher today at ${t} degrees! Dress lightly and do not forget to drink plenty of water."
+                    }
+                } catch(e) {}
+            }
+
+            // --- NEW: Top Headlines News Fetcher ---
+            if (settings["roomNewsEnable_${i}"]) {
+                def feedUrl = settings["roomNewsFeed_${i}"] ?: "https://feeds.npr.org/1001/rss.xml"
+                try {
+                    httpGet([uri: feedUrl, timeout: 5]) { resp ->
+                        if (resp.status == 200 && resp.data) {
+                            def rssText = resp.data.text
+                            def rss = new XmlSlurper().parseText(rssText)
+                            def items = rss.channel.item
+                            if (items.size() >= 2) {
+                                def title1 = items[0].title.text().trim().replace("&", "and").replace("\"", "")
+                                def title2 = items[1].title.text().trim().replace("&", "and").replace("\"", "")
+                                finalMsg += " Here is your morning news briefing. ${title1}. In other news, ${title2}."
+                            }
+                        }
+                    }
+                } catch (e) {
+                    log.warn "Voice Butler: Failed to fetch news for test - ${e}"
+                }
+            }
+
+            // --- NEW: Daily Agenda Gentle Nudge ---
+            if (settings["roomAgendaEnable_${i}"]) {
+                def dow = new Date().format("EEEE", location.timeZone)
+                def agendaText = settings["roomAgenda${dow}_${i}"]
+                if (agendaText) {
+                    finalMsg += " As a gentle reminder, today is ${dow}. ${agendaText}"
+                }
+            }
+
+            // --- NEW: Junior Concierge (Jokes/Facts) ---
+            if (settings["roomKidsMode_${i}"]) {
+                def funList = [
+                    "Did you know that a shrimp's heart is located in its head?",
+                    "Here is a joke for you: Why did the scarecrow win an award? Because he was outstanding in his field!",
+                    "Did you know that honey never spoils? Archaeologists have found pots of honey that are over three thousand years old!",
+                    "Here is a joke: What do you call a fake noodle? An impasta!",
+                    "Did you know that octopuses have three hearts and blue blood?",
+                    "Here is a joke for you: Why can't you give Elsa a balloon? Because she will let it go!",
+                    "Did you know that cows have best friends and get stressed when they are separated?",
+                    "Here is a joke: What falls, but never breaks? Nightfall!",
+                    "Did you know that a day on Venus is longer than a year on Venus?",
+                    "Here is a joke for you: Why did the math book look sad? Because it had too many problems."
+                ]
+                finalMsg += " " + funList[new Random().nextInt(funList.size())]
             }
         }
         
@@ -2533,6 +2722,12 @@ def testArrivalGreeting() {
         if (bdayMsg) {
             greetingToPlay = "${greetingToPlay} ${bdayMsg}"
         }
+        
+        def annivMsg = getAnniversaryMessage("Arrival", testName)
+        if (annivMsg) {
+            greetingToPlay = "${greetingToPlay} ${annivMsg}"
+        }
+        
         greetingToPlay = applyDynamicVars(greetingToPlay)
         
         def targetVolume = settings["arrivalVolume"] != null ? settings["arrivalVolume"] : settings["outdoorVolume"]
@@ -2608,6 +2803,35 @@ def getTodayHoliday() {
     if (m == 11 && dow == Calendar.FRIDAY && d >= 23 && d <= 29) return "Black Friday"
     
     return null
+}
+
+def getAnniversaryMessage(String type, String userName = "") {
+    if (!settings.enableAnniversary || !settings.annivMonth || !settings.annivDay) return ""
+    
+    if (userName && (type == "Arrival" || type == "Departure")) {
+        def allowedUsers = [settings.annivAllowedUsers].flatten().findAll{it}.collect{it.toLowerCase()}
+        if (settings.annivAllowedCustom) allowedUsers += settings.annivAllowedCustom.split(',').collect{it.trim().toLowerCase()}
+        
+        if (!allowedUsers.isEmpty() && !allowedUsers.contains(userName.toLowerCase())) {
+            return "" 
+        }
+    }
+    
+    def now = new Date()
+    def currentMonth = now.format("MM", location.timeZone).toInteger()
+    def currentDay = now.format("dd", location.timeZone).toInteger()
+
+    if (settings.annivMonth.toInteger() == currentMonth && settings.annivDay.toInteger() == currentDay) {
+        def rawMsg = ""
+        switch(type) {
+            case "Arrival": rawMsg = settings.annivMsgArrival ?: "Happy Anniversary! Welcome home."; break
+            case "Departure": rawMsg = settings.annivMsgDeparture ?: "Have a wonderful anniversary today!"; break
+            case "Morning": rawMsg = settings.annivMsgMorning ?: "Happy Anniversary! I hope you both have a fantastic day."; break
+            case "Night": rawMsg = settings.annivMsgNight ?: "Happy Anniversary. Sleep well, I will keep the perimeter secure."; break
+        }
+        return rawMsg
+    }
+    return ""
 }
 
 def getBirthdayMessage(String name, String type) {
